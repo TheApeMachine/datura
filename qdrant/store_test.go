@@ -30,12 +30,12 @@ func TestStore_Search(t *testing.T) {
 		store := NewStore(client)
 
 		Convey("rejects invalid limit", func() {
-			_, err := store.Search(context.Background(), []float32{1}, 0, nil)
+			_, err := store.SearchPoints(context.Background(), []float32{1}, 0, nil)
 			So(err, ShouldNotBeNil)
 		})
 
 		Convey("rejects empty vector", func() {
-			_, err := store.Search(context.Background(), nil, 3, nil)
+			_, err := store.SearchPoints(context.Background(), nil, 3, nil)
 			So(err, ShouldNotBeNil)
 		})
 	})

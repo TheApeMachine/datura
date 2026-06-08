@@ -54,7 +54,7 @@ func (store *Store) CreateCollection(ctx context.Context, vectorSize uint64, dis
 	}
 
 	exists, err := store.client.inner.CollectionExists(ctx, store.collection)
-	
+
 	if err != nil {
 		return fmt.Errorf("qdrant: collection exists: %w", err)
 	}
@@ -72,7 +72,7 @@ func (store *Store) CreateCollection(ctx context.Context, vectorSize uint64, dis
 			Distance: dist,
 		}),
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("qdrant: create collection: %w", err)
 	}
@@ -92,13 +92,13 @@ func (store *Store) UpsertPoints(ctx context.Context, points []Point) error {
 
 	for index, point := range points {
 		pid, err := pointIDFromAny(point.ID)
-	
+
 		if err != nil {
 			return fmt.Errorf("qdrant: point[%d] id: %w", index, err)
 		}
 
 		payload, err := qc.TryValueMap(point.Payload)
-	
+
 		if err != nil {
 			return fmt.Errorf("qdrant: point[%d] payload: %w", index, err)
 		}
@@ -117,7 +117,7 @@ func (store *Store) UpsertPoints(ctx context.Context, points []Point) error {
 		Points:         structs,
 		Wait:           &wait,
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("qdrant: upsert: %w", err)
 	}
@@ -145,10 +145,10 @@ func (store *Store) IndexDocument(ctx context.Context, id string, text string, e
 }
 
 /*
-Search runs a dense nearest query via the go-client Query API and returns scored hits with payload
-when WithPayload is enabled.
+SearchPoints runs a dense nearest query via the go-client Query API and returns scored hits with
+payload when WithPayload is enabled.
 */
-func (store *Store) Search(ctx context.Context, vector []float32, limit int, scoreThreshold *float32) ([]*qc.ScoredPoint, error) {
+func (store *Store) SearchPoints(ctx context.Context, vector []float32, limit int, scoreThreshold *float32) ([]*qc.ScoredPoint, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("qdrant: limit must be positive")
 	}
@@ -166,7 +166,7 @@ func (store *Store) Search(ctx context.Context, vector []float32, limit int, sco
 		ScoreThreshold: scoreThreshold,
 		WithPayload:    qc.NewWithPayload(true),
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: search: %w", err)
 	}

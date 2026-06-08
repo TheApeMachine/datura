@@ -3,8 +3,10 @@ module github.com/theapemachine/datura
 go 1.26.1
 
 require (
+	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.1
 	github.com/gofiber/fiber/v3 v3.2.0
+	github.com/theapemachine/errnie v1.2.3
 )
 
 require (
@@ -26,6 +28,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/colega/zeropool v0.0.0-20230505084239-6fb4a4f75381 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -33,6 +36,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
+	github.com/phuslu/log v1.0.124 // indirect
 	github.com/smarty/assertions v1.15.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
@@ -40,6 +44,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.40.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/api v0.256.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
@@ -54,7 +59,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
 	github.com/gofiber/utils/v2 v2.0.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
@@ -64,7 +69,7 @@ require (
 	github.com/smartystreets/goconvey v1.8.1
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.70.0 // indirect
+	github.com/valyala/fasthttp v1.71.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	gocloud.dev v0.45.0
 	golang.org/x/crypto v0.50.0 // indirect
