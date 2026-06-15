@@ -29,3 +29,24 @@ func TestStore_Link(t *testing.T) {
 		})
 	})
 }
+
+func BenchmarkStoreLinkValidation(b *testing.B) {
+	driver, err := ndriver.NewDriverWithContext("neo4j://localhost:7687", ndriver.BasicAuth("neo4j", "pw", ""))
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	defer driver.Close(context.Background())
+
+	store := NewStore(driver, "")
+	ctx := context.Background()
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		err := store.Link(ctx, "a", "b", "BAD-TYPE", nil)
+		if err == nil {
+			b.Fatal("expected validation error")
+		}
+	}
+}

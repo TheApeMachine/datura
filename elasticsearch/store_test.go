@@ -38,3 +38,21 @@ func TestStore_HybridSearch(t *testing.T) {
 		})
 	})
 }
+
+func BenchmarkStoreHybridSearchValidation(b *testing.B) {
+	client, err := NewClient(Config{Addresses: []string{"http://127.0.0.1:9200"}})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	store := NewStore(client)
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		_, err := store.HybridSearch(context.Background(), nil, "   ", 5, 0.5, 0.5)
+		if err == nil {
+			b.Fatal("expected validation error")
+		}
+	}
+}

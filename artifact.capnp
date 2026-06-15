@@ -1,7 +1,7 @@
 using Go = import "/go.capnp";
 @0x85d3acc39d94e0f8;
 $Go.package("datura");
-$Go.import("datura");
+$Go.import("github.com/theapemachine/datura");
 
 struct Artifact {
     uuid      @0 :Text;
@@ -29,5 +29,12 @@ struct Artifact {
     destination @5 :Text;
     role        @6 :Text;
     scope       @7 :Text;
-    payload     @8 :Data;
+    attributes  @8 :List(Attribute);
+
+    struct Attribute {
+        key @0 :Text;
+        value @1 :Text;
+    }
+
+    payload     @9 :Data;
 }

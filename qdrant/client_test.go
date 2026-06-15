@@ -24,3 +24,27 @@ func TestMergeURLOverrides_preservesExplicitGRPCPortFromURL(test *testing.T) {
 		So(useTLS, ShouldBeFalse)
 	})
 }
+
+func BenchmarkNewClient(b *testing.B) {
+	b.ResetTimer()
+
+	for b.Loop() {
+		client, err := NewClient(Config{PoolSize: 1})
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		_ = client.Close()
+	}
+}
+
+func BenchmarkMergeURLOverrides(b *testing.B) {
+	b.ResetTimer()
+
+	for b.Loop() {
+		host, port, useTLS := mergeURLOverrides("http://x:9999", "", 0, false)
+		if host != "x" || port != 9999 || useTLS {
+			b.Fatalf("unexpected merge result: %s %d %v", host, port, useTLS)
+		}
+	}
+}

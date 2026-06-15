@@ -25,3 +25,16 @@ func TestNewClient(test *testing.T) {
 		})
 	})
 }
+
+func BenchmarkNewClient(b *testing.B) {
+	cfg := Config{Addresses: []string{"http://127.0.0.1:9200"}}
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		_, err := NewClient(cfg)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

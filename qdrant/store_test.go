@@ -52,3 +52,23 @@ func TestStore_UpsertPoints_empty(t *testing.T) {
 		So(err, ShouldBeNil)
 	})
 }
+
+func BenchmarkStoreCreateCollectionValidation(b *testing.B) {
+	client, err := NewClient(Config{PoolSize: 1})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	defer client.Close()
+
+	store := NewStoreWithCollection(client, "kb")
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		err := store.CreateCollection(context.Background(), 0, "Cosine")
+		if err == nil {
+			b.Fatal("expected validation error")
+		}
+	}
+}

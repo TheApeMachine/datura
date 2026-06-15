@@ -20,3 +20,16 @@ func TestNewClient(test *testing.T) {
 		})
 	})
 }
+
+func BenchmarkNewClient(b *testing.B) {
+	cfg := Config{URI: "neo4j://localhost:7687", Username: "u", Password: "p"}
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		_, err := NewClient(cfg)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
