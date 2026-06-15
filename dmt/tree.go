@@ -71,7 +71,7 @@ func (tree *Tree) Seek(key []byte) ([]byte, bool) {
 	t := time.Now()
 
 	it := tree.root.Root().Iterator()
-	it.SeekLowerBound(key)
+	it.SeekPrefix(key)
 
 	for k, v, ok := it.Next(); ok; k, v, ok = it.Next() {
 		if bytes.Compare(k, key) >= 0 {
@@ -83,6 +83,26 @@ func (tree *Tree) Seek(key []byte) ([]byte, bool) {
 	tree.perfs = tree.perfs.Next()
 
 	return nil, false
+}
+
+/*
+WalkPrefix visits every key/value whose key begins with prefix, in
+lexicographical (and therefore chronological, given Artifact.Prefix keys) order.
+The walk stops early if fn returns false. This is the history read: write
+observations keyed by Artifact.Prefix, then walk the scope prefix to replay them.
+*/
+func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
+	tree.mu.RLock()
+	defer tree.mu.RUnlock()
+
+	it := tree.root.Root().Iterator()
+	it.SeekPrefix(prefix)
+
+	for k, v, ok := it.Next(); ok; k, v, ok = it.Next() {
+		if !fn(k, v) {
+			return
+		}
+	}
 }
 
 /*

@@ -406,6 +406,24 @@ It signals the run loop to stop and cleans up resources.
 func (e *Election) Close() {
 	e.closeOnce.Do(func() {
 		close(e.shutdown)
+
+		if e.electionTimer != nil {
+			if !e.electionTimer.Stop() {
+				select {
+				case <-e.electionTimer.C:
+				default:
+				}
+			}
+		}
+
+		if e.heartbeatTimer != nil {
+			if !e.heartbeatTimer.Stop() {
+				select {
+				case <-e.heartbeatTimer.C:
+				default:
+				}
+			}
+		}
 	})
 }
 
@@ -460,7 +478,7 @@ func (e *Election) scheduleLoop(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	e.node.forest.loops.Schedule(
+	e.node.forest.pool.Schedule(
 		"dmt/election/"+id,
 		fn,
 		qpool.WithTTL(time.Second),

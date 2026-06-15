@@ -10,7 +10,7 @@ clicks repeat the last second-hand value; cascaded little and big ticks repeat
 their own last observed values.
 */
 type ClockTrack[T any] struct {
-	clock        *ClockRing
+	clock        *ClockRing[T]
 	secondValues *ListRing[T]
 	littleValues *ListRing[T]
 	bigValues    *ListRing[T]
@@ -25,7 +25,7 @@ type ClockTrack[T any] struct {
 /*
 NewClockTrack binds value rings to an existing click clock.
 */
-func NewClockTrack[T any](clock *ClockRing) (*ClockTrack[T], error) {
+func NewClockTrack[T any](clock *ClockRing[T]) (*ClockTrack[T], error) {
 	if clock == nil {
 		return nil, errClockNil
 	}

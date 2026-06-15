@@ -9,7 +9,7 @@ import (
 
 func TestClockRing_ObserveSecond(testingTB *testing.T) {
 	Convey("Given a default click clock", testingTB, func() {
-		clock, err := NewClockRing(10, 100, 1000)
+		clock, err := NewClockRing[float64](10, 100, 1000)
 
 		So(err, ShouldBeNil)
 
@@ -34,7 +34,7 @@ func TestClockRing_ObserveSecond(testingTB *testing.T) {
 
 func TestClockRing_AdvanceVirtual(testingTB *testing.T) {
 	Convey("Given one fresh second-hand observation", testingTB, func() {
-		clock, err := NewClockRing(10, 100, 1000)
+		clock, err := NewClockRing[float64](10, 100, 1000)
 
 		So(err, ShouldBeNil)
 
@@ -59,7 +59,7 @@ func TestClockRing_AdvanceVirtual(testingTB *testing.T) {
 
 func TestClockTrack_AdvanceVirtual(testingTB *testing.T) {
 	Convey("Given a thin stream with one compression reading", testingTB, func() {
-		clock, err := NewClockRing(10, 100, 1000)
+		clock, err := NewClockRing[float64](10, 100, 1000)
 
 		So(err, ShouldBeNil)
 
@@ -96,9 +96,30 @@ func TestClockTrack_AdvanceVirtual(testingTB *testing.T) {
 	})
 }
 
+func TestClockRing_Ring(testingTB *testing.T) {
+	Convey("Given a click clock as Ring[ClockSlot]", testingTB, func() {
+		clock, err := NewClockRing[float64](10, 100, 1000)
+
+		So(err, ShouldBeNil)
+
+		ring := NewRing(clock)
+		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+
+		Convey("It should push and pop second-hand slots through the shared interface", func() {
+			So(ring.Push(ClockSlot{Wall: start}), ShouldBeTrue)
+			So(ring.Len(), ShouldEqual, 10)
+
+			slot := ring.Pop()
+
+			So(slot.Wall, ShouldEqual, start)
+			So(clock.Click(), ShouldEqual, 1)
+		})
+	})
+}
+
 func TestClockRing_Freshness(testingTB *testing.T) {
 	Convey("Given a fresh little-hand observation", testingTB, func() {
-		clock, err := NewClockRing(10, 100, 1000)
+		clock, err := NewClockRing[float64](10, 100, 1000)
 
 		So(err, ShouldBeNil)
 
@@ -117,7 +138,7 @@ func TestClockRing_Freshness(testingTB *testing.T) {
 }
 
 func BenchmarkClockRing_AdvanceVirtual(testingTB *testing.B) {
-	clock, err := NewClockRing(10, 100, 1000)
+	clock, err := NewClockRing[float64](10, 100, 1000)
 
 	if err != nil {
 		testingTB.Fatal(err)
@@ -141,7 +162,7 @@ func BenchmarkClockRing_AdvanceVirtual(testingTB *testing.B) {
 }
 
 func BenchmarkClockTrack_ObserveSecond(testingTB *testing.B) {
-	clock, err := NewClockRing(10, 100, 1000)
+	clock, err := NewClockRing[float64](10, 100, 1000)
 
 	if err != nil {
 		testingTB.Fatal(err)

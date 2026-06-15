@@ -2,7 +2,6 @@ package dmt
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"time"
 
@@ -25,7 +24,6 @@ type Forest struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	pool   *qpool.Q[any]
-	loops  *qpool.Q[any]
 	owned  bool
 	// Network node for distributed operation
 	network *NetworkNode
@@ -55,16 +53,10 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 		pool:    config.Pool,
-		loops: qpool.NewQ[any](
-			ctx,
-			4,
-			max(4, runtime.NumCPU()),
-			qpool.NewConfig(),
-		),
 	}
 
 	if forest.pool == nil {
-		forest.pool = qpool.NewQ[any](forest.ctx, 1, runtime.NumCPU(), qpool.NewConfig())
+		forest.pool = newWorkerPool(forest.ctx)
 		forest.owned = true
 	}
 
@@ -82,10 +74,7 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		})
 	}
 
-	forest.schedule("sync-loop", func(ctx context.Context) (any, error) {
-		forest.syncLoop()
-		return nil, nil
-	})
+	go forest.syncLoop()
 
 	return forest, forest.state.Err()
 }
@@ -99,7 +88,6 @@ func (forest *Forest) Close() error {
 	}
 
 	forest.mu.Lock()
-	defer forest.mu.Unlock()
 
 	if forest.network != nil {
 		guardStep(forest.state, forest.network.Close)
@@ -109,12 +97,10 @@ func (forest *Forest) Close() error {
 		guardStep(forest.state, tree.Close)
 	}
 
-	if forest.owned {
-		forest.pool.Close()
-	}
+	forest.mu.Unlock()
 
-	if forest.loops != nil {
-		forest.loops.Close()
+	if forest.owned && forest.pool != nil {
+		forest.pool.Close()
 	}
 
 	return forest.state.Err()
@@ -137,7 +123,7 @@ func (forest *Forest) scheduleLoop(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	forest.loops.Schedule(
+	forest.pool.Schedule(
 		"dmt/forest/"+id,
 		fn,
 		qpool.WithTTL(time.Second),

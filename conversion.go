@@ -25,6 +25,22 @@ func As[T any](artifact *Artifact) T {
 	return zero
 }
 
+func Peek[T any](artifact *Artifact, key string) T {
+	var typed T
+
+	payload, err := artifact.Payload()
+
+	if err != nil {
+		return typed
+	}
+
+	if err := sonic.Unmarshal(payload, &typed); err != nil {
+		return typed
+	}
+
+	return typed
+}
+
 /*
 Encode encodes the artifact to a byte slice.
 */

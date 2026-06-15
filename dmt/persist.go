@@ -83,7 +83,7 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 		snapPath:  filepath.Join(dir, "snapshot"),
 		ctx:       ctx,
 		cancel:    cancel,
-		pool:      qpool.NewQ[any](ctx, 2, max(2, runtime.NumCPU()), qpool.NewConfig()),
+		pool:      qpool.NewQ[any](ctx, 2, max(2, runtime.NumCPU()), workerPoolConfig()),
 		syncChan:  make(chan struct{}, 100),
 		snapCount: 1000,
 	}
@@ -98,11 +98,7 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 
 	ps.walWriter = bufio.NewWriter(ps.walFile)
 
-	// Start background syncing
-	ps.schedule("background-sync", func(ctx context.Context) (any, error) {
-		ps.backgroundSync()
-		return nil, nil
-	})
+	go ps.backgroundSync()
 
 	// Load last term/index from WAL
 	guardStep(ps.state, ps.loadLastState)
@@ -201,22 +197,31 @@ written to disk and resources are properly released.
 */
 func (ps *PersistentStore) Close() error {
 	ps.writeMutex.Lock()
-	defer ps.writeMutex.Unlock()
 
 	if ps.closed {
+		ps.writeMutex.Unlock()
+
 		return nil
 	}
 
 	ps.closed = true
+
 	if ps.cancel != nil {
 		ps.cancel()
 	}
+
 	close(ps.syncChan)
 
 	guardStep(ps.state, ps.walWriter.Flush)
 	guardStep(ps.state, ps.walFile.Close)
-	if ps.pool != nil {
-		ps.pool.Close()
+
+	workerPool := ps.pool
+	ps.pool = nil
+
+	ps.writeMutex.Unlock()
+
+	if workerPool != nil {
+		workerPool.Close()
 	}
 
 	return ps.state.Err()

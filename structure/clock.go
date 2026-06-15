@@ -31,7 +31,7 @@ previous observation across click space without a new market event.
 */
 type ClockSlot struct {
 	Wall  time.Time
-	Click uint64
+	Click int64
 }
 
 /*
@@ -57,11 +57,11 @@ LittleHand advances once; each LittleHand lap advances BigHand once. Virtual
 clicks advance SecondHand without a wall timestamp so sparse streams can fill
 click space for sequence detection at the cost of freshness.
 */
-type ClockRing struct {
+type ClockRing[T any] struct {
 	SecondHand *ListRing[ClockSlot]
 	LittleHand *ListRing[ClockSlot]
 	BigHand    *ListRing[ClockSlot]
-	clicks     uint64
+	clicks     int64
 	secondLap  int
 	littleLap  int
 }
@@ -69,7 +69,7 @@ type ClockRing struct {
 /*
 NewClockRing builds a click clock with positive second, little, and big capacities.
 */
-func NewClockRing(secondCapacity, littleCapacity, bigCapacity int) (*ClockRing, error) {
+func NewClockRing[T any](secondCapacity, littleCapacity, bigCapacity int) (*ClockRing[T], error) {
 	if secondCapacity <= 0 || littleCapacity <= 0 || bigCapacity <= 0 {
 		return nil, errors.New("structure: clock ring capacities must be positive")
 	}
@@ -82,7 +82,7 @@ func NewClockRing(secondCapacity, littleCapacity, bigCapacity int) (*ClockRing, 
 		return nil, fmt.Errorf("structure: clock ring allocation failed")
 	}
 
-	return &ClockRing{
+	return &ClockRing[T]{
 		SecondHand: secondHand,
 		LittleHand: littleHand,
 		BigHand:    bigHand,
@@ -92,14 +92,14 @@ func NewClockRing(secondCapacity, littleCapacity, bigCapacity int) (*ClockRing, 
 /*
 NewDefaultClockRing returns a click clock with 10, 100, and 1000 slot hands.
 */
-func NewDefaultClockRing() (*ClockRing, error) {
-	return NewClockRing(10, 100, 1000)
+func NewDefaultClockRing[T any]() (*ClockRing[T], error) {
+	return NewClockRing[T](10, 100, 1000)
 }
 
 /*
 Click returns the monotonic virtual click counter.
 */
-func (clock *ClockRing) Click() uint64 {
+func (clock *ClockRing[T]) Click() int64 {
 	if clock == nil {
 		return 0
 	}
@@ -110,7 +110,7 @@ func (clock *ClockRing) Click() uint64 {
 /*
 ObserveSecond records a fresh second-hand click at wall and cascades slower hands.
 */
-func (clock *ClockRing) ObserveSecond(wall time.Time) (ClockCascade, error) {
+func (clock *ClockRing[T]) ObserveSecond(wall time.Time) (ClockCascade, error) {
 	if clock == nil {
 		return ClockCascade{}, errors.New("structure: clock ring is nil")
 	}
@@ -125,7 +125,7 @@ func (clock *ClockRing) ObserveSecond(wall time.Time) (ClockCascade, error) {
 /*
 ObserveLittle records a fresh little-hand click at wall and may cascade BigHand.
 */
-func (clock *ClockRing) ObserveLittle(wall time.Time) (ClockCascade, error) {
+func (clock *ClockRing[T]) ObserveLittle(wall time.Time) (ClockCascade, error) {
 	if clock == nil {
 		return ClockCascade{}, errors.New("structure: clock ring is nil")
 	}
@@ -140,7 +140,7 @@ func (clock *ClockRing) ObserveLittle(wall time.Time) (ClockCascade, error) {
 /*
 ObserveBig records a fresh big-hand click at wall.
 */
-func (clock *ClockRing) ObserveBig(wall time.Time) error {
+func (clock *ClockRing[T]) ObserveBig(wall time.Time) error {
 	if clock == nil {
 		return errors.New("structure: clock ring is nil")
 	}
@@ -157,7 +157,7 @@ func (clock *ClockRing) ObserveBig(wall time.Time) error {
 /*
 AdvanceVirtual advances SecondHand by clicks virtual steps without wall time.
 */
-func (clock *ClockRing) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
+func (clock *ClockRing[T]) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
 	if clock == nil {
 		return nil, errors.New("structure: clock ring is nil")
 	}
@@ -179,7 +179,7 @@ func (clock *ClockRing) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
 Freshness returns how many clicks back the latest fresh slot sits on hand.
 Zero means the latest slot is fresh.
 */
-func (clock *ClockRing) Freshness(hand Hand) (int, error) {
+func (clock *ClockRing[T]) Freshness(hand Hand) (int, error) {
 	if clock == nil {
 		return 0, errors.New("structure: clock ring is nil")
 	}
@@ -214,7 +214,7 @@ func (clock *ClockRing) Freshness(hand Hand) (int, error) {
 /*
 HandRing returns the slot ring for hand.
 */
-func (clock *ClockRing) HandRing(hand Hand) (*ListRing[ClockSlot], error) {
+func (clock *ClockRing[T]) HandRing(hand Hand) (Ring[ClockSlot], error) {
 	if clock == nil {
 		return nil, errors.New("structure: clock ring is nil")
 	}
@@ -228,7 +228,126 @@ func (clock *ClockRing) HandRing(hand Hand) (*ListRing[ClockSlot], error) {
 	return ring, nil
 }
 
-func (clock *ClockRing) pushSecond(slot ClockSlot) ClockCascade {
+/*
+Push records slot on the second hand and cascades slower hands when a lap completes.
+*/
+func (clock *ClockRing[T]) Push(slot ClockSlot) bool {
+	if clock == nil {
+		return false
+	}
+
+	clock.pushSecond(slot)
+
+	return true
+}
+
+/*
+Pop returns the second-hand slot at the write cursor without advancing it.
+*/
+func (clock *ClockRing[T]) Pop() ClockSlot {
+	if clock == nil || clock.SecondHand == nil {
+		return ClockSlot{}
+	}
+
+	return clock.SecondHand.Pop()
+}
+
+/*
+Select returns a second-hand view offset step slots from the write cursor.
+*/
+func (clock *ClockRing[T]) Select(step int) Ring[ClockSlot] {
+	if clock == nil || clock.SecondHand == nil {
+		return nil
+	}
+
+	return clock.SecondHand.Select(step)
+}
+
+/*
+Merge splices other into this clock. When other is another ClockRing, all three
+hands merge and lap counters reset. When other is a ListRing, only SecondHand merges.
+*/
+func (clock *ClockRing[T]) Merge(other Ring[ClockSlot]) bool {
+	if clock == nil {
+		return false
+	}
+
+	otherClock, ok := other.(*ClockRing[T])
+
+	if !ok {
+		return clock.SecondHand.Merge(other)
+	}
+
+	if !clock.SecondHand.Merge(otherClock.SecondHand) {
+		return false
+	}
+
+	if !clock.LittleHand.Merge(otherClock.LittleHand) {
+		return false
+	}
+
+	if !clock.BigHand.Merge(otherClock.BigHand) {
+		return false
+	}
+
+	if otherClock.clicks > clock.clicks {
+		clock.clicks = otherClock.clicks
+	}
+
+	clock.secondLap = 0
+	clock.littleLap = 0
+
+	return true
+}
+
+/*
+Slice detaches count second-hand slots into a new ring view.
+*/
+func (clock *ClockRing[T]) Slice(count int) Ring[ClockSlot] {
+	if clock == nil || clock.SecondHand == nil {
+		return nil
+	}
+
+	return clock.SecondHand.Slice(count)
+}
+
+/*
+Len returns the second-hand capacity in slots.
+*/
+func (clock *ClockRing[T]) Len() int {
+	if clock == nil || clock.SecondHand == nil {
+		return 0
+	}
+
+	return clock.SecondHand.Len()
+}
+
+/*
+Do visits every second-hand slot in cursor order.
+*/
+func (clock *ClockRing[T]) Do(visitor func(ClockSlot)) {
+	if clock == nil || clock.SecondHand == nil {
+		return
+	}
+
+	clock.SecondHand.Do(visitor)
+}
+
+/*
+Close is a no-op. It exists so ClockRing satisfies Ring[ClockSlot].
+*/
+func (clock *ClockRing[T]) Close() error {
+	return nil
+}
+
+/*
+Error is always nil. It exists so ClockRing satisfies Ring[ClockSlot].
+*/
+func (clock *ClockRing[T]) Error() error {
+	return nil
+}
+
+func (clock *ClockRing[T]) pushSecond(slot ClockSlot) ClockCascade {
 	clock.clicks++
 	slot.Click = clock.clicks
 	clock.SecondHand.Push(slot)
@@ -243,7 +362,7 @@ func (clock *ClockRing) pushSecond(slot ClockSlot) ClockCascade {
 	return clock.pushLittle(slot)
 }
 
-func (clock *ClockRing) pushLittle(slot ClockSlot) ClockCascade {
+func (clock *ClockRing[T]) pushLittle(slot ClockSlot) ClockCascade {
 	if slot.Click == 0 {
 		slot.Click = clock.clicks
 	}
@@ -261,7 +380,7 @@ func (clock *ClockRing) pushLittle(slot ClockSlot) ClockCascade {
 	return ClockCascade{Little: true, Big: true}
 }
 
-func (clock *ClockRing) pushBig(slot ClockSlot) {
+func (clock *ClockRing[T]) pushBig(slot ClockSlot) {
 	if slot.Click == 0 {
 		slot.Click = clock.clicks
 	}
@@ -269,7 +388,7 @@ func (clock *ClockRing) pushBig(slot ClockSlot) {
 	clock.BigHand.Push(slot)
 }
 
-func (clock *ClockRing) handRing(hand Hand) *ListRing[ClockSlot] {
+func (clock *ClockRing[T]) handRing(hand Hand) *ListRing[ClockSlot] {
 	switch hand {
 	case HandSecond:
 		return clock.SecondHand

@@ -651,7 +651,7 @@ func (n *NetworkNode) scheduleLoop(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.loops.Schedule(
+	n.forest.pool.Schedule(
 		"dmt/network/"+id,
 		fn,
 		qpool.WithTTL(time.Second),

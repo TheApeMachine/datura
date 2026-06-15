@@ -8,7 +8,6 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/qpool"
 )
 
 func TestNewForest(t *testing.T) {
@@ -43,7 +42,7 @@ func TestNewForest(t *testing.T) {
 
 func TestForestUsesProvidedPool(t *testing.T) {
 	Convey("Given a forest configuration with a worker pool", t, func() {
-		workerPool := qpool.NewQ[any](context.Background(), 1, 8, qpool.NewConfig())
+		workerPool := newWorkerPool(context.Background())
 		defer workerPool.Close()
 
 		forest, err := NewForest(ForestConfig{

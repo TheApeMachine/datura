@@ -1,6 +1,12 @@
 package dmt
 
-import "github.com/theapemachine/errnie"
+import (
+	"context"
+	"runtime"
+
+	"github.com/theapemachine/errnie"
+	"github.com/theapemachine/qpool"
+)
 
 /*
 batch accumulates the first error across a sequence of guarded steps.
@@ -50,4 +56,17 @@ func guardStep(batch *batch, fn func() error) {
 	if err := fn(); err != nil {
 		batch.err = errnie.Err(errnie.IO, batch.op, err)
 	}
+}
+
+func workerPoolConfig() *qpool.Config {
+	config := qpool.NewConfig()
+	config.Scaler = nil
+
+	return config
+}
+
+func newWorkerPool(ctx context.Context) *qpool.Q[any] {
+	workers := max(4, runtime.NumCPU())
+
+	return qpool.NewQ[any](ctx, workers, workers, workerPoolConfig())
 }

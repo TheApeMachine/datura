@@ -1,6 +1,8 @@
 package datura
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +57,42 @@ func Acquire(
 	artifact.SetType(artifactType)
 
 	return artifact
+}
+
+func (artifact *Artifact) Prefix() string {
+	prefix := make([]string, 0)
+
+	if origin, err := artifact.Origin(); err == nil {
+		prefix = append(prefix, origin)
+	}
+
+	if destination, err := artifact.Destination(); err == nil {
+		prefix = append(prefix, destination)
+	}
+
+	if role, err := artifact.Role(); err == nil {
+		prefix = append(prefix, role)
+	}
+
+	if scope, err := artifact.Scope(); err == nil {
+		prefix = append(prefix, scope)
+	}
+
+	if ts := artifact.Timestamp(); ts > 0 {
+		prefix = append(prefix, strconv.FormatInt(ts, 36))
+	}
+
+	if uuid, err := artifact.Uuid(); err == nil {
+		prefix = append(prefix, uuid)
+	}
+
+	out := strings.Join(prefix, "/") + "."
+
+	if t := artifact.Type(); t != 0 {
+		out += t.String()
+	}
+
+	return out
 }
 
 func (artifact *Artifact) WithError(errnieError *errnie.ErrnieError) *Artifact {
