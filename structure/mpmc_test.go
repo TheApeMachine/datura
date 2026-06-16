@@ -2,12 +2,15 @@ package structure
 
 import (
 	"context"
+	"io"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/theapemachine/datura"
 )
 
 type mpmcFrame [128]uint64
@@ -33,7 +36,7 @@ func TestMPMCRingPush(t *testing.T) {
 		var a, b, c mpmcFrame
 
 		Convey("Pop on empty returns zero before any Push", func() {
-			So(isNilValue(ring.Pop()), ShouldBeTrue)
+			So(ring.Pop(), ShouldBeNil)
 		})
 
 		Convey("FIFO order holds for sequential Push then Pop", func() {
@@ -43,7 +46,7 @@ func TestMPMCRingPush(t *testing.T) {
 			So(ring.Pop(), ShouldEqual, &a)
 			So(ring.Pop(), ShouldEqual, &b)
 			So(ring.Pop(), ShouldEqual, &c)
-			So(isNilValue(ring.Pop()), ShouldBeTrue)
+			So(ring.Pop(), ShouldBeNil)
 		})
 	})
 
@@ -111,9 +114,8 @@ func TestMPMCRingPush(t *testing.T) {
 					perProducer,
 				)
 			default:
-				if isNilValue(ring.Pop()) {
+				if ring.Pop() == nil {
 					runtime.Gosched()
-
 					continue
 				}
 
@@ -123,6 +125,47 @@ func TestMPMCRingPush(t *testing.T) {
 
 		producers.Wait()
 		So(popped, ShouldEqual, target)
+	})
+}
+
+func TestMPMCRingReadWrite(t *testing.T) {
+	Convey("Given an MPMCRing with a bound artifact", t, func() {
+		ring, err := NewMPMCRing[int](context.Background(), 4)
+		So(err, ShouldBeNil)
+
+		source := datura.Acquire("mpmc", datura.Artifact_Type_json)
+		So(source, ShouldNotBeNil)
+
+		payload, marshalErr := sonic.Marshal(7)
+		So(marshalErr, ShouldBeNil)
+		source.WithPayload(payload)
+
+		ring.WithArtifact(datura.Acquire("mpmc", datura.Artifact_Type_json))
+		wire := source.Marshal()
+
+		written, writeErr := ring.Write(wire)
+
+		Convey("Write should enqueue the decoded value", func() {
+			So(writeErr, ShouldBeNil)
+			So(written, ShouldEqual, len(wire))
+			So(ring.Len(), ShouldEqual, 1)
+		})
+
+		buffer := make([]byte, 4096)
+		readCount, readErr := ring.Read(buffer)
+
+		Convey("Read should dequeue and marshal through the artifact", func() {
+			So(readErr, ShouldEqual, io.EOF)
+			So(readCount, ShouldBeGreaterThan, 0)
+			So(ring.Len(), ShouldEqual, 0)
+
+			decoded := datura.Acquire("mpmc", datura.Artifact_Type_json)
+			So(decoded.Unmarshal(buffer[:readCount]), ShouldNotBeNil)
+
+			out, payloadErr := decoded.Payload()
+			So(payloadErr, ShouldBeNil)
+			So(string(out), ShouldEqual, "7")
+		})
 	})
 }
 
@@ -189,6 +232,44 @@ func TestMPMCRingError(t *testing.T) {
 	})
 }
 
+func BenchmarkMPMCRingReadWrite(b *testing.B) {
+	ring, err := NewMPMCRing[int](context.Background(), 1024)
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	source := datura.Acquire("mpmc", datura.Artifact_Type_json)
+
+	if source == nil {
+		b.Fatal("Acquire returned nil")
+	}
+
+	payload, err := sonic.Marshal(7)
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	source.WithPayload(payload)
+	ring.WithArtifact(datura.Acquire("mpmc", datura.Artifact_Type_json))
+	wire := source.Marshal()
+	buffer := make([]byte, 4096)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		if _, err := ring.Write(wire); err != nil {
+			b.Fatal(err)
+		}
+
+		if _, err := ring.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMPMCRingPush(b *testing.B) {
 	ring, err := NewMPMCRing[*mpmcFrame](context.Background(), 1024)
 
@@ -205,7 +286,7 @@ func BenchmarkMPMCRingPush(b *testing.B) {
 		for !ring.Push(&blob) {
 		}
 
-		for isNilValue(ring.Pop()) {
+		for ring.Pop() == nil {
 		}
 	}
 }

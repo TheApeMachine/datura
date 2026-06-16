@@ -1,5 +1,7 @@
 package structure
 
+import "io"
+
 /*
 Ring is the shared generic surface for every ring implementation in this
 package. All concrete rings — ListRing, SPSCRing, and MPMCRing — implement the
@@ -16,6 +18,7 @@ Implementations may document additional concurrency rules. Queue rings require
 quiescence (no concurrent Push or Pop) for Merge, Slice, and Do unless noted.
 */
 type Ring[T any] interface {
+	io.ReadWriteCloser
 	Push(T) bool
 	Pop() T
 	Select(int) Ring[T]
@@ -23,7 +26,6 @@ type Ring[T any] interface {
 	Slice(int) Ring[T]
 	Len() int
 	Do(func(T))
-	Close() error
 	Error() error
 }
 

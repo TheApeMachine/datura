@@ -1,21 +1,24 @@
 package structure
 
 import (
+	"io"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/theapemachine/datura"
 )
 
 func TestNewListRing(t *testing.T) {
 	Convey("Given a non-positive element count", t, func() {
 		Convey("NewListRing should return nil", func() {
-			So(NewListRing[int](0), ShouldBeNil)
-			So(NewListRing[int](-1), ShouldBeNil)
+			So(NewListRing[int](0, nil), ShouldBeNil)
+			So(NewListRing[int](-1, nil), ShouldBeNil)
 		})
 	})
 
 	Convey("Given a positive element count", t, func() {
-		ring := NewListRing[int](3)
+		ring := NewListRing[int](3, nil)
 
 		Convey("NewListRing should build a ring of that length", func() {
 			So(ring, ShouldNotBeNil)
@@ -26,7 +29,7 @@ func TestNewListRing(t *testing.T) {
 
 func TestListRingPush(t *testing.T) {
 	Convey("Given a one-element ListRing", t, func() {
-		ring := NewListRing[int](1)
+		ring := NewListRing[int](1, nil)
 
 		Convey("Push should store at the cursor and advance", func() {
 			So(ring.Push(42), ShouldBeTrue)
@@ -35,7 +38,7 @@ func TestListRingPush(t *testing.T) {
 	})
 
 	Convey("Given a three-element ListRing", t, func() {
-		ring := NewListRing[int](3)
+		ring := NewListRing[int](3, nil)
 
 		Convey("Push should fill slots in order and wrap", func() {
 			So(ring.Push(1), ShouldBeTrue)
@@ -56,7 +59,7 @@ func TestListRingPush(t *testing.T) {
 
 func TestListRingSelect(t *testing.T) {
 	Convey("Given a three-element ListRing", t, func() {
-		ring := NewListRing[int](3)
+		ring := NewListRing[int](3, nil)
 		ring.cursor.Value = 1
 		ring.cursor.next.Value = 2
 		ring.cursor.next.next.Value = 3
@@ -78,8 +81,8 @@ func TestListRingSelect(t *testing.T) {
 
 func TestListRingMerge(t *testing.T) {
 	Convey("Given two one-element ListRings", t, func() {
-		left := NewListRing[int](1)
-		right := NewListRing[int](1)
+		left := NewListRing[int](1, nil)
+		right := NewListRing[int](1, nil)
 		left.cursor.Value = 10
 		right.cursor.Value = 20
 
@@ -93,7 +96,7 @@ func TestListRingMerge(t *testing.T) {
 
 func TestListRingSlice(t *testing.T) {
 	Convey("Given a three-element ListRing", t, func() {
-		ring := NewListRing[int](3)
+		ring := NewListRing[int](3, nil)
 		ring.cursor.Value = 1
 		ring.cursor.next.Value = 2
 		ring.cursor.next.next.Value = 3
@@ -110,7 +113,7 @@ func TestListRingSlice(t *testing.T) {
 
 func TestListRingDo(t *testing.T) {
 	Convey("Given a three-element ListRing", t, func() {
-		ring := NewListRing[int](3)
+		ring := NewListRing[int](3, nil)
 		ring.cursor.Value = 1
 		ring.cursor.next.Value = 2
 		ring.cursor.next.next.Value = 3
@@ -127,9 +130,80 @@ func TestListRingDo(t *testing.T) {
 	})
 }
 
+func TestListRingReadWrite(t *testing.T) {
+	Convey("Given a ListRing with a bound artifact", t, func() {
+		ring := NewListRing[int](1, nil)
+		source := datura.Acquire("list", datura.Artifact_Type_json)
+
+		So(source, ShouldNotBeNil)
+
+		payload, err := sonic.Marshal(42)
+
+		So(err, ShouldBeNil)
+		source.WithPayload(payload)
+
+		wire := source.Marshal()
+
+		written, writeErr := ring.Write(wire)
+
+		Convey("Write should unmarshal into the ring", func() {
+			So(writeErr, ShouldBeNil)
+			So(written, ShouldEqual, len(wire))
+		})
+
+		buffer := make([]byte, 4096)
+		readCount, readErr := ring.Read(buffer)
+
+		Convey("Read should marshal the cursor value through the artifact", func() {
+			So(readErr, ShouldEqual, io.EOF)
+			So(readCount, ShouldBeGreaterThan, 0)
+
+			decoded := datura.Acquire("list", datura.Artifact_Type_json)
+			So(decoded.Unmarshal(buffer[:readCount]), ShouldNotBeNil)
+
+			out, payloadErr := decoded.Payload()
+
+			So(payloadErr, ShouldBeNil)
+			So(string(out), ShouldEqual, "42")
+		})
+	})
+}
+
+func BenchmarkListRingReadWrite(b *testing.B) {
+	ring := NewListRing[int](1, nil)
+	source := datura.Acquire("list", datura.Artifact_Type_json)
+
+	if source == nil {
+		b.Fatal("Acquire returned nil")
+	}
+
+	payload, err := sonic.Marshal(42)
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	source.WithPayload(payload)
+	wire := source.Marshal()
+	buffer := make([]byte, 4096)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		if _, err := ring.Write(wire); err != nil {
+			b.Fatal(err)
+		}
+
+		if _, err := ring.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestListRingImplementsRing(t *testing.T) {
 	Convey("Given a ListRing assigned to Ring", t, func() {
-		var ring Ring[int] = NewListRing[int](2)
+		var ring Ring[int] = NewListRing[int](2, nil)
 
 		Convey("Ring methods should be callable", func() {
 			So(ring.Len(), ShouldEqual, 2)

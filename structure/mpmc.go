@@ -3,8 +3,12 @@ package structure
 import (
 	"context"
 	"errors"
+	"io"
+	"math/bits"
 	"sync/atomic"
 
+	"github.com/bytedance/sonic"
+	"github.com/theapemachine/datura"
 	"github.com/theapemachine/errnie"
 )
 
@@ -36,6 +40,7 @@ type MPMCRing[T any] struct {
 	buffer     []MPMCRingCell[T]
 	enqueuePos atomic.Uint64
 	dequeuePos atomic.Uint64
+	artifact   *datura.Artifact
 }
 
 /*
@@ -47,7 +52,7 @@ two. Each cell's sequence is initialized to its index so the first enqueue on
 that slot can proceed.
 */
 func NewMPMCRing[T any](ctx context.Context, capacity int) (*MPMCRing[T], error) {
-	if capacity < 2 || !isPowerOfTwo(capacity) {
+	if capacity < 2 || (capacity&(capacity-1)) != 0 {
 		return nil, errnie.Error(errnie.Err(
 			errnie.Validation,
 			"MPMCRing capacity must be a power of two >= 2",
@@ -136,12 +141,7 @@ contention (pushpop returns nil). Callers that must not drop spin with
 runtime.Gosched.
 */
 func (ring *MPMCRing[T]) Push(value T) bool {
-	if isNilValue(value) {
-		return false
-	}
-
 	stored := value
-
 	return ring.pushpop(&ring.enqueuePos, 0, pushpopProducer, &stored) != nil
 }
 
@@ -154,8 +154,10 @@ dequeue attempt.
 func (ring *MPMCRing[T]) Pop() T {
 	value := ring.pushpop(&ring.dequeuePos, 1, pushpopConsumer, nil)
 
+	var zero T
+
 	if value == nil {
-		return zeroValue[T]()
+		return zero
 	}
 
 	return *value
@@ -207,15 +209,17 @@ func (ring *MPMCRing[T]) mergeMPMC(other *MPMCRing[T]) bool {
 	combined := ring.Len() + other.Len()
 
 	if combined > len(ring.buffer) {
-		newRing, err := NewMPMCRing[T](ring.ctx, nextPowerOfTwo(combined))
+		grownRing, err := NewMPMCRing[T](
+			ring.ctx, 1<<uint(bits.Len(uint(max(combined, 2)))),
+		)
 
-		if err != nil {
+		if errnie.Error(err) != nil {
 			return false
 		}
 
-		ring.drainInto(newRing)
-		other.drainInto(newRing)
-		ring.adopt(newRing)
+		ring.drainInto(grownRing)
+		other.drainInto(grownRing)
+		ring.adopt(grownRing)
 
 		return true
 	}
@@ -257,23 +261,104 @@ func (ring *MPMCRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewMPMCRing[T](ring.ctx, nextPowerOfTwo(max(count, 2)))
+	sliced, err := NewMPMCRing[T](ring.ctx, 1<<uint(bits.Len(uint(max(count, 2)))))
 
-	if err != nil {
+	if errnie.Error(err) != nil {
 		return nil
 	}
 
 	for index := 0; index < count; index++ {
 		value := ring.Pop()
-
-		if isNilValue(value) {
-			break
-		}
-
 		sliced.Push(value)
 	}
 
 	return sliced
+}
+
+/*
+SetScope applies scope to the bound artifact before Read or Write.
+*/
+func (ring *MPMCRing[T]) SetScope(scope string) {
+	if ring.artifact != nil {
+		ring.artifact.WithScope(scope)
+	}
+}
+
+/*
+WithArtifact binds artifact I/O on this ring.
+*/
+func (ring *MPMCRing[T]) WithArtifact(artifact *datura.Artifact) *MPMCRing[T] {
+	ring.artifact = artifact
+
+	return ring
+}
+
+/*
+WithPayload replaces the bound artifact payload before Read.
+*/
+func (ring *MPMCRing[T]) WithPayload(payload []byte) *MPMCRing[T] {
+	if ring.artifact != nil {
+		ring.artifact.WithPayload(payload)
+	}
+
+	return ring
+}
+
+/*
+Read implements io.Reader. It Pop's one queued value and marshals it through the
+bound artifact.
+*/
+func (ring *MPMCRing[T]) Read(p []byte) (int, error) {
+	if ring.artifact == nil {
+		return 0, io.EOF
+	}
+
+	if ring.Len() == 0 {
+		return 0, io.EOF
+	}
+
+	value := ring.Pop()
+	payload, err := sonic.Marshal(value)
+
+	if err != nil {
+		return 0, err
+	}
+
+	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
+
+	if outbound == nil {
+		return 0, errors.New("structure: MPMCRing artifact acquire failed")
+	}
+
+	if scope, scopeErr := ring.artifact.Scope(); scopeErr == nil {
+		outbound.WithScope(scope)
+	}
+
+	outbound.WithPayload(payload)
+
+	return outbound.Read(p)
+}
+
+/*
+Write implements io.Writer. It unmarshals p into the bound artifact and Push'es
+the decoded value.
+*/
+func (ring *MPMCRing[T]) Write(p []byte) (int, error) {
+	if ring.artifact == nil {
+		return 0, errors.New("structure: MPMCRing has no artifact")
+	}
+
+	written, err := ring.artifact.Write(p)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !ring.Push(datura.As[T](ring.artifact)) {
+		return written, errors.New("structure: MPMCRing Push failed")
+	}
+
+	return written, nil
 }
 
 /*
@@ -313,14 +398,8 @@ value until empty.
 Call while quiescent; concurrent Push or Pop during Do races the drain loop.
 */
 func (ring *MPMCRing[T]) Do(visitor func(T)) {
-	for {
-		value := ring.Pop()
-
-		if isNilValue(value) {
-			return
-		}
-
-		visitor(value)
+	for ring.Len() > 0 {
+		visitor(ring.Pop())
 	}
 }
 
@@ -329,17 +408,15 @@ drainInto Pop's every value from ring and Push'es each onto target until ring is
 empty.
 */
 func (ring *MPMCRing[T]) drainInto(target *MPMCRing[T]) bool {
-	for {
+	for ring.Len() > 0 {
 		value := ring.Pop()
-
-		if isNilValue(value) {
-			return true
-		}
 
 		if !target.Push(value) {
 			return false
 		}
 	}
+
+	return true
 }
 
 /*
@@ -375,10 +452,6 @@ Intended for quiescent repair or bulk setup; concurrent use with live Push/Pop o
 the parent violates the queue protocol.
 */
 func (navigator *mpmcNavigator[T]) Push(value T) bool {
-	if isNilValue(value) {
-		return false
-	}
-
 	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
 	stored := value
 
@@ -395,10 +468,6 @@ Returns the zero value of T when the cell is empty or navigator is invalid.
 func (navigator *mpmcNavigator[T]) Pop() T {
 	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
 	value := cell.data.Swap(nil)
-
-	if value == nil {
-		return zeroValue[T]()
-	}
 
 	return *value
 }
@@ -437,7 +506,7 @@ func (navigator *mpmcNavigator[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewMPMCRing[T](navigator.parent.ctx, nextPowerOfTwo(max(count, 2)))
+	sliced, err := NewMPMCRing[T](navigator.parent.ctx, 1<<uint(bits.Len(uint(max(count, 2)))))
 
 	if err != nil {
 		return nil
@@ -498,6 +567,63 @@ func (navigator *mpmcNavigator[T]) Do(visitor func(T)) {
 
 		visitor(*value)
 	}
+}
+
+/*
+Read implements io.Reader. It reads the navigator cell through the parent
+artifact.
+*/
+func (navigator *mpmcNavigator[T]) Read(p []byte) (int, error) {
+	if navigator.parent.artifact == nil {
+		return 0, io.EOF
+	}
+
+	if navigator.Len() == 0 {
+		return 0, io.EOF
+	}
+
+	value := navigator.Pop()
+	payload, err := sonic.Marshal(value)
+
+	if err != nil {
+		return 0, err
+	}
+
+	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
+
+	if outbound == nil {
+		return 0, errors.New("structure: mpmcNavigator artifact acquire failed")
+	}
+
+	if scope, scopeErr := navigator.parent.artifact.Scope(); scopeErr == nil {
+		outbound.WithScope(scope)
+	}
+
+	outbound.WithPayload(payload)
+
+	return outbound.Read(p)
+}
+
+/*
+Write implements io.Writer. It unmarshals p through the parent artifact and
+stores at the navigator cell.
+*/
+func (navigator *mpmcNavigator[T]) Write(p []byte) (int, error) {
+	if navigator.parent.artifact == nil {
+		return 0, errors.New("structure: mpmcNavigator has no artifact")
+	}
+
+	written, err := navigator.parent.artifact.Write(p)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !navigator.Push(datura.As[T](navigator.parent.artifact)) {
+		return written, errors.New("structure: mpmcNavigator Push failed")
+	}
+
+	return written, nil
 }
 
 /*

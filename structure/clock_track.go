@@ -30,9 +30,9 @@ func NewClockTrack[T any](clock *ClockRing[T]) (*ClockTrack[T], error) {
 		return nil, errClockNil
 	}
 
-	secondValues := NewListRing[T](clock.SecondHand.Len())
-	littleValues := NewListRing[T](clock.LittleHand.Len())
-	bigValues := NewListRing[T](clock.BigHand.Len())
+	secondValues := NewListRing[T](clock.SecondHand.Len(), clock.SecondHand.artifact)
+	littleValues := NewListRing[T](clock.LittleHand.Len(), clock.LittleHand.artifact)
+	bigValues := NewListRing[T](clock.BigHand.Len(), clock.BigHand.artifact)
 
 	if secondValues == nil || littleValues == nil || bigValues == nil {
 		return nil, errClockTrackAlloc
@@ -58,7 +58,7 @@ func (track *ClockTrack[T]) ObserveSecond(wall time.Time, value T) (ClockCascade
 	track.hasSecond = true
 	track.secondValues.Push(value)
 
-	cascade, err := track.clock.ObserveSecond(wall)
+	cascade, err := track.clock.ObserveSecond(wall, value)
 
 	if err != nil {
 		return ClockCascade{}, err

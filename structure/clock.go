@@ -3,7 +3,10 @@ package structure
 import (
 	"errors"
 	"fmt"
+	"io"
 	"time"
+
+	"github.com/theapemachine/datura"
 )
 
 var (
@@ -29,15 +32,16 @@ const (
 ClockSlot is one click on a hand. Wall is zero for virtual fills that hold the
 previous observation across click space without a new market event.
 */
-type ClockSlot struct {
-	Wall  time.Time
-	Click int64
+type ClockSlot[T any] struct {
+	Wall    time.Time
+	Click   int64
+	Payload T
 }
 
 /*
 Fresh reports whether the slot came from a real observation timestamp.
 */
-func (slot ClockSlot) Fresh() bool {
+func (slot ClockSlot[T]) Fresh() bool {
 	return !slot.Wall.IsZero()
 }
 
@@ -58,42 +62,39 @@ clicks advance SecondHand without a wall timestamp so sparse streams can fill
 click space for sequence detection at the cost of freshness.
 */
 type ClockRing[T any] struct {
-	SecondHand *ListRing[ClockSlot]
-	LittleHand *ListRing[ClockSlot]
-	BigHand    *ListRing[ClockSlot]
+	SecondHand *ListRing[ClockSlot[T]]
+	LittleHand *ListRing[ClockSlot[T]]
+	BigHand    *ListRing[ClockSlot[T]]
 	clicks     int64
 	secondLap  int
 	littleLap  int
+	artifact   *datura.Artifact
 }
 
 /*
 NewClockRing builds a click clock with positive second, little, and big capacities.
 */
-func NewClockRing[T any](secondCapacity, littleCapacity, bigCapacity int) (*ClockRing[T], error) {
+func NewClockRing[T any](
+	secondCapacity, littleCapacity, bigCapacity int,
+	artifact *datura.Artifact,
+) *ClockRing[T] {
 	if secondCapacity <= 0 || littleCapacity <= 0 || bigCapacity <= 0 {
-		return nil, errors.New("structure: clock ring capacities must be positive")
+		return nil
 	}
 
-	secondHand := NewListRing[ClockSlot](secondCapacity)
-	littleHand := NewListRing[ClockSlot](littleCapacity)
-	bigHand := NewListRing[ClockSlot](bigCapacity)
+	secondHand := NewListRing[ClockSlot[T]](secondCapacity, artifact)
+	littleHand := NewListRing[ClockSlot[T]](littleCapacity, artifact)
+	bigHand := NewListRing[ClockSlot[T]](bigCapacity, artifact)
 
 	if secondHand == nil || littleHand == nil || bigHand == nil {
-		return nil, fmt.Errorf("structure: clock ring allocation failed")
+		return nil
 	}
 
 	return &ClockRing[T]{
 		SecondHand: secondHand,
 		LittleHand: littleHand,
 		BigHand:    bigHand,
-	}, nil
-}
-
-/*
-NewDefaultClockRing returns a click clock with 10, 100, and 1000 slot hands.
-*/
-func NewDefaultClockRing[T any]() (*ClockRing[T], error) {
-	return NewClockRing[T](10, 100, 1000)
+	}
 }
 
 /*
@@ -110,7 +111,7 @@ func (clock *ClockRing[T]) Click() int64 {
 /*
 ObserveSecond records a fresh second-hand click at wall and cascades slower hands.
 */
-func (clock *ClockRing[T]) ObserveSecond(wall time.Time) (ClockCascade, error) {
+func (clock *ClockRing[T]) ObserveSecond(wall time.Time, value T) (ClockCascade, error) {
 	if clock == nil {
 		return ClockCascade{}, errors.New("structure: clock ring is nil")
 	}
@@ -119,7 +120,7 @@ func (clock *ClockRing[T]) ObserveSecond(wall time.Time) (ClockCascade, error) {
 		return ClockCascade{}, errors.New("structure: clock ObserveSecond requires wall time")
 	}
 
-	return clock.pushSecond(ClockSlot{Wall: wall}), nil
+	return clock.pushSecond(ClockSlot[T]{Wall: wall, Payload: value}), nil
 }
 
 /*
@@ -134,7 +135,7 @@ func (clock *ClockRing[T]) ObserveLittle(wall time.Time) (ClockCascade, error) {
 		return ClockCascade{}, errors.New("structure: clock ObserveLittle requires wall time")
 	}
 
-	return clock.pushLittle(ClockSlot{Wall: wall}), nil
+	return clock.pushLittle(ClockSlot[T]{Wall: wall}), nil
 }
 
 /*
@@ -149,7 +150,7 @@ func (clock *ClockRing[T]) ObserveBig(wall time.Time) error {
 		return errors.New("structure: clock ObserveBig requires wall time")
 	}
 
-	clock.pushBig(ClockSlot{Wall: wall})
+	clock.pushBig(ClockSlot[T]{Wall: wall})
 
 	return nil
 }
@@ -169,7 +170,7 @@ func (clock *ClockRing[T]) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
 	cascades := make([]ClockCascade, 0, clicks)
 
 	for step := 0; step < clicks; step++ {
-		cascades = append(cascades, clock.pushSecond(ClockSlot{}))
+		cascades = append(cascades, clock.pushSecond(ClockSlot[T]{}))
 	}
 
 	return cascades, nil
@@ -214,7 +215,7 @@ func (clock *ClockRing[T]) Freshness(hand Hand) (int, error) {
 /*
 HandRing returns the slot ring for hand.
 */
-func (clock *ClockRing[T]) HandRing(hand Hand) (Ring[ClockSlot], error) {
+func (clock *ClockRing[T]) HandRing(hand Hand) (Ring[ClockSlot[T]], error) {
 	if clock == nil {
 		return nil, errors.New("structure: clock ring is nil")
 	}
@@ -231,7 +232,7 @@ func (clock *ClockRing[T]) HandRing(hand Hand) (Ring[ClockSlot], error) {
 /*
 Push records slot on the second hand and cascades slower hands when a lap completes.
 */
-func (clock *ClockRing[T]) Push(slot ClockSlot) bool {
+func (clock *ClockRing[T]) Push(slot ClockSlot[T]) bool {
 	if clock == nil {
 		return false
 	}
@@ -244,18 +245,24 @@ func (clock *ClockRing[T]) Push(slot ClockSlot) bool {
 /*
 Pop returns the second-hand slot at the write cursor without advancing it.
 */
-func (clock *ClockRing[T]) Pop() ClockSlot {
+func (clock *ClockRing[T]) Pop() ClockSlot[T] {
 	if clock == nil || clock.SecondHand == nil {
-		return ClockSlot{}
+		return ClockSlot[T]{}
 	}
 
-	return clock.SecondHand.Pop()
+	view := clock.SecondHand.Select(-1)
+
+	if view == nil {
+		return ClockSlot[T]{}
+	}
+
+	return view.Pop()
 }
 
 /*
 Select returns a second-hand view offset step slots from the write cursor.
 */
-func (clock *ClockRing[T]) Select(step int) Ring[ClockSlot] {
+func (clock *ClockRing[T]) Select(step int) Ring[ClockSlot[T]] {
 	if clock == nil || clock.SecondHand == nil {
 		return nil
 	}
@@ -267,7 +274,7 @@ func (clock *ClockRing[T]) Select(step int) Ring[ClockSlot] {
 Merge splices other into this clock. When other is another ClockRing, all three
 hands merge and lap counters reset. When other is a ListRing, only SecondHand merges.
 */
-func (clock *ClockRing[T]) Merge(other Ring[ClockSlot]) bool {
+func (clock *ClockRing[T]) Merge(other Ring[ClockSlot[T]]) bool {
 	if clock == nil {
 		return false
 	}
@@ -303,7 +310,7 @@ func (clock *ClockRing[T]) Merge(other Ring[ClockSlot]) bool {
 /*
 Slice detaches count second-hand slots into a new ring view.
 */
-func (clock *ClockRing[T]) Slice(count int) Ring[ClockSlot] {
+func (clock *ClockRing[T]) Slice(count int) Ring[ClockSlot[T]] {
 	if clock == nil || clock.SecondHand == nil {
 		return nil
 	}
@@ -325,12 +332,34 @@ func (clock *ClockRing[T]) Len() int {
 /*
 Do visits every second-hand slot in cursor order.
 */
-func (clock *ClockRing[T]) Do(visitor func(ClockSlot)) {
+func (clock *ClockRing[T]) Do(visitor func(ClockSlot[T])) {
 	if clock == nil || clock.SecondHand == nil {
 		return
 	}
 
 	clock.SecondHand.Do(visitor)
+}
+
+/*
+Write unmarshals bytes into the second-hand artifact.
+*/
+func (clock *ClockRing[T]) Write(payload []byte) (int, error) {
+	if clock == nil || clock.SecondHand == nil {
+		return 0, io.EOF
+	}
+
+	return clock.SecondHand.Write(payload)
+}
+
+/*
+Read implements io.Reader via the second-hand ListRing.
+*/
+func (clock *ClockRing[T]) Read(p []byte) (int, error) {
+	if clock == nil || clock.SecondHand == nil {
+		return 0, io.EOF
+	}
+
+	return clock.SecondHand.Read(p)
 }
 
 /*
@@ -347,7 +376,7 @@ func (clock *ClockRing[T]) Error() error {
 	return nil
 }
 
-func (clock *ClockRing[T]) pushSecond(slot ClockSlot) ClockCascade {
+func (clock *ClockRing[T]) pushSecond(slot ClockSlot[T]) ClockCascade {
 	clock.clicks++
 	slot.Click = clock.clicks
 	clock.SecondHand.Push(slot)
@@ -362,7 +391,7 @@ func (clock *ClockRing[T]) pushSecond(slot ClockSlot) ClockCascade {
 	return clock.pushLittle(slot)
 }
 
-func (clock *ClockRing[T]) pushLittle(slot ClockSlot) ClockCascade {
+func (clock *ClockRing[T]) pushLittle(slot ClockSlot[T]) ClockCascade {
 	if slot.Click == 0 {
 		slot.Click = clock.clicks
 	}
@@ -380,7 +409,7 @@ func (clock *ClockRing[T]) pushLittle(slot ClockSlot) ClockCascade {
 	return ClockCascade{Little: true, Big: true}
 }
 
-func (clock *ClockRing[T]) pushBig(slot ClockSlot) {
+func (clock *ClockRing[T]) pushBig(slot ClockSlot[T]) {
 	if slot.Click == 0 {
 		slot.Click = clock.clicks
 	}
@@ -388,7 +417,7 @@ func (clock *ClockRing[T]) pushBig(slot ClockSlot) {
 	clock.BigHand.Push(slot)
 }
 
-func (clock *ClockRing[T]) handRing(hand Hand) *ListRing[ClockSlot] {
+func (clock *ClockRing[T]) handRing(hand Hand) *ListRing[ClockSlot[T]] {
 	switch hand {
 	case HandSecond:
 		return clock.SecondHand
