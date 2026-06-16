@@ -2,17 +2,16 @@ module github.com/theapemachine/datura
 
 go 1.26.1
 
-replace (
-	github.com/theapemachine/errnie => ../errnie
-	github.com/theapemachine/qpool => ../qpool
-)
+// replace github.com/theapemachine/errnie => ../errnie
+
+// replace github.com/theapemachine/qpool => ../qpool
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.1
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/hashicorp/go-immutable-radix/v2 v2.1.0
-	github.com/theapemachine/errnie v1.2.4
+	github.com/theapemachine/errnie v1.2.5
 )
 
 require (
@@ -83,7 +82,7 @@ require (
 	github.com/qdrant/go-client v1.18.1
 	github.com/smallnest/ringbuffer v0.1.1
 	github.com/smartystreets/goconvey v1.8.1
-	github.com/theapemachine/qpool v1.2.4
+	github.com/theapemachine/qpool v1.2.5
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
