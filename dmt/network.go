@@ -8,9 +8,9 @@ package dmt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"capnproto.org/go/capnp/v3"
@@ -47,8 +47,7 @@ type NetworkNode struct {
 	config     NetworkConfig
 	forest     *Forest
 	listener   net.Listener
-	peers      map[string]*peer
-	peersMutex sync.RWMutex
+	peers      *peerRegistry
 	ctx        context.Context
 	cancel     context.CancelFunc
 	merkleTree *MerkleTree
@@ -81,7 +80,7 @@ func NewNetworkNode(config NetworkConfig, forest *Forest) (*NetworkNode, error) 
 		state:      newBatch("dmt/network"),
 		config:     config,
 		forest:     forest,
-		peers:      make(map[string]*peer),
+		peers:      newPeerRegistry(),
 		ctx:        ctx,
 		cancel:     cancel,
 		merkleTree: NewMerkleTree(),
@@ -100,18 +99,21 @@ func NewNetworkNode(config NetworkConfig, forest *Forest) (*NetworkNode, error) 
 		QuorumSize:        max(1, (clusterSize/2)+1),
 	}, node)
 
-	node.scheduleLoop("accept-loop", func(ctx context.Context) (any, error) {
-		node.acceptLoop()
+	node.scheduleLoop("accept-loop", func(jobCtx context.Context) (any, error) {
+		node.acceptLoop(jobCtx)
+
 		return nil, nil
 	})
 
-	node.scheduleLoop("connect-loop", func(ctx context.Context) (any, error) {
-		node.connectLoop()
+	node.scheduleLoop("connect-loop", func(jobCtx context.Context) (any, error) {
+		node.connectLoop(jobCtx)
+
 		return nil, nil
 	})
 
-	node.scheduleLoop("sync-loop", func(ctx context.Context) (any, error) {
-		node.syncLoop()
+	node.scheduleLoop("sync-loop", func(jobCtx context.Context) (any, error) {
+		node.syncLoop(jobCtx)
+
 		return nil, nil
 	})
 
@@ -123,22 +125,39 @@ acceptLoop accepts incoming peer connections.
 It runs in the background and handles new peer connection attempts,
 creating appropriate handlers for each connection.
 */
-func (n *NetworkNode) acceptLoop() {
+func (n *NetworkNode) acceptLoop(jobCtx context.Context) {
 	for {
+		if jobCtx.Err() != nil || n.ctx.Err() != nil {
+			return
+		}
+
+		if tcpListener, ok := n.listener.(*net.TCPListener); ok {
+			_ = tcpListener.SetDeadline(time.Now().Add(50 * time.Millisecond))
+		}
+
 		conn, err := n.listener.Accept()
 		if err != nil {
-			select {
-			case <-n.ctx.Done():
+			if jobCtx.Err() != nil || n.ctx.Err() != nil {
 				return
-			default:
-				errnie.Error(err)
+			}
+
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
+
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+
+			errnie.Error(err)
+
+			continue
 		}
 
 		remoteAddr := conn.RemoteAddr().String()
 		n.schedule("handle-"+remoteAddr, func(ctx context.Context) (any, error) {
 			n.handleConnection(conn)
+
 			return nil, nil
 		})
 	}
@@ -169,7 +188,7 @@ connectLoop maintains connections to peers.
 It uses a short 100ms tick until every configured peer has connected,
 then falls back to a 10s heartbeat tick.
 */
-func (n *NetworkNode) connectLoop() {
+func (n *NetworkNode) connectLoop(jobCtx context.Context) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -177,18 +196,17 @@ func (n *NetworkNode) connectLoop() {
 		allConnected = true
 
 		for _, addr := range n.config.PeerAddrs {
-			n.peersMutex.RLock()
-			_, exists := n.peers[addr]
-			n.peersMutex.RUnlock()
-
-			if !exists {
-				allConnected = false
-				peerAddr := addr
-				n.schedule("connect-"+peerAddr, func(ctx context.Context) (any, error) {
-					n.connectToPeer(peerAddr)
-					return nil, nil
-				})
+			if n.peers.Load().Has(addr) {
+				continue
 			}
+
+			allConnected = false
+			peerAddr := addr
+			n.schedule("connect-"+peerAddr, func(ctx context.Context) (any, error) {
+				n.connectToPeer(peerAddr)
+
+				return nil, nil
+			})
 		}
 
 		return
@@ -198,11 +216,12 @@ func (n *NetworkNode) connectLoop() {
 
 	for {
 		select {
+		case <-jobCtx.Done():
+			return
 		case <-n.ctx.Done():
 			return
 		case <-ticker.C:
 			if connectFunc() {
-				// All peers connected — slow down to 10s heartbeat.
 				ticker.Reset(10 * time.Second)
 			}
 		}
@@ -236,9 +255,7 @@ func (n *NetworkNode) connectToPeer(addr string) {
 		client:  client,
 	}
 
-	n.peersMutex.Lock()
-	n.peers[addr] = p
-	n.peersMutex.Unlock()
+	n.peers.Upsert(addr, p)
 
 	// Sync immediately now that the peer is registered.
 	n.schedule("sync-on-connect-"+addr, func(ctx context.Context) (any, error) {
@@ -248,10 +265,7 @@ func (n *NetworkNode) connectToPeer(addr string) {
 
 	<-rpcConn.Done()
 
-	// Clean up peer
-	n.peersMutex.Lock()
-	delete(n.peers, addr)
-	n.peersMutex.Unlock()
+	n.peers.Remove(addr)
 }
 
 /*
@@ -259,7 +273,7 @@ syncLoop periodically syncs with peers.
 It ensures data consistency across the network by regularly
 initiating synchronization with connected peers.
 */
-func (n *NetworkNode) syncLoop() {
+func (n *NetworkNode) syncLoop(jobCtx context.Context) {
 	interval := n.config.SyncInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -270,6 +284,8 @@ func (n *NetworkNode) syncLoop() {
 
 	for {
 		select {
+		case <-jobCtx.Done():
+			return
 		case <-n.ctx.Done():
 			return
 		case <-ticker.C:
@@ -291,27 +307,27 @@ func (n *NetworkNode) syncWithPeers() {
 	currentTerm := n.election.getCurrentTerm()
 	lastLogIndex := n.election.getLastLogIndex()
 
-	n.peersMutex.RLock()
-	peers := make([]*peer, 0, len(n.peers))
-	for _, p := range n.peers {
-		peers = append(peers, p)
-	}
-	n.peersMutex.RUnlock()
+	peers := n.peers.Load().List()
 
-	for _, p := range peers {
-		peer := p
+	for _, peerEntry := range peers {
+		peer := peerEntry
 		n.schedule("sync-peer-"+peer.addr, func(ctx context.Context) (any, error) {
 			state := newBatch("dmt/network/sync-peer")
-			future, release := peer.client.Sync(n.ctx, func(p RadixRPC_sync_Params) error {
+			future, release := peer.client.Sync(n.ctx, func(params RadixRPC_sync_Params) error {
 				var rootHash []byte
-				if n.merkleTree.Root != nil {
-					rootHash = n.merkleTree.Root.Hash
+				root := n.merkleTree.Root()
+
+				if root != nil {
+					rootHash = root.Hash
 				}
-				if err := p.SetMerkleRoot(rootHash); err != nil {
+
+				if err := params.SetMerkleRoot(rootHash); err != nil {
 					return err
 				}
-				p.SetTerm(currentTerm)
-				p.SetLogIndex(lastLogIndex)
+
+				params.SetTerm(currentTerm)
+				params.SetLogIndex(lastLogIndex)
+
 				return nil
 			})
 			defer release()
@@ -415,8 +431,10 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 	}
 
 	var ourRoot []byte
-	if n.merkleTree.Root != nil {
-		ourRoot = n.merkleTree.Root.Hash
+	root := n.merkleTree.Root()
+
+	if root != nil {
+		ourRoot = root.Hash
 	}
 
 	if bytes.Equal(peerRoot, ourRoot) {
@@ -430,7 +448,7 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 		return state.Err()
 	}
 
-	diffs := n.merkleTree.fullDiff(NewMerkleTree())
+	diffs := n.merkleTree.GetDiff(NewMerkleTree())
 
 	entries := guardValue(state, func() (SyncEntry_List, error) {
 		return diff.NewEntries(int32(len(diffs)))
@@ -488,7 +506,7 @@ func (n *NetworkNode) updateMerkleRoot() {
 	}
 
 	// Rebuild Merkle tree from current data
-	it := tree.root.Root().Iterator()
+	it := tree.loadRoot().Root().Iterator()
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 		n.merkleTree.Insert(key, value)
 	}
@@ -506,15 +524,10 @@ func (n *NetworkNode) BroadcastInsert(key []byte, value []byte) {
 	currentTerm := n.election.getCurrentTerm()
 	newLogIndex := n.election.getLastLogIndex() + 1
 
-	n.peersMutex.RLock()
-	peers := make([]*peer, 0, len(n.peers))
-	for _, p := range n.peers {
-		peers = append(peers, p)
-	}
-	n.peersMutex.RUnlock()
+	peers := n.peers.Load().List()
 
-	for _, p := range peers {
-		peer := p
+	for _, peerEntry := range peers {
+		peer := peerEntry
 		n.schedule("broadcast-"+peer.addr, func(ctx context.Context) (any, error) {
 			state := newBatch("dmt/network/broadcast")
 			future, release := peer.client.Insert(n.ctx, func(p RadixRPC_insert_Params) error {
@@ -559,13 +572,14 @@ func (n *NetworkNode) Close() error {
 		guardStep(n.state, n.listener.Close)
 	}
 
-	n.peersMutex.Lock()
-	defer n.peersMutex.Unlock()
+	peers := n.peers.Load().List()
 
-	for _, p := range n.peers {
-		guardStep(n.state, p.rpcConn.Close)
-		guardStep(n.state, p.conn.Close)
+	for _, peerEntry := range peers {
+		guardStep(n.state, peerEntry.rpcConn.Close)
+		guardStep(n.state, peerEntry.conn.Close)
 	}
+
+	n.peers.Store(&Peers{byAddr: make(map[string]*peer)})
 
 	return n.state.Err()
 }
@@ -576,9 +590,8 @@ It provides a snapshot of the node's operational metrics including
 peer count and other performance indicators.
 */
 func (n *NetworkNode) GetMetrics() map[string]interface{} {
-	n.peersMutex.RLock()
-	n.metrics.UpdatePeerCount(int32(len(n.peers)))
-	n.peersMutex.RUnlock()
+	n.metrics.UpdatePeerCount(int32(n.peers.Load().Len()))
+
 	return n.metrics.GetMetrics()
 }
 

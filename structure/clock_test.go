@@ -22,7 +22,8 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire := source.Marshal()
+		wire, marshalErr := source.Message().Marshal()
+		So(marshalErr, ShouldBeNil)
 		written, writeErr := clock.Write(wire)
 
 		Convey("Write should store through the second hand", func() {
@@ -38,9 +39,10 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 			So(readCount, ShouldBeGreaterThan, 0)
 
 			decoded := datura.Acquire("clock", datura.Artifact_Type_json)
-			So(decoded.Unmarshal(buffer[:readCount]), ShouldNotBeNil)
+			_, writeErr := decoded.Write(buffer[:readCount])
+			So(writeErr, ShouldBeNil)
 
-			out, payloadErr := decoded.Payload()
+			out, payloadErr := decoded.DecryptPayload()
 			So(payloadErr, ShouldBeNil)
 			So(string(out), ShouldContainSubstring, "1.5")
 		})
@@ -179,7 +181,12 @@ func BenchmarkClockRing_ReadWrite(testingTB *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire := source.Marshal()
+	wire, err := source.Message().Marshal()
+
+	if err != nil {
+		testingTB.Fatal(err)
+	}
+
 	buffer := make([]byte, 4096)
 
 	testingTB.ReportAllocs()
@@ -219,7 +226,7 @@ func BenchmarkClockRing_AdvanceVirtual(testingTB *testing.B) {
 func BenchmarkClockTrack_ObserveSecond(testingTB *testing.B) {
 	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
-	track, err := NewClockTrack[float64](clock)
+	track, err := NewClockTrack(clock)
 
 	if err != nil {
 		testingTB.Fatal(err)

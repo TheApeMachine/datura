@@ -57,6 +57,7 @@ func NewSPSCRing[T any](
 		slots:            make([]atomic.Pointer[T], capacity),
 		mask:             uint64(capacity - 1),
 		dropOldestOnFull: dropOldestOnFull,
+		artifact:         artifact,
 	}
 
 	return ring, errnie.Error(errnie.Require(map[string]any{

@@ -8,8 +8,7 @@ package dmt
 
 import (
 	"bytes"
-	"container/ring"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	iradix "github.com/hashicorp/go-immutable-radix/v2"
@@ -18,17 +17,39 @@ import (
 /*
 Tree wraps an immutable radix tree implementation from hashicorp/go-immutable-radix.
 It stores byte slices as both keys and values, providing efficient prefix-based operations.
-The immutable nature ensures thread-safety and enables persistent data structures.
+Readers load the root pointer atomically; writers publish new roots with compare-and-swap.
 */
 type Tree struct {
-	state    *batch
-	root     *iradix.Tree[[]byte]
-	updated  bool
-	perfs    *ring.Ring
-	persist  *PersistentStore
-	term     uint64
-	logIndex uint64
-	mu       sync.RWMutex
+	state        *batch
+	root         atomic.Pointer[iradix.Tree[[]byte]]
+	persist      *PersistentStore
+	term         atomic.Uint64
+	logIndex     atomic.Uint64
+	opCount      atomic.Uint64
+	opTotalNanos atomic.Int64
+}
+
+func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
+	if tree == nil {
+		return iradix.New[[]byte]()
+	}
+
+	root := tree.root.Load()
+
+	if root != nil {
+		return root
+	}
+
+	return iradix.New[[]byte]()
+}
+
+func (tree *Tree) recordOp(duration time.Duration) {
+	if tree == nil {
+		return
+	}
+
+	tree.opCount.Add(1)
+	tree.opTotalNanos.Add(duration.Nanoseconds())
 }
 
 /*
@@ -38,9 +59,10 @@ The underlying radix tree is initialized with no entries.
 func NewTree(persistDir string) (*Tree, error) {
 	tree := &Tree{
 		state: newBatch("dmt/tree"),
-		root:  iradix.New[[]byte](),
-		perfs: ring.New(10),
 	}
+
+	emptyRoot := iradix.New[[]byte]()
+	tree.root.Store(emptyRoot)
 
 	if persistDir != "" {
 		tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
@@ -48,12 +70,17 @@ func NewTree(persistDir string) (*Tree, error) {
 		})
 
 		entries := guardValue(tree.state, tree.persist.Replay)
+		root := tree.loadRoot()
 
 		for _, entry := range entries {
-			tree.root, _, _ = tree.root.Insert(entry.Key, entry.Value)
+			root, _, _ = root.Insert(entry.Key, entry.Value)
 		}
 
-		tree.term, tree.logIndex = tree.persist.GetLastState()
+		tree.root.Store(root)
+
+		term, index := tree.persist.GetLastState()
+		tree.term.Store(term)
+		tree.logIndex.Store(index)
 	}
 
 	return tree, tree.state.Err()
@@ -65,22 +92,21 @@ is greater than or equal to the provided key in lexicographical order.
 Returns the value and true if found, or nil and false if no such key exists.
 */
 func (tree *Tree) Seek(key []byte) ([]byte, bool) {
-	tree.mu.RLock()
-	defer tree.mu.RUnlock()
+	started := time.Now()
+	root := tree.loadRoot()
 
-	t := time.Now()
-
-	it := tree.root.Root().Iterator()
+	it := root.Root().Iterator()
 	it.SeekPrefix(key)
 
-	for k, v, ok := it.Next(); ok; k, v, ok = it.Next() {
-		if bytes.Compare(k, key) >= 0 {
-			return v, true
+	for seekKey, value, ok := it.Next(); ok; seekKey, value, ok = it.Next() {
+		if bytes.Compare(seekKey, key) >= 0 {
+			tree.recordOp(time.Since(started))
+
+			return value, true
 		}
 	}
 
-	tree.perfs.Value = time.Since(t).Nanoseconds()
-	tree.perfs = tree.perfs.Next()
+	tree.recordOp(time.Since(started))
 
 	return nil, false
 }
@@ -92,17 +118,21 @@ The walk stops early if fn returns false. This is the history read: write
 observations keyed by Artifact.Prefix, then walk the scope prefix to replay them.
 */
 func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
-	tree.mu.RLock()
-	defer tree.mu.RUnlock()
+	started := time.Now()
+	root := tree.loadRoot()
 
-	it := tree.root.Root().Iterator()
+	it := root.Root().Iterator()
 	it.SeekPrefix(prefix)
 
-	for k, v, ok := it.Next(); ok; k, v, ok = it.Next() {
-		if !fn(k, v) {
+	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
+		if !fn(key, value) {
+			tree.recordOp(time.Since(started))
+
 			return
 		}
 	}
+
+	tree.recordOp(time.Since(started))
 }
 
 /*
@@ -112,29 +142,43 @@ of the tree rather than modifying the existing one.
 Returns the updated tree and a boolean indicating if the tree was modified.
 */
 func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
-	tree.mu.Lock()
-	defer tree.mu.Unlock()
-
-	t := time.Now()
-	key = append([]byte(nil), key...)
-	value = append([]byte(nil), value...)
-	oldRoot := tree.root
-	tree.root, _, _ = tree.root.Insert(key, value)
-	tree.updated = tree.root != oldRoot
-
-	if tree.updated {
-		tree.logIndex++
-
-		if tree.persist != nil {
-			guardStep(tree.state, func() error {
-				return tree.persist.LogInsert(key, value, tree.term, tree.logIndex)
-			})
-		}
+	if tree == nil {
+		return nil, false
 	}
 
-	tree.perfs.Value = time.Since(t).Nanoseconds()
-	tree.perfs = tree.perfs.Next()
-	return tree, tree.updated
+	started := time.Now()
+	keyCopy := append([]byte(nil), key...)
+	valueCopy := append([]byte(nil), value...)
+
+	for {
+		oldRoot := tree.loadRoot()
+		newRoot, _, _ := oldRoot.Insert(keyCopy, valueCopy)
+
+		if newRoot == oldRoot {
+			tree.recordOp(time.Since(started))
+
+			return tree, false
+		}
+
+		if tree.root.CompareAndSwap(oldRoot, newRoot) {
+			index := tree.logIndex.Add(1)
+
+			if tree.persist != nil {
+				guardStep(tree.state, func() error {
+					return tree.persist.LogInsert(
+						keyCopy,
+						valueCopy,
+						tree.term.Load(),
+						index,
+					)
+				})
+			}
+
+			tree.recordOp(time.Since(started))
+
+			return tree, true
+		}
+	}
 }
 
 /*
@@ -142,54 +186,51 @@ Get retrieves the value associated with the given key.
 Returns the value and true if the key exists, or nil and false if it doesn't.
 */
 func (tree *Tree) Get(key []byte) ([]byte, bool) {
-	tree.mu.RLock()
-	defer tree.mu.RUnlock()
+	started := time.Now()
+	value, ok := tree.loadRoot().Get(key)
+	tree.recordOp(time.Since(started))
 
-	t := time.Now()
-	v, ok := tree.root.Get(key)
-	tree.perfs.Value = time.Since(t).Nanoseconds()
-	tree.perfs = tree.perfs.Next()
-	return v, ok
+	return value, ok
 }
 
 /*
 AVG returns the average performance of the tree in nanoseconds.
 */
 func (tree *Tree) AVG() int64 {
-	var sum int64
-	var count int64
+	if tree == nil {
+		return 0
+	}
 
-	tree.perfs.Do(func(v any) {
-		if v == nil {
-			return
-		}
-
-		sum += v.(int64)
-		count++
-	})
+	count := tree.opCount.Load()
 
 	if count == 0 {
 		return 0
 	}
 
-	return sum / count
+	return tree.opTotalNanos.Load() / int64(count)
 }
 
 /*
 Close closes the tree and persists any remaining data.
 */
 func (tree *Tree) Close() error {
+	if tree == nil {
+		return nil
+	}
+
 	if tree.persist != nil {
 		guardStep(tree.state, tree.persist.Close)
 	}
+
 	return tree.state.Err()
 }
 
 func (tree *Tree) UpdateTerm(term uint64) {
-	tree.mu.Lock()
-	defer tree.mu.Unlock()
+	if tree == nil {
+		return
+	}
 
-	tree.term = term
+	tree.term.Store(term)
 
 	if tree.persist != nil {
 		guardStep(tree.state, func() error {
@@ -198,9 +239,10 @@ func (tree *Tree) UpdateTerm(term uint64) {
 	}
 }
 
-// GetLogState returns the current term and log index
 func (tree *Tree) GetLogState() (term, index uint64) {
-	tree.mu.RLock()
-	defer tree.mu.RUnlock()
-	return tree.term, tree.logIndex
+	if tree == nil {
+		return 0, 0
+	}
+
+	return tree.term.Load(), tree.logIndex.Load()
 }

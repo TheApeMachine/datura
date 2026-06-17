@@ -4,9 +4,12 @@ $Go.package("datura");
 $Go.import("github.com/theapemachine/datura");
 
 struct Artifact {
-    uuid      @0 :Text;
-    timestamp @1 :Int64;
-    error     @2 :Error;
+    uuid          @0 :Data;
+    checksum      @1 :Data;
+    timestamp     @2 :Int64;
+    error         @3 :Error;
+    pseudonymHash @4 :Data;  # zk-SNARK identity hash
+    merkleRoot    @5 :Data;  # Root of the Merkle Tree
 
     struct Error {
         type      @0 :Type;
@@ -19,22 +22,38 @@ struct Artifact {
         }
     }
 
-    type @3 :Type;
+    type @6 :Type;
 
     enum Type {
         json @0;
     }
 
-    origin      @4 :Text;
-    destination @5 :Text;
-    role        @6 :Text;
-    scope       @7 :Text;
-    attributes  @8 :List(Attribute);
+    origin      @7  :Text;
+    destination @8  :Text;
+    role        @9  :Text;
+    scope       @10 :Text;
+    attributes  @11 :List(Attribute);
 
     struct Attribute {
         key @0 :Text;
-        value @1 :Text;
+        value :union {
+            textValue   @1 :Text;
+            intValue    @2 :Int64;
+            floatValue  @3 :Float64;
+            boolValue   @4 :Bool;
+            binaryValue @5 :Data;
+        }
     }
 
-    payload     @9 :Data;
+    encryptedPayload   @12 :Data;
+    encryptedKey       @13 :Data;
+    ephemeralPublicKey @14 :Data;
+
+    struct Approval {
+        zkProof                @0 :Data;  # Users's zero-knowledge proof
+        operatorBlindSignature @1 :Data;  # Operator's blind signature approval
+    }
+
+    approvals @15 :List(Approval);
+    signature @16 :Data;
 }

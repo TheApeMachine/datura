@@ -21,7 +21,7 @@ func newTestElectionNode(nodeID string) (*NetworkNode, func()) {
 		ctx:     ctx,
 		cancel:  cancel,
 		forest:  forest,
-		peers:   make(map[string]*peer),
+		peers:   newPeerRegistry(),
 	}
 
 	return node, func() {
@@ -49,9 +49,9 @@ func TestNewElection(t *testing.T) {
 				So(election, ShouldNotBeNil)
 				So(election.config, ShouldResemble, config)
 				So(election.node, ShouldEqual, node)
-				So(election.role, ShouldEqual, Follower)
-				So(election.term, ShouldEqual, 0)
-				So(election.votedFor, ShouldEqual, "")
+				So(election.getState(), ShouldEqual, Follower)
+				So(election.getCurrentTerm(), ShouldEqual, 0)
+				So(election.votedForForTest(), ShouldEqual, "")
 			})
 		})
 	})
@@ -77,7 +77,7 @@ func TestElectionStateTransitions(t *testing.T) {
 			Convey("Then state should be updated", func() {
 				So(election.getState(), ShouldEqual, Follower)
 				So(election.getCurrentTerm(), ShouldEqual, uint64(5))
-				So(election.votedFor, ShouldEqual, "")
+				So(election.votedForForTest(), ShouldEqual, "")
 			})
 		})
 
@@ -111,27 +111,24 @@ func TestVoteHandling(t *testing.T) {
 				granted := election.handleVoteRequest(2, "candidate1", 1, 1)
 				So(granted, ShouldBeTrue)
 				So(election.getCurrentTerm(), ShouldEqual, uint64(2))
-				So(election.votedFor, ShouldEqual, "candidate1")
+				So(election.votedForForTest(), ShouldEqual, "candidate1")
 			})
 
 			Convey("With lower term", func() {
-				election.term = 5
+				election.storeTermForTest(5)
 				granted := election.handleVoteRequest(3, "candidate2", 1, 1)
 				So(granted, ShouldBeFalse)
 			})
 
 			Convey("With already voted in term", func() {
-				election.term = 5
-				election.votedFor = "candidate1"
+				election.storeTermForTest(5)
+				election.storeVotedForForTest("candidate1")
 				granted := election.handleVoteRequest(5, "candidate2", 1, 1)
 				So(granted, ShouldBeFalse)
 			})
 
 			Convey("With outdated log", func() {
-				election.logLock.Lock()
-				election.lastLogIndex = 10
-				election.lastLogTerm = 5
-				election.logLock.Unlock()
+				election.storeLogStateForTest(10, 5)
 
 				granted := election.handleVoteRequest(6, "candidate1", 5, 4)
 				So(granted, ShouldBeFalse)
@@ -163,13 +160,13 @@ func TestHeartbeatHandling(t *testing.T) {
 			})
 
 			Convey("With lower term", func() {
-				election.term = 5
+				election.storeTermForTest(5)
 				success := election.handleHeartbeat(3, "leader1")
 				So(success, ShouldBeFalse)
 			})
 
 			Convey("With same term", func() {
-				election.term = 5
+				election.storeTermForTest(5)
 				success := election.handleHeartbeat(5, "leader1")
 				So(success, ShouldBeTrue)
 			})
@@ -196,22 +193,19 @@ func TestLogStateManagement(t *testing.T) {
 
 			Convey("Then log indices should be updated", func() {
 				So(election.getLastLogIndex(), ShouldEqual, uint64(5))
-				lastTerm := election.lastLogTerm
-				So(lastTerm, ShouldEqual, uint64(2))
+				So(election.lastLogTermForTest(), ShouldEqual, uint64(2))
 			})
 
 			Convey("When updating with lower index", func() {
 				election.updateLogState(3, 1)
 				So(election.getLastLogIndex(), ShouldEqual, uint64(5))
-				lastTerm := election.lastLogTerm
-				So(lastTerm, ShouldEqual, uint64(2))
+				So(election.lastLogTermForTest(), ShouldEqual, uint64(2))
 			})
 
 			Convey("When updating with higher index", func() {
 				election.updateLogState(7, 3)
 				So(election.getLastLogIndex(), ShouldEqual, uint64(7))
-				lastTerm := election.lastLogTerm
-				So(lastTerm, ShouldEqual, uint64(3))
+				So(election.lastLogTermForTest(), ShouldEqual, uint64(3))
 			})
 		})
 	})

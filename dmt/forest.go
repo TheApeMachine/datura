@@ -2,8 +2,7 @@ package dmt
 
 import (
 	"context"
-	"sync"
-	"time"
+	"sync/atomic"
 
 	"github.com/theapemachine/qpool"
 )
@@ -15,12 +14,10 @@ consistency across all trees while optimizing read operations by selecting the f
 responding tree.
 */
 type Forest struct {
-	state *batch
-	trees []*Tree
-	mu    sync.RWMutex
-	// Channel to signal new updates that need synchronization
-	updates chan struct{}
-	// Context for controlling background sync
+	state    *batch
+	snapshot atomic.Pointer[Snapshot]
+	closed   atomic.Bool
+	// Context for controlling background workers
 	ctx    context.Context
 	cancel context.CancelFunc
 	pool   *qpool.Q[any]
@@ -48,12 +45,13 @@ tree synchronization.
 func NewForest(config ForestConfig) (*Forest, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	forest := &Forest{
-		state:   newBatch("dmt/forest"),
-		updates: make(chan struct{}, 1), // Buffered channel to prevent blocking
-		ctx:     ctx,
-		cancel:  cancel,
-		pool:    config.Pool,
+		state:  newBatch("dmt/forest"),
+		ctx:    ctx,
+		cancel: cancel,
+		pool:   config.Pool,
 	}
+
+	forest.snapshot.Store(&Snapshot{})
 
 	if forest.pool == nil {
 		forest.pool = newWorkerPool(forest.ctx)
@@ -74,8 +72,6 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		})
 	}
 
-	go forest.syncLoop()
-
 	return forest, forest.state.Err()
 }
 
@@ -83,21 +79,23 @@ func NewForest(config ForestConfig) (*Forest, error) {
 Close stops the background synchronization goroutine and cleans up resources.
 */
 func (forest *Forest) Close() error {
+	if !forest.closed.CompareAndSwap(false, true) {
+		return forest.state.Err()
+	}
+
 	if forest.cancel != nil {
 		forest.cancel()
 	}
 
-	forest.mu.Lock()
+	trees := forest.snapshot.Load().Trees()
 
 	if forest.network != nil {
 		guardStep(forest.state, forest.network.Close)
 	}
 
-	for _, tree := range forest.trees {
+	for _, tree := range trees {
 		guardStep(forest.state, tree.Close)
 	}
-
-	forest.mu.Unlock()
 
 	if forest.owned && forest.pool != nil {
 		forest.pool.Close()
@@ -107,77 +105,30 @@ func (forest *Forest) Close() error {
 }
 
 /*
-schedule runs a Forest background task on the managed worker pool.
-*/
-func (forest *Forest) schedule(
-	id string,
-	fn func(ctx context.Context) (any, error),
-) {
-	forest.pool.Schedule(
-		"dmt/forest/"+id,
-		fn,
-	)
-}
-
-func (forest *Forest) scheduleLoop(
-	id string,
-	fn func(ctx context.Context) (any, error),
-) {
-	forest.pool.Schedule(
-		"dmt/forest/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
-}
-
-/*
-syncLoop runs in the background and handles synchronization of trees.
-It is triggered either by updates or periodically to ensure consistency.
-*/
-func (forest *Forest) syncLoop() {
-	ticker := time.NewTicker(5 * time.Second) // Periodic sync every 5 seconds
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-forest.ctx.Done():
-			return
-		case <-forest.updates: // Triggered by new updates
-			forest.synchronizeTrees()
-		case <-ticker.C: // Periodic sync
-			forest.synchronizeTrees()
-		}
-	}
-}
-
-/*
 synchronizeTrees ensures all trees have consistent data by comparing and
 updating them based on the most up-to-date tree.
 */
-func (forest *Forest) synchronizeTrees() {
-	forest.mu.Lock()
-	defer forest.mu.Unlock()
-
-	if len(forest.trees) <= 1 {
+func (forest *Forest) synchronizeTrees(trees []*Tree) {
+	if len(trees) <= 1 {
 		return
 	}
 
 	// Use the first tree as reference
-	reference := forest.trees[0]
+	reference := trees[0]
 
 	// Build Merkle tree for reference
 	refMerkle := NewMerkleTree()
-	it := reference.root.Root().Iterator()
+	it := reference.loadRoot().Root().Iterator()
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 		refMerkle.Insert(key, value)
 	}
 	refMerkle.Rebuild()
 
 	// Sync other trees using Merkle diffs
-	for _, tree := range forest.trees[1:] {
+	for _, tree := range trees[1:] {
 		// Build Merkle tree for target
 		targetMerkle := NewMerkleTree()
-		it := tree.root.Root().Iterator()
+		it := tree.loadRoot().Root().Iterator()
 		for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 			targetMerkle.Insert(key, value)
 		}
@@ -197,14 +148,8 @@ Each added tree will be maintained with identical data but may have different
 performance characteristics based on its specific implementation or state.
 */
 func (forest *Forest) AddTree(tree *Tree) {
-	forest.mu.Lock()
-	forest.trees = append(forest.trees, tree)
-	forest.mu.Unlock()
-	// Trigger synchronization for the new tree
-	select {
-	case forest.updates <- struct{}{}:
-	default:
-	}
+	forest.snapshot.Store(forest.snapshot.Load().Append(tree))
+	forest.synchronizeTrees(forest.snapshot.Load().Trees())
 }
 
 /*
@@ -214,17 +159,16 @@ one is currently responding most quickly to operations. Returns nil if the
 forest contains no trees.
 */
 func (forest *Forest) getFastestTree() *Tree {
-	forest.mu.RLock()
-	defer forest.mu.RUnlock()
+	trees := forest.snapshot.Load().Trees()
 
-	if len(forest.trees) == 0 {
+	if len(trees) == 0 {
 		return nil
 	}
 
-	fastestTree := forest.trees[0]
+	fastestTree := trees[0]
 	fastestAvg := fastestTree.AVG()
 
-	for _, tree := range forest.trees[1:] {
+	for _, tree := range trees[1:] {
 		if avg := tree.AVG(); avg < fastestAvg {
 			fastestTree = tree
 			fastestAvg = avg
@@ -269,11 +213,10 @@ ensuring that subsequent read operations will find the same data regardless
 of which tree they query. This method prioritizes consistency over performance.
 */
 func (forest *Forest) Insert(key []byte, value []byte) {
-	forest.mu.Lock()
-	defer forest.mu.Unlock()
+	trees := forest.snapshot.Load().Trees()
 
 	// Update all local trees immediately
-	for _, tree := range forest.trees {
+	for _, tree := range trees {
 		tree.Insert(key, value)
 	}
 
@@ -293,10 +236,8 @@ func (forest *Forest) Iterate(fn func(key []byte, value []byte) bool) {
 		return
 	}
 
-	tree.mu.RLock()
-	defer tree.mu.RUnlock()
-
-	it := tree.root.Root().Iterator()
+	root := tree.loadRoot()
+	it := root.Root().Iterator()
 
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 		if !fn(key, value) {

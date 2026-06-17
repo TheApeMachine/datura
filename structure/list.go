@@ -254,11 +254,7 @@ func (ring *ListRing[T]) Read(p []byte) (int, error) {
 
 	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
 
-	if outbound == nil {
-		return 0, errors.New("structure: ListRing artifact acquire failed")
-	}
-
-	if scope, scopeErr := ring.artifact.Scope(); scopeErr == nil {
+	if scope, err := ring.artifact.Scope(); err == nil {
 		outbound.WithScope(scope)
 	}
 

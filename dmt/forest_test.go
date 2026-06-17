@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,15 +28,14 @@ func TestNewForest(t *testing.T) {
 
 			Convey("Then it should be properly initialized", func() {
 				So(forest, ShouldNotBeNil)
-				So(forest.trees, ShouldNotBeNil)
-				So(forest.updates, ShouldNotBeNil)
+				So(forest.snapshot.Load().Trees(), ShouldNotBeNil)
 				So(forest.ctx, ShouldNotBeNil)
 				So(forest.cancel, ShouldNotBeNil)
 			})
 
 			Convey("And it should have one initial tree", func() {
-				So(len(forest.trees), ShouldEqual, 1)
-				So(forest.trees[0], ShouldNotBeNil)
+				So(len(forest.snapshot.Load().Trees()), ShouldEqual, 1)
+				So(forest.snapshot.Load().Trees()[0], ShouldNotBeNil)
 			})
 		})
 	})
@@ -107,15 +108,35 @@ func TestForestSynchronization(t *testing.T) {
 		Convey("When inserting data", func() {
 			forest.Insert([]byte("sync-key"), []byte("sync-value"))
 
-			// Wait for sync to complete
-			time.Sleep(100 * time.Millisecond)
-
 			Convey("Then all trees should have the data", func() {
-				for _, tree := range forest.trees {
+				for _, tree := range forest.snapshot.Load().Trees() {
 					value, exists := tree.Get([]byte("sync-key"))
 					So(exists, ShouldBeTrue)
 					So(value, ShouldResemble, []byte("sync-value"))
 				}
+			})
+		})
+	})
+}
+
+func TestForestAddTreeSynchronization(t *testing.T) {
+	Convey("Given a forest with existing data", t, func() {
+		forest, err := NewForest(ForestConfig{})
+		So(err, ShouldBeNil)
+		defer forest.Close()
+
+		forest.Insert([]byte("seed-key"), []byte("seed-value"))
+
+		tree2, err := NewTree("")
+		So(err, ShouldBeNil)
+
+		Convey("When a new tree is added", func() {
+			forest.AddTree(tree2)
+
+			Convey("Then the new tree should receive the existing data", func() {
+				value, exists := tree2.Get([]byte("seed-key"))
+				So(exists, ShouldBeTrue)
+				So(value, ShouldResemble, []byte("seed-value"))
 			})
 		})
 	})
@@ -220,6 +241,75 @@ func TestForestClose(t *testing.T) {
 					So(false, ShouldBeTrue, "Context was not cancelled")
 				}
 			})
+		})
+	})
+}
+
+func TestForestConcurrentInsert(test *testing.T) {
+	Convey("Given concurrent writers on one forest", test, func() {
+		forest, err := NewForest(ForestConfig{})
+		So(err, ShouldBeNil)
+		defer forest.Close()
+
+		var waitGroup sync.WaitGroup
+
+		for workerIndex := range 32 {
+			waitGroup.Add(1)
+
+			go func(index int) {
+				defer waitGroup.Done()
+
+				key := []byte("toxicity/BTC-USD/book/" + strconv.Itoa(index) + ".")
+				forest.Insert(key, []byte("book"))
+			}(workerIndex)
+		}
+
+		waitGroup.Wait()
+
+		Convey("It should retain inserted keys", func() {
+			value, ok := forest.Get([]byte("toxicity/BTC-USD/book/0."))
+			So(ok, ShouldBeTrue)
+			So(string(value), ShouldEqual, "book")
+		})
+	})
+}
+
+func TestForestConcurrentAddTree(test *testing.T) {
+	Convey("Given concurrent tree registration", test, func() {
+		forest, err := NewForest(ForestConfig{})
+		So(err, ShouldBeNil)
+		defer forest.Close()
+
+		forest.Insert([]byte("seed"), []byte("value"))
+
+		var waitGroup sync.WaitGroup
+
+		for range 8 {
+			waitGroup.Add(1)
+
+			go func() {
+				defer waitGroup.Done()
+
+				tree, treeErr := NewTree("")
+
+				if treeErr != nil {
+					return
+				}
+
+				defer tree.Close()
+
+				forest.AddTree(tree)
+			}()
+		}
+
+		waitGroup.Wait()
+
+		Convey("It should keep every tree consistent with the seed key", func() {
+			for _, tree := range forest.snapshot.Load().Trees() {
+				value, ok := tree.Get([]byte("seed"))
+				So(ok, ShouldBeTrue)
+				So(string(value), ShouldEqual, "value")
+			}
 		})
 	})
 }

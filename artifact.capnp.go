@@ -6,6 +6,8 @@ import (
 	capnp "capnproto.org/go/capnp/v3"
 	text "capnproto.org/go/capnp/v3/encoding/text"
 	schemas "capnproto.org/go/capnp/v3/schemas"
+	math "math"
+	strconv "strconv"
 )
 
 type Artifact capnp.Struct
@@ -14,12 +16,12 @@ type Artifact capnp.Struct
 const Artifact_TypeID = 0xb1092b0e00ae75e5
 
 func NewArtifact(s *capnp.Segment) (Artifact, error) {
-	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 8})
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 15})
 	return Artifact(st), err
 }
 
 func NewRootArtifact(s *capnp.Segment) (Artifact, error) {
-	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 8})
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 15})
 	return Artifact(st), err
 }
 
@@ -55,22 +57,30 @@ func (s Artifact) Message() *capnp.Message {
 func (s Artifact) Segment() *capnp.Segment {
 	return capnp.Struct(s).Segment()
 }
-func (s Artifact) Uuid() (string, error) {
+func (s Artifact) Uuid() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(0)
-	return p.Text(), err
+	return []byte(p.Data()), err
 }
 
 func (s Artifact) HasUuid() bool {
 	return capnp.Struct(s).HasPtr(0)
 }
 
-func (s Artifact) UuidBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(0)
-	return p.TextBytes(), err
+func (s Artifact) SetUuid(v []byte) error {
+	return capnp.Struct(s).SetData(0, v)
 }
 
-func (s Artifact) SetUuid(v string) error {
-	return capnp.Struct(s).SetText(0, v)
+func (s Artifact) Checksum() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasChecksum() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Artifact) SetChecksum(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
 }
 
 func (s Artifact) Timestamp() int64 {
@@ -82,16 +92,16 @@ func (s Artifact) SetTimestamp(v int64) {
 }
 
 func (s Artifact) Error() (Artifact_Error, error) {
-	p, err := capnp.Struct(s).Ptr(1)
+	p, err := capnp.Struct(s).Ptr(2)
 	return Artifact_Error(p.Struct()), err
 }
 
 func (s Artifact) HasError() bool {
-	return capnp.Struct(s).HasPtr(1)
+	return capnp.Struct(s).HasPtr(2)
 }
 
 func (s Artifact) SetError(v Artifact_Error) error {
-	return capnp.Struct(s).SetPtr(1, capnp.Struct(v).ToPtr())
+	return capnp.Struct(s).SetPtr(2, capnp.Struct(v).ToPtr())
 }
 
 // NewError sets the error field to a newly
@@ -101,8 +111,34 @@ func (s Artifact) NewError() (Artifact_Error, error) {
 	if err != nil {
 		return Artifact_Error{}, err
 	}
-	err = capnp.Struct(s).SetPtr(1, capnp.Struct(ss).ToPtr())
+	err = capnp.Struct(s).SetPtr(2, capnp.Struct(ss).ToPtr())
 	return ss, err
+}
+
+func (s Artifact) PseudonymHash() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasPseudonymHash() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Artifact) SetPseudonymHash(v []byte) error {
+	return capnp.Struct(s).SetData(3, v)
+}
+
+func (s Artifact) MerkleRoot() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasMerkleRoot() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Artifact) SetMerkleRoot(v []byte) error {
+	return capnp.Struct(s).SetData(4, v)
 }
 
 func (s Artifact) Type() Artifact_Type {
@@ -114,88 +150,88 @@ func (s Artifact) SetType(v Artifact_Type) {
 }
 
 func (s Artifact) Origin() (string, error) {
-	p, err := capnp.Struct(s).Ptr(2)
+	p, err := capnp.Struct(s).Ptr(5)
 	return p.Text(), err
 }
 
 func (s Artifact) HasOrigin() bool {
-	return capnp.Struct(s).HasPtr(2)
+	return capnp.Struct(s).HasPtr(5)
 }
 
 func (s Artifact) OriginBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(2)
+	p, err := capnp.Struct(s).Ptr(5)
 	return p.TextBytes(), err
 }
 
 func (s Artifact) SetOrigin(v string) error {
-	return capnp.Struct(s).SetText(2, v)
+	return capnp.Struct(s).SetText(5, v)
 }
 
 func (s Artifact) Destination() (string, error) {
-	p, err := capnp.Struct(s).Ptr(3)
+	p, err := capnp.Struct(s).Ptr(6)
 	return p.Text(), err
 }
 
 func (s Artifact) HasDestination() bool {
-	return capnp.Struct(s).HasPtr(3)
+	return capnp.Struct(s).HasPtr(6)
 }
 
 func (s Artifact) DestinationBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(3)
+	p, err := capnp.Struct(s).Ptr(6)
 	return p.TextBytes(), err
 }
 
 func (s Artifact) SetDestination(v string) error {
-	return capnp.Struct(s).SetText(3, v)
+	return capnp.Struct(s).SetText(6, v)
 }
 
 func (s Artifact) Role() (string, error) {
-	p, err := capnp.Struct(s).Ptr(4)
+	p, err := capnp.Struct(s).Ptr(7)
 	return p.Text(), err
 }
 
 func (s Artifact) HasRole() bool {
-	return capnp.Struct(s).HasPtr(4)
+	return capnp.Struct(s).HasPtr(7)
 }
 
 func (s Artifact) RoleBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(4)
+	p, err := capnp.Struct(s).Ptr(7)
 	return p.TextBytes(), err
 }
 
 func (s Artifact) SetRole(v string) error {
-	return capnp.Struct(s).SetText(4, v)
+	return capnp.Struct(s).SetText(7, v)
 }
 
 func (s Artifact) Scope() (string, error) {
-	p, err := capnp.Struct(s).Ptr(5)
+	p, err := capnp.Struct(s).Ptr(8)
 	return p.Text(), err
 }
 
 func (s Artifact) HasScope() bool {
-	return capnp.Struct(s).HasPtr(5)
+	return capnp.Struct(s).HasPtr(8)
 }
 
 func (s Artifact) ScopeBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(5)
+	p, err := capnp.Struct(s).Ptr(8)
 	return p.TextBytes(), err
 }
 
 func (s Artifact) SetScope(v string) error {
-	return capnp.Struct(s).SetText(5, v)
+	return capnp.Struct(s).SetText(8, v)
 }
 
 func (s Artifact) Attributes() (Artifact_Attribute_List, error) {
-	p, err := capnp.Struct(s).Ptr(6)
+	p, err := capnp.Struct(s).Ptr(9)
 	return Artifact_Attribute_List(p.List()), err
 }
 
 func (s Artifact) HasAttributes() bool {
-	return capnp.Struct(s).HasPtr(6)
+	return capnp.Struct(s).HasPtr(9)
 }
 
 func (s Artifact) SetAttributes(v Artifact_Attribute_List) error {
-	return capnp.Struct(s).SetPtr(6, v.ToPtr())
+	return capnp.Struct(s).SetPtr(9, v.ToPtr())
 }
 
 // NewAttributes sets the attributes field to a newly
@@ -205,20 +241,82 @@ func (s Artifact) NewAttributes(n int32) (Artifact_Attribute_List, error) {
 	if err != nil {
 		return Artifact_Attribute_List{}, err
 	}
-	err = capnp.Struct(s).SetPtr(6, l.ToPtr())
+	err = capnp.Struct(s).SetPtr(9, l.ToPtr())
 	return l, err
 }
-func (s Artifact) Payload() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(7)
+func (s Artifact) EncryptedPayload() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(10)
 	return []byte(p.Data()), err
 }
 
-func (s Artifact) HasPayload() bool {
-	return capnp.Struct(s).HasPtr(7)
+func (s Artifact) HasEncryptedPayload() bool {
+	return capnp.Struct(s).HasPtr(10)
 }
 
-func (s Artifact) SetPayload(v []byte) error {
-	return capnp.Struct(s).SetData(7, v)
+func (s Artifact) SetEncryptedPayload(v []byte) error {
+	return capnp.Struct(s).SetData(10, v)
+}
+
+func (s Artifact) EncryptedKey() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(11)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasEncryptedKey() bool {
+	return capnp.Struct(s).HasPtr(11)
+}
+
+func (s Artifact) SetEncryptedKey(v []byte) error {
+	return capnp.Struct(s).SetData(11, v)
+}
+
+func (s Artifact) EphemeralPublicKey() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(12)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasEphemeralPublicKey() bool {
+	return capnp.Struct(s).HasPtr(12)
+}
+
+func (s Artifact) SetEphemeralPublicKey(v []byte) error {
+	return capnp.Struct(s).SetData(12, v)
+}
+
+func (s Artifact) Approvals() (Artifact_Approval_List, error) {
+	p, err := capnp.Struct(s).Ptr(13)
+	return Artifact_Approval_List(p.List()), err
+}
+
+func (s Artifact) HasApprovals() bool {
+	return capnp.Struct(s).HasPtr(13)
+}
+
+func (s Artifact) SetApprovals(v Artifact_Approval_List) error {
+	return capnp.Struct(s).SetPtr(13, v.ToPtr())
+}
+
+// NewApprovals sets the approvals field to a newly
+// allocated Artifact_Approval_List, preferring placement in s's segment.
+func (s Artifact) NewApprovals(n int32) (Artifact_Approval_List, error) {
+	l, err := NewArtifact_Approval_List(capnp.Struct(s).Segment(), n)
+	if err != nil {
+		return Artifact_Approval_List{}, err
+	}
+	err = capnp.Struct(s).SetPtr(13, l.ToPtr())
+	return l, err
+}
+func (s Artifact) Signature() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(14)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact) HasSignature() bool {
+	return capnp.Struct(s).HasPtr(14)
+}
+
+func (s Artifact) SetSignature(v []byte) error {
+	return capnp.Struct(s).SetData(14, v)
 }
 
 // Artifact_List is a list of Artifact.
@@ -226,7 +324,7 @@ type Artifact_List = capnp.StructList[Artifact]
 
 // NewArtifact creates a new list of Artifact.
 func NewArtifact_List(s *capnp.Segment, sz int32) (Artifact_List, error) {
-	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 16, PointerCount: 8}, sz)
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 16, PointerCount: 15}, sz)
 	return capnp.StructList[Artifact](l), err
 }
 
@@ -238,7 +336,7 @@ func (f Artifact_Future) Struct() (Artifact, error) {
 	return Artifact(p.Struct()), err
 }
 func (p Artifact_Future) Error() Artifact_Error_Future {
-	return Artifact_Error_Future{Future: p.Future.Field(1, nil)}
+	return Artifact_Error_Future{Future: p.Future.Field(2, nil)}
 }
 
 type Artifact_Error capnp.Struct
@@ -423,17 +521,45 @@ func NewArtifact_Type_List(s *capnp.Segment, sz int32) (Artifact_Type_List, erro
 }
 
 type Artifact_Attribute capnp.Struct
+type Artifact_Attribute_value Artifact_Attribute
+type Artifact_Attribute_value_Which uint16
+
+const (
+	Artifact_Attribute_value_Which_textValue   Artifact_Attribute_value_Which = 0
+	Artifact_Attribute_value_Which_intValue    Artifact_Attribute_value_Which = 1
+	Artifact_Attribute_value_Which_floatValue  Artifact_Attribute_value_Which = 2
+	Artifact_Attribute_value_Which_boolValue   Artifact_Attribute_value_Which = 3
+	Artifact_Attribute_value_Which_binaryValue Artifact_Attribute_value_Which = 4
+)
+
+func (w Artifact_Attribute_value_Which) String() string {
+	const s = "textValueintValuefloatValueboolValuebinaryValue"
+	switch w {
+	case Artifact_Attribute_value_Which_textValue:
+		return s[0:9]
+	case Artifact_Attribute_value_Which_intValue:
+		return s[9:17]
+	case Artifact_Attribute_value_Which_floatValue:
+		return s[17:27]
+	case Artifact_Attribute_value_Which_boolValue:
+		return s[27:36]
+	case Artifact_Attribute_value_Which_binaryValue:
+		return s[36:47]
+
+	}
+	return "Artifact_Attribute_value_Which(" + strconv.FormatUint(uint64(w), 10) + ")"
+}
 
 // Artifact_Attribute_TypeID is the unique identifier for the type Artifact_Attribute.
 const Artifact_Attribute_TypeID = 0xe5ef7577388ccd38
 
 func NewArtifact_Attribute(s *capnp.Segment) (Artifact_Attribute, error) {
-	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2})
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
 	return Artifact_Attribute(st), err
 }
 
 func NewRootArtifact_Attribute(s *capnp.Segment) (Artifact_Attribute, error) {
-	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2})
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
 	return Artifact_Attribute(st), err
 }
 
@@ -487,22 +613,101 @@ func (s Artifact_Attribute) SetKey(v string) error {
 	return capnp.Struct(s).SetText(0, v)
 }
 
-func (s Artifact_Attribute) Value() (string, error) {
+func (s Artifact_Attribute) Value() Artifact_Attribute_value { return Artifact_Attribute_value(s) }
+
+func (s Artifact_Attribute_value) Which() Artifact_Attribute_value_Which {
+	return Artifact_Attribute_value_Which(capnp.Struct(s).Uint16(0))
+}
+func (s Artifact_Attribute_value) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Artifact_Attribute_value) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Artifact_Attribute_value) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Artifact_Attribute_value) TextValue() (string, error) {
+	if capnp.Struct(s).Uint16(0) != 0 {
+		panic("Which() != textValue")
+	}
 	p, err := capnp.Struct(s).Ptr(1)
 	return p.Text(), err
 }
 
-func (s Artifact_Attribute) HasValue() bool {
+func (s Artifact_Attribute_value) HasTextValue() bool {
+	if capnp.Struct(s).Uint16(0) != 0 {
+		return false
+	}
 	return capnp.Struct(s).HasPtr(1)
 }
 
-func (s Artifact_Attribute) ValueBytes() ([]byte, error) {
+func (s Artifact_Attribute_value) TextValueBytes() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(1)
 	return p.TextBytes(), err
 }
 
-func (s Artifact_Attribute) SetValue(v string) error {
+func (s Artifact_Attribute_value) SetTextValue(v string) error {
+	capnp.Struct(s).SetUint16(0, 0)
 	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Artifact_Attribute_value) IntValue() int64 {
+	if capnp.Struct(s).Uint16(0) != 1 {
+		panic("Which() != intValue")
+	}
+	return int64(capnp.Struct(s).Uint64(8))
+}
+
+func (s Artifact_Attribute_value) SetIntValue(v int64) {
+	capnp.Struct(s).SetUint16(0, 1)
+	capnp.Struct(s).SetUint64(8, uint64(v))
+}
+
+func (s Artifact_Attribute_value) FloatValue() float64 {
+	if capnp.Struct(s).Uint16(0) != 2 {
+		panic("Which() != floatValue")
+	}
+	return math.Float64frombits(capnp.Struct(s).Uint64(8))
+}
+
+func (s Artifact_Attribute_value) SetFloatValue(v float64) {
+	capnp.Struct(s).SetUint16(0, 2)
+	capnp.Struct(s).SetUint64(8, math.Float64bits(v))
+}
+
+func (s Artifact_Attribute_value) BoolValue() bool {
+	if capnp.Struct(s).Uint16(0) != 3 {
+		panic("Which() != boolValue")
+	}
+	return capnp.Struct(s).Bit(64)
+}
+
+func (s Artifact_Attribute_value) SetBoolValue(v bool) {
+	capnp.Struct(s).SetUint16(0, 3)
+	capnp.Struct(s).SetBit(64, v)
+}
+
+func (s Artifact_Attribute_value) BinaryValue() ([]byte, error) {
+	if capnp.Struct(s).Uint16(0) != 4 {
+		panic("Which() != binaryValue")
+	}
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact_Attribute_value) HasBinaryValue() bool {
+	if capnp.Struct(s).Uint16(0) != 4 {
+		return false
+	}
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Artifact_Attribute_value) SetBinaryValue(v []byte) error {
+	capnp.Struct(s).SetUint16(0, 4)
+	return capnp.Struct(s).SetData(1, v)
 }
 
 // Artifact_Attribute_List is a list of Artifact_Attribute.
@@ -510,7 +715,7 @@ type Artifact_Attribute_List = capnp.StructList[Artifact_Attribute]
 
 // NewArtifact_Attribute creates a new list of Artifact_Attribute.
 func NewArtifact_Attribute_List(s *capnp.Segment, sz int32) (Artifact_Attribute_List, error) {
-	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2}, sz)
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2}, sz)
 	return capnp.StructList[Artifact_Attribute](l), err
 }
 
@@ -521,57 +726,189 @@ func (f Artifact_Attribute_Future) Struct() (Artifact_Attribute, error) {
 	p, err := f.Future.Ptr()
 	return Artifact_Attribute(p.Struct()), err
 }
+func (p Artifact_Attribute_Future) Value() Artifact_Attribute_value_Future {
+	return Artifact_Attribute_value_Future{p.Future}
+}
 
-const schema_85d3acc39d94e0f8 = "x\xda|\x93Ah+U\x14\x86\xff\xff\xde\x99I\x02" +
-	"\xc9\x9b\x8c3b\x145U\xba\xe8\x8b\xbe\x92\xd7>\xe8" +
-	"\xe3m|--X\xe8\"\xb7\xd3\x85V\x10\xa6\xcdX" +
-	"\xc6\xa6\x99\x90LZ\xb2\xea\xaa\x0bA])\xe2\xa2[" +
-	"A\xa9\x8a\x1b7\xee\x14\xdc\xb9\x92.D\x04A\x8a\xe8" +
-	"F\xecB\xdd\x8d\xdcI3\x0db\xdf\xf2~\x9c\xf3\x9f" +
-	"s\xfe\x7f\xa6i\x88\x87\xc6\xdd\xca\xaf\x16\x84j\x99\xd6" +
-	"\xdf\x17\xc3\xcfn\xbdP\xfaB\xd9\x14\xe9??\xbfw" +
-	"\xfa\xcd\xd9\xf7'0\x8b\x05\xc0}U~\xed\x06r\x09" +
-	"X<\x91K\x02L?\xf9\xe1\xe4|\xe6\xb0\xf5%T" +
-	"\x8db\xd2iR\xd7\xfed^\xba\xbf\x99O\x00\xee\x9f" +
-	"\xe6\xe7`*\xcf.\x7f|\xed\x83o\xbf\x82S\xcb+" +
-	"A\xf7\x1d\xebw\xf7CK7\xbco\xd5\xc1\xf4\xaf\xf6" +
-	"\xea\xf9\xbb\xe9\xeb\xbf\xc0yV\\\xcb\x83\x8boYO" +
-	"1\xaf\\\x02\xd3\xfb\xdf\xbd}\xffh\xf8\xc7\x05\x9c\x1a" +
-	"\xf3\xd1\xa2\x00,\x9eZ\x8f\xd1\xfd4+\xfd\xd8:\xc2" +
-	"Gi\xd0O\xa27\x82\xddD\xcc\xef\x06\xbdn\xef\xc1" +
-	"\xf2\xd5\x1b\xaa\xcc\xa9#\x1cgaj\xcdJcjD" +
-	"i\xb3\xbe\xd6\xef\xc7}{k\xd4\x0b\xd3\xe5$\xe9G" +
-	";\xc3\x04\x0c\xd5\x9c4\x00\x83\x80[b\x03\xf0\x0dJ" +
-	"\xfaU\x0a\x92\x1e5\xaep\x13\xf0\xcb\x1a\xd7(\xe8\x08" +
-	"z\x14\x80\xfb8\x17\x00\xbf\xaa\xf9\xd3\x9aK\xc3\xa3\x04" +
-	"\xdc'3\x19O\xf3\x19\xcd\x0d\xe1\xd1\x00\xdcg\xf8\x00" +
-	"\xf0k\x9a\xcfjnJ\x8f&\xe0>\xc7\x1d\xc0\x9f\xd1" +
-	"\xfcE\xcd-\xc3\xa3\x05\xb8\xb73\x9dY\xcd\x9b\x9a\x17" +
-	"L/\x0b\xe6N6wN\xf3{\x9a\x17-\x8fE\xc0" +
-	"\xbd\xcbm\xc0oj\xbe\xa1y\xa9\xe0\xb1\x04\xb8\xeb\\" +
-	"\x01\xfcU\xcd[\x14\xb4\x87\xc3\xa8\xcd2\x04\xcb`\x9a" +
-	"D\x07\xe1 \x09\x0e\xc0\x1eM\x08\x9a`=\xd4F\xb1" +
-	":\x9d\x1e\xab\xa0\x9d\x8cz!\xedk\x87A\xda\xe0K" +
-	"q?\xda\x8b\xba\xb9b;\x1c$Q7HP\x88\xe2" +
-	"\x9c\xda\xfd\xb8\x13N\x1e\xf5\xc1n\xdc\xcb_i0\x09" +
-	"C\x86\x03\xde\x02[\x92\xac^G\x07jx\xdc\x0bF" +
-	"\x9d8h\xb3\x02\xc1\x8a\xee\xba\xe1\x93\x98\x1f\xe7\xac\x0c" +
-	"N\x7f\x8bld\xc1\xab\xf2$lg\xad\x01\xa8\x87\x92" +
-	"jC\xd0\xb9\x8a\xdaY\xdf\x04\xd4\xcb\x92jK\x90\"" +
-	"\x8b\xd9Q+\x80\xda\x90T\xaf\x88\xdc\x82\\xl\xc1" +
-	"\xff\xb9x|\x10\x0e\x06\xc1\xde\xd4\x997-\x9cm\xd6" +
-	"\"\x95\x91\xcd3\x1b\x80\xfd\xe6 \xee\xe6\x1d\xf2\xbf\x1d" +
-	"\xd9\x85\xf3[#9\xee+f}\xce\x8a\xde\xc6)m" +
-	"\x03\xc7\xc3\xee~7>\xea\xa6\x87A'j\x07I\x04" +
-	"\xf9(\xb9\xc9\xdf\xc0\xb1Zn\xd1\xed\xe7\x015+\xa9" +
-	"\x9aS\x16\xddY\x00\xd4\x9c\xa4\xba'X\xd8\x0fGy" +
-	"\xa8\x87Ag\x98_\xfbo\x00\x00\x00\xff\xff\x11\xd2\x17" +
-	"H"
+// Artifact_Attribute_value_Future is a wrapper for a Artifact_Attribute_value promised by a client call.
+type Artifact_Attribute_value_Future struct{ *capnp.Future }
+
+func (f Artifact_Attribute_value_Future) Struct() (Artifact_Attribute_value, error) {
+	p, err := f.Future.Ptr()
+	return Artifact_Attribute_value(p.Struct()), err
+}
+
+type Artifact_Approval capnp.Struct
+
+// Artifact_Approval_TypeID is the unique identifier for the type Artifact_Approval.
+const Artifact_Approval_TypeID = 0x8cc20228b0f1020d
+
+func NewArtifact_Approval(s *capnp.Segment) (Artifact_Approval, error) {
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2})
+	return Artifact_Approval(st), err
+}
+
+func NewRootArtifact_Approval(s *capnp.Segment) (Artifact_Approval, error) {
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2})
+	return Artifact_Approval(st), err
+}
+
+func ReadRootArtifact_Approval(msg *capnp.Message) (Artifact_Approval, error) {
+	root, err := msg.Root()
+	return Artifact_Approval(root.Struct()), err
+}
+
+func (s Artifact_Approval) String() string {
+	str, _ := text.Marshal(0x8cc20228b0f1020d, capnp.Struct(s))
+	return str
+}
+
+func (s Artifact_Approval) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Struct(s).EncodeAsPtr(seg)
+}
+
+func (Artifact_Approval) DecodeFromPtr(p capnp.Ptr) Artifact_Approval {
+	return Artifact_Approval(capnp.Struct{}.DecodeFromPtr(p))
+}
+
+func (s Artifact_Approval) ToPtr() capnp.Ptr {
+	return capnp.Struct(s).ToPtr()
+}
+func (s Artifact_Approval) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Artifact_Approval) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Artifact_Approval) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Artifact_Approval) ZkProof() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(0)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact_Approval) HasZkProof() bool {
+	return capnp.Struct(s).HasPtr(0)
+}
+
+func (s Artifact_Approval) SetZkProof(v []byte) error {
+	return capnp.Struct(s).SetData(0, v)
+}
+
+func (s Artifact_Approval) OperatorBlindSignature() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Artifact_Approval) HasOperatorBlindSignature() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Artifact_Approval) SetOperatorBlindSignature(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+// Artifact_Approval_List is a list of Artifact_Approval.
+type Artifact_Approval_List = capnp.StructList[Artifact_Approval]
+
+// NewArtifact_Approval creates a new list of Artifact_Approval.
+func NewArtifact_Approval_List(s *capnp.Segment, sz int32) (Artifact_Approval_List, error) {
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 0, PointerCount: 2}, sz)
+	return capnp.StructList[Artifact_Approval](l), err
+}
+
+// Artifact_Approval_Future is a wrapper for a Artifact_Approval promised by a client call.
+type Artifact_Approval_Future struct{ *capnp.Future }
+
+func (f Artifact_Approval_Future) Struct() (Artifact_Approval, error) {
+	p, err := f.Future.Ptr()
+	return Artifact_Approval(p.Struct()), err
+}
+
+const schema_85d3acc39d94e0f8 = "x\xda\x84\x95[h\x1c\xe5\x1b\xc6\x9f\xe7\xfbv\xb3\x9b" +
+	"d7\x9b\xf9\xcf\xfe\xb1\x8a1R\x14j\xb4!m\x04" +
+	"k\xa9\xb4\x0d\x0d\xd6\xb6\x17\xf92\xb5H=\xe0$;" +
+	"I\xa6\xd9\xddYgg\x12W\x94\xde\x18P\xa9\xe2\xa1" +
+	"\xc5\x03\x16\xbc)\x1e(\x1en\xbc\xd0\x0b\xa1\x8azS" +
+	"T\xb4`\xb1\x82b\x03\"Vk\xf1P\xb1u\xe4\x9b" +
+	"tg\xd7\xd6\xea\xde\xedo\xde\xef\xfd\xdey\xde\xe7}" +
+	"g\xe8I\xb1!\xb5*\xff\x91\x84P\xd7\xa5;\xa2\xbc" +
+	"\xf8\xe9\xf5\x15\xe2\xd0\x1e\x18\xcb\xf8\xdbb\xf8j\xcf\xb5" +
+	"\x9do\xa4E\x06\x18>\xcc.\x9a_2\x03\x98G9" +
+	"\x0fFO\xbd7\x95\x9d\xfb\xe1\x83\x17\xa1\x96SDk" +
+	"\x0e\xefY3\x1f\xfe\xb8\x88[E\x86i`\xf8&1" +
+	"BpxT\xf4\x13I*U\xa0\x88N\x7f\xb5w\xff" +
+	"\xbb\x07?]@\xba\xa0\xb3\xb9\xf2\x90y\x8f\xbc\x19\x18" +
+	"> \xdf\x91`\xf4\xca\xd1\x85#W\xce\x8d\xbd\x09\xb5" +
+	"\x8c\")b\xe9\xe6\xcc)s1s\x09`\x9e\xc8\xbc" +
+	"\x06F\xf2\xe0\xa9/n\x7f\xfa\xfd\xb7a,K\"A" +
+	"\xf3\xe1\xecw\xe6\xbe\xac>\xf0D\xb6\x1f\x8c~-m" +
+	":\xf2Xt\xd770\xae\x10\xad\xf4\xe0\xf0B\xf62" +
+	"&\x917\x80\xad\xd7\xf8\xdb\xdd\xb1\x00\xcff\xffG\xf3" +
+	"\xe58\xf6@v\x1e+#\xdb\x0f\xdc){2\x90\x83" +
+	"\x93v\xadZ[\xbb\xf1\xdc\xff\xc1\x8d\xb5\x9a\xef\xcd\xd9" +
+	"e`\x8cTY\x99\x02R\x04\x8ckF\x00u\x95\xa4" +
+	"\x1a\x124\xc8\"5\\\xf9\x16\xa0\x86$\xd5:\xc1\xdd" +
+	"\xf7\xcd\x8e\xf9\x9e7\xc5<\x04\xf3`\xe4\xd5\x1c\xdf\x0e" +
+	"<\x9f#e\xb7Z\xb2\xdc\xe9\xf5U;\x08}'\x09" +
+	"h\xd6\x90\xba\xa0\x86 \xf0\xdd\x890p\x06\xe7\xecr" +
+	"\xe8@\x15e\xea\xf2(:w\xe9\x03\xe3\x80\xba_R" +
+	"=$\xd8\xc7?5\x16\x80\xb1\xb0\x05P\x0fJ\xaa\xc7" +
+	"\x05\xfb\xc4Y\x8d%`<\xba\x13P{$\xd53\x82" +
+	"}\xf2L\xb4\xa1\xc8\x14`\xec\xd3I\xf6J\xaa\x17\x04" +
+	"\xfbR\x7f\xe8\xe84`\xec\x9f\x00\xd4\xf3\x92\xea%\xc1" +
+	"(p\xee\x0dv\xd8\xe5\x10t\x98\x83`\x0e\x8c\xdcj" +
+	"\x8c\x1c\x00LC0\x0dFSe\xcf\xd6\x142t\xd8" +
+	"\x0d\xc1n0\x9a\xf0\xbcr\xf30!H\xcd\xdc\xaa\xed" +
+	"7v\xd8\xc8\x94\xc3\x0be\x10\xe7\xc9\x00\xd5\xcb6C" +
+	"\x19\x97\xaen\xb3\xcc\xff\x07Z\xed6\x8c\xf16\xef\x1b" +
+	"[\xfaG}\xdf\xf3\x0b\xdb\x1b5'jJ\x09:Q" +
+	"\xab\xb5P\x9b\x9a\x8d5\x0fs\x00\xb0>\xa4\xa4\xf5\x19" +
+	"[\xbd5?\xe1\x16\xc0\xfaX\xf3c\x14\xa4\x88e6" +
+	"\x8fr\x1c\xb0>\xd7\xf8\xb8\x0e\x97\"\xd6\xd9\xfc\x9a\xab" +
+	"\x01\xeb\x98\xe6\xdfj\x9e\x92\xb1\xd0\xe6\"}\xc0:\xae" +
+	"\xf9I\xcd\xd3\xa9Xi\xf3\x04w\x02\xd6\xf7\x9a\x9f\xd6" +
+	"\xbc#Ud\x07`\xfe\x12\x97sR\xf33\x9ag\xd2" +
+	"\xc5xz~\xe7Z\xc0\xfa\x99\x92\xe3B\xd0\xc8v\x14" +
+	"\x99\x05\xcc\xb3\x9c\x00\xac3:<\xabyg\xa6\xc8N" +
+	"\xc0L\x8b\x01`\\HZ9\x8d\xbb\xb2Ev\x01f" +
+	"\xa7\xd0U\xa64\xef\xd5\xbc\xbb\xb3\xc8n\xc0\xcc\x0b]" +
+	"MN\xf3\x15\x9a\xe7\xba\x8a\xcc\x01\xe6\xd5\xe2\x11\xc0Z" +
+	"\xa1\xf9\xf5\x9a\xe7\xbb\x8b\xcc\x03\xe6*\xb1\x0b\xb0\x864" +
+	"_\xa7yO\xae\xc8\x1e\xc0\xbcQ<\x07X\xeb4\xdf" +
+	"\xacy!_d\x010G\x85Vm\x93\xe6wk\xde" +
+	"\xdbSd/`\xde\x19\xf3;4\x9f\x11\x82\x850t" +
+	"K\x891&g\x9c\xc9\xd9zX\xd1^k\xb2\xc0\xad" +
+	"8\xf5\xc0\xae\x80\xb5\xa6\xff\xfa\x1d\xddn\xf6\xb6/\x07" +
+	"\xf6\x82Q\xad\xee\x84%\xaf\xda@\x7fe\xb3]\x9fI" +
+	"rT\x1c\x7f\xb6\xec\x8c{\x90^\xd0\x84\x85\xa0Qs" +
+	"Xh9\x0cd\x01\\\xef\xf9\xee\xb4[M\xec_r" +
+	"\xea\x81[\xb5\x03d\\/\xa1\x05\xdf+'\x13\xd2_" +
+	"\x9f\xf4j\xady\xb1\x9b\xfe\x93N\x9d=\xe0\x98${" +
+	"[\xd6\x055\x8c\x9c\xea\xa4\xdf\xa8\x05\x0eKcv\xa3" +
+	"\xec\xd9\xa5\xb67n>C\xa1\xb4\xd5i\xb4pm\xc6" +
+	"\xa98\xbe\xcd\xf2X8Qv'\xb7\xca\xb6\x87v\xd3" +
+	"\xe9l\xbb4\x19\x91s\x97\xd6\xdd\xe9x!\xe9\x09\xfd" +
+	"\xafY\x1c\\\x9a)\x95b\xfbB\xe6@<d*\x97" +
+	"l\xc9\xd1\x01@m\x90T\xdb\xda\xb6\xe4-z\xd7l" +
+	"\x96T\xdb\x9312\x94^\xa7\xdb$\xd5m\"\xd1>" +
+	"I\xbc\xa4\xfd?\xf5zw\xc5\xa9\xd7\xed\xe96}/" +
+	"Vp\\\x99^\xe1\xa9\xf8\xbe\xf4\x00P\xd8U\xf7\xaa" +
+	"\x17\xdf\xfc\xf1\x1b\x0eno\xc8\xa5s\xd9\xf8\x9c1\xa2" +
+	"\xab1:w\x02\xbb\xc3\xeal\xd5\x9b\xafFsv\xd9" +
+	"-\xd9\x81\x0b\xf9o\xe9\x9a\x9b\x87\xcey\x1f\x92\xe5\xad" +
+	"\x0f\x89\xfe\xb5\xbe\xc5\xc6\xca\xd5\x10\x99Y\xa7\x91x)" +
+	"^\xff\x7f\x05\x00\x00\xff\xffcK\xf39"
 
 func RegisterSchema(reg *schemas.Registry) {
 	reg.Register(&schemas.Schema{
 		String: schema_85d3acc39d94e0f8,
 		Nodes: []uint64{
+			0x8cc20228b0f1020d,
+			0xa7c7ee760866c493,
 			0xb1092b0e00ae75e5,
 			0xb6507620d585d9aa,
 			0xbbc6975bdbf2ac03,

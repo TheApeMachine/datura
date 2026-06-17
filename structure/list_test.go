@@ -132,7 +132,7 @@ func TestListRingDo(t *testing.T) {
 
 func TestListRingReadWrite(t *testing.T) {
 	Convey("Given a ListRing with a bound artifact", t, func() {
-		ring := NewListRing[int](1, nil)
+		ring := NewListRing[int](1, datura.Acquire("list", datura.Artifact_Type_json))
 		source := datura.Acquire("list", datura.Artifact_Type_json)
 
 		So(source, ShouldNotBeNil)
@@ -142,7 +142,8 @@ func TestListRingReadWrite(t *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire := source.Marshal()
+		wire, marshalErr := source.Message().Marshal()
+		So(marshalErr, ShouldBeNil)
 
 		written, writeErr := ring.Write(wire)
 
@@ -159,9 +160,10 @@ func TestListRingReadWrite(t *testing.T) {
 			So(readCount, ShouldBeGreaterThan, 0)
 
 			decoded := datura.Acquire("list", datura.Artifact_Type_json)
-			So(decoded.Unmarshal(buffer[:readCount]), ShouldNotBeNil)
+			_, writeErr := decoded.Write(buffer[:readCount])
+			So(writeErr, ShouldBeNil)
 
-			out, payloadErr := decoded.Payload()
+			out, payloadErr := decoded.DecryptPayload()
 
 			So(payloadErr, ShouldBeNil)
 			So(string(out), ShouldEqual, "42")
@@ -170,7 +172,7 @@ func TestListRingReadWrite(t *testing.T) {
 }
 
 func BenchmarkListRingReadWrite(b *testing.B) {
-	ring := NewListRing[int](1, nil)
+	ring := NewListRing[int](1, datura.Acquire("list", datura.Artifact_Type_json))
 	source := datura.Acquire("list", datura.Artifact_Type_json)
 
 	if source == nil {
@@ -184,7 +186,12 @@ func BenchmarkListRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire := source.Marshal()
+	wire, err := source.Message().Marshal()
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
 	buffer := make([]byte, 4096)
 
 	b.ReportAllocs()

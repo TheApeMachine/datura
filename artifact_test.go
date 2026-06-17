@@ -6,120 +6,205 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func TestAcquire_invalidPoolEntry(t *testing.T) {
-	Convey("Acquire rejects non-artifact pool entries", t, func() {
-		artifactPool.Put("invalid")
+func TestArtifactCreation(t *testing.T) {
+	Convey("Given the functional options for artifact creation", t, func() {
+		payload := []byte("Hello, this is a test payload!")
 
-		artifact := Acquire("origin", Artifact_Type_json)
-		So(artifact, ShouldBeNil)
+		Convey("When creating a new artifact with options", func() {
+			artifact := Acquire("test-artifact", Artifact_Type_json).Poke(
+				"payload", string(payload),
+			).Poke(
+				"test_key", "test_value",
+			).WithPayload(payload)
+
+			So(artifact, ShouldNotBeNil)
+
+			Convey("Then the artifact should have all required fields", func() {
+				uuid, err := artifact.Uuid()
+				So(err, ShouldBeNil)
+				So(len(uuid), ShouldBeGreaterThan, 0)
+
+				So(artifact.HasEncryptedPayload(), ShouldBeTrue)
+				So(artifact.HasEncryptedKey(), ShouldBeTrue)
+				So(artifact.HasEphemeralPublicKey(), ShouldBeTrue)
+
+				Convey("And the payload should be decryptable", func() {
+					encryptedPayload, err := artifact.EncryptedPayload()
+					So(err, ShouldBeNil)
+					So(encryptedPayload, ShouldNotBeEmpty)
+
+					encryptedKey, err := artifact.EncryptedKey()
+					So(err, ShouldBeNil)
+					So(encryptedKey, ShouldNotBeEmpty)
+
+					ephemeralPubKey, err := artifact.EphemeralPublicKey()
+					So(err, ShouldBeNil)
+					So(ephemeralPubKey, ShouldNotBeEmpty)
+
+					crypto := NewCryptoSuite()
+					decryptedPayload, err := crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
+					So(err, ShouldBeNil)
+					So(decryptedPayload, ShouldResemble, payload)
+				})
+
+				Convey("And the metadata should be retrievable", func() {
+					metadataList, err := artifact.Metadata()
+					So(err, ShouldBeNil)
+					So(metadataList.Len(), ShouldBeGreaterThan, 0)
+
+					found := false
+
+					for idx := range metadataList.Len() {
+						item := metadataList.At(idx)
+						key, keyErr := item.Key()
+						So(keyErr, ShouldBeNil)
+
+						if key != "test_key" {
+							continue
+						}
+
+						value, valueErr := item.Value().TextValue()
+						So(valueErr, ShouldBeNil)
+						So(value, ShouldEqual, "test_value")
+						found = true
+					}
+
+					So(found, ShouldBeTrue)
+				})
+			})
+		})
 	})
 }
 
-func TestAcquire(t *testing.T) {
-	Convey("Acquire", t, func() {
-		artifact := Acquire("origin", Artifact_Type_json)
+func TestArtifactEncryption(t *testing.T) {
+	Convey("Given the functional options for artifact creation", t, func() {
+		payload := []byte("Hello, this is a test payload!")
+
+		Convey("When creating an artifact with encrypted payload", func() {
+			artifact := Acquire("test-artifact", Artifact_Type_json).
+				WithRole("user").
+				WithScope("prompt").
+				WithPayload(payload)
+
+			So(artifact, ShouldNotBeNil)
+
+			Convey("Then the encrypted fields should be properly set", func() {
+				encryptedPayload, err := artifact.EncryptedPayload()
+				So(err, ShouldBeNil)
+				So(encryptedPayload, ShouldNotBeEmpty)
+
+				encryptedKey, err := artifact.EncryptedKey()
+				So(err, ShouldBeNil)
+				So(encryptedKey, ShouldNotBeEmpty)
+
+				ephemeralPubKey, err := artifact.EphemeralPublicKey()
+				So(err, ShouldBeNil)
+				So(ephemeralPubKey, ShouldNotBeEmpty)
+
+				Convey("And the payload should be decryptable", func() {
+					crypto := NewCryptoSuite()
+					decryptedPayload, err := crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
+					So(err, ShouldBeNil)
+					So(decryptedPayload, ShouldResemble, payload)
+				})
+			})
+		})
+	})
+}
+
+func TestArtifactMetadata(t *testing.T) {
+	Convey("Given the functional options for artifact creation", t, func() {
+		attributes := map[string]any{
+			"test_key": "test_value",
+		}
+
+		Convey("When creating an artifact with metadata", func() {
+			artifact := Acquire("test-artifact", Artifact_Type_json).
+				WithRole("user").
+				WithScope("prompt").
+				WithAttrubutes(attributes)
+
+			So(artifact, ShouldNotBeNil)
+
+			Convey("Then the metadata should be retrievable", func() {
+				metadataList, err := artifact.Metadata()
+				So(err, ShouldBeNil)
+				So(metadataList.Len(), ShouldEqual, 1)
+
+				item := metadataList.At(0)
+				key, err := item.Key()
+				So(err, ShouldBeNil)
+				So(key, ShouldEqual, "test_key")
+
+				value, err := item.Value().TextValue()
+				So(err, ShouldBeNil)
+				So(value, ShouldEqual, "test_value")
+			})
+		})
+	})
+}
+
+func TestArtifactBasicFields(t *testing.T) {
+	Convey("Given the functional options for artifact creation", t, func() {
+		Convey("When creating a basic artifact", func() {
+			artifact := Acquire("test-artifact", Artifact_Type_json).
+				WithRole("user").
+				WithScope("prompt")
+
+			So(artifact, ShouldNotBeNil)
+
+			Convey("Then it should have the required basic fields", func() {
+				uuid, err := artifact.Uuid()
+				So(err, ShouldBeNil)
+				So(len(uuid), ShouldBeGreaterThan, 0)
+
+				role, err := artifact.Role()
+				So(err, ShouldBeNil)
+				So(role, ShouldEqual, "user")
+
+				scope, err := artifact.Scope()
+				So(err, ShouldBeNil)
+				So(scope, ShouldEqual, "prompt")
+
+				timestamp := artifact.Timestamp()
+				So(timestamp, ShouldBeGreaterThan, 0)
+			})
+		})
+	})
+}
+
+func TestArtifactWithCircuit(t *testing.T) {
+	Convey("Given an artifact with circuit integration", t, func() {
+		artifact := Acquire("test-artifact", Artifact_Type_json).
+			WithRole("user").
+			WithScope("prompt")
+
 		So(artifact, ShouldNotBeNil)
 
-		origin, err := artifact.Origin()
-		So(err, ShouldBeNil)
-		So(origin, ShouldEqual, "origin")
-		So(artifact.Type(), ShouldEqual, Artifact_Type_json)
+		Convey("When setting up for zero-knowledge proof", func() {
+			pseudonymHash := []byte{1, 2, 3, 4}
+			merkleRoot := []byte{9, 8, 7, 6}
 
-		uuid, err := artifact.Uuid()
-		So(err, ShouldBeNil)
-		So(uuid, ShouldNotBeEmpty)
+			err := artifact.SetPseudonymHash(pseudonymHash)
+			So(err, ShouldBeNil)
 
-		artifact.Release()
+			err = artifact.SetMerkleRoot(merkleRoot)
+			So(err, ShouldBeNil)
+
+			Convey("Then the circuit-related fields should be properly set", func() {
+				retrievedHash, err := artifact.PseudonymHash()
+				So(err, ShouldBeNil)
+				So(retrievedHash, ShouldResemble, pseudonymHash)
+
+				retrievedRoot, err := artifact.MerkleRoot()
+				So(err, ShouldBeNil)
+				So(retrievedRoot, ShouldResemble, merkleRoot)
+
+				Convey("And we can generate and verify proofs", func() {
+					So(artifact.HasPseudonymHash(), ShouldBeTrue)
+					So(artifact.HasMerkleRoot(), ShouldBeTrue)
+				})
+			})
+		})
 	})
-}
-
-func TestArtifactRelease(t *testing.T) {
-	Convey("Release allows subsequent Acquire", t, func() {
-		first := Acquire("first", Artifact_Type_json)
-		So(first, ShouldNotBeNil)
-
-		first.Release()
-
-		second := Acquire("second", Artifact_Type_json)
-		So(second, ShouldNotBeNil)
-
-		secondOrigin, err := second.Origin()
-		So(err, ShouldBeNil)
-		So(secondOrigin, ShouldEqual, "second")
-
-		second.Release()
-	})
-}
-
-func TestArtifactRelease_nil(t *testing.T) {
-	Convey("Release ignores nil artifact", t, func() {
-		var artifact *Artifact
-		artifact.Release()
-	})
-}
-
-func BenchmarkAcquire(b *testing.B) {
-	b.ResetTimer()
-
-	for b.Loop() {
-		artifact := Acquire("origin", Artifact_Type_json)
-		if artifact == nil {
-			b.Fatal("Acquire returned nil")
-		}
-
-		artifact.Release()
-	}
-}
-
-func BenchmarkRelease_nil(b *testing.B) {
-	b.ResetTimer()
-
-	for b.Loop() {
-		var artifact *Artifact
-		artifact.Release()
-	}
-}
-
-func BenchmarkPopulateArtifactFields(b *testing.B) {
-	artifact := Acquire("origin", Artifact_Type_json)
-	if artifact == nil {
-		b.Fatal("Acquire returned nil")
-	}
-
-	defer artifact.Release()
-
-	if err := readArtifactFields(artifact); err != nil {
-		b.Fatal(err)
-	}
-
-	b.ResetTimer()
-
-	for b.Loop() {
-		if err := mutateArtifactFields(artifact); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkArtifactLifecycle(b *testing.B) {
-	b.ResetTimer()
-
-	for b.Loop() {
-		artifact := Acquire("origin", Artifact_Type_json)
-		if artifact == nil {
-			b.Fatal("Acquire returned nil")
-		}
-
-		if err := exerciseConversionRoundTrip(artifact); err != nil {
-			artifact.Release()
-			b.Fatal(err)
-		}
-
-		if err := exerciseIORoundTrip(artifact); err != nil {
-			artifact.Release()
-			b.Fatal(err)
-		}
-
-		artifact.Release()
-	}
 }

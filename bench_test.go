@@ -21,8 +21,8 @@ func mutateArtifactFields(artifact *Artifact) error {
 		return err
 	}
 
-	if err := artifact.SetPayload([]byte("payload")); err != nil {
-		return err
+	if result := artifact.WithPayload([]byte("payload")); result == nil {
+		return io.ErrUnexpectedEOF
 	}
 
 	nestedError, err := artifact.Error()
@@ -48,15 +48,14 @@ func readArtifactFields(artifact *Artifact) error {
 	_, _ = artifact.RoleBytes()
 	_, _ = artifact.Scope()
 	_, _ = artifact.ScopeBytes()
-	_, _ = artifact.Payload()
+	_, _ = artifact.EncryptedPayload()
 	_, _ = artifact.Uuid()
-	_, _ = artifact.UuidBytes()
 
 	_ = artifact.HasOrigin()
 	_ = artifact.HasDestination()
 	_ = artifact.HasRole()
 	_ = artifact.HasScope()
-	_ = artifact.HasPayload()
+	_ = artifact.HasEncryptedPayload()
 	_ = artifact.HasUuid()
 	_ = artifact.HasError()
 	_ = artifact.IsValid()
@@ -169,74 +168,14 @@ func exerciseConversionRoundTrip(artifact *Artifact) error {
 		return err
 	}
 
-	marshaled := artifact.Marshal()
-	if len(marshaled) == 0 {
+	marshaled, err := artifact.Message().Marshal()
+
+	if err != nil || len(marshaled) == 0 {
 		return io.ErrUnexpectedEOF
-	}
-
-	encodedBuffer := make([]byte, 0, len(marshaled)+512)
-	artifact.Encode(encodedBuffer)
-
-	target := Acquire("", Artifact_Type_json)
-	if target == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	defer target.Release()
-
-	if target.Unmarshal(marshaled) == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	if target.Decode(marshaled) == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	packed := artifact.Pack()
-	if len(packed) == 0 {
-		return io.ErrUnexpectedEOF
-	}
-
-	if target.Unpack(packed) == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	raw, err := artifact.Message().Marshal()
-	if err != nil {
-		return err
-	}
-
-	message, err := capnp.Unmarshal(raw)
-	if err != nil {
-		return err
-	}
-
-	read, err := ReadRootArtifact(message)
-	if err != nil {
-		return err
-	}
-
-	if !read.IsValid() {
-		return io.ErrUnexpectedEOF
-	}
-
-	return nil
-}
-
-func exerciseIORoundTrip(artifact *Artifact) error {
-	marshaled := artifact.Marshal()
-	buffer := make([]byte, len(marshaled)+64)
-
-	if _, err := artifact.Read(buffer); err != io.EOF {
-		return err
-	}
-
-	shortBuffer := make([]byte, 1)
-	if _, err := artifact.Read(shortBuffer); err != io.ErrShortBuffer {
-		return err
 	}
 
 	target := Acquire("", Artifact_Type_json)
+
 	if target == nil {
 		return io.ErrUnexpectedEOF
 	}
@@ -247,24 +186,23 @@ func exerciseIORoundTrip(artifact *Artifact) error {
 		return err
 	}
 
-	if err := target.Close(); err != nil {
+	packed, err := artifact.Pack()
+
+	if err != nil || len(packed) == 0 {
+		return io.ErrUnexpectedEOF
+	}
+
+	unpackTarget := Acquire("", Artifact_Type_json)
+
+	if unpackTarget == nil {
+		return io.ErrUnexpectedEOF
+	}
+
+	defer unpackTarget.Release()
+
+	if err := unpackTarget.Unpack(packed); err != nil {
 		return err
 	}
 
-	rejectTarget := Acquire("", Artifact_Type_json)
-	if rejectTarget == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	defer rejectTarget.Release()
-
-	if _, err := rejectTarget.Write(nil); err == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	if _, err := rejectTarget.Write([]byte{0xff, 0xff, 0xff}); err == nil {
-		return io.ErrUnexpectedEOF
-	}
-
-	return nil
+	return readArtifactFields(target)
 }

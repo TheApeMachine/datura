@@ -76,16 +76,10 @@ func TestPeerConnections(t *testing.T) {
 
 		Convey("When waiting for connection establishment", func() {
 			// Wait for connection to be established
-			time.Sleep(2 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 
 			Convey("Then peers should be connected", func() {
-				node1.peersMutex.RLock()
-				node2.peersMutex.RLock()
-				defer node1.peersMutex.RUnlock()
-				defer node2.peersMutex.RUnlock()
-
-				// At least one node should see the other as peer
-				totalPeers := len(node1.peers) + len(node2.peers)
+				totalPeers := node1.peers.Load().Len() + node2.peers.Load().Len()
 				So(totalPeers, ShouldBeGreaterThan, 0)
 			})
 		})

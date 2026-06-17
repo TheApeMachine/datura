@@ -3,32 +3,84 @@ package datura
 import (
 	"errors"
 	"io"
+	"sync"
+	"unsafe"
 
+	capnp "capnproto.org/go/capnp/v3"
 	"github.com/theapemachine/errnie"
 )
+
+type artifactStreamState struct {
+	readWire    []byte
+	readOffset  int
+	readDone    bool
+	writeBuffer []byte
+}
+
+var artifactStreamStates sync.Map
+
+func artifactStreamKey(artifact *Artifact) uintptr {
+	return uintptr(unsafe.Pointer(artifact))
+}
+
+func artifactStreamStateFor(artifact *Artifact) *artifactStreamState {
+	key := artifactStreamKey(artifact)
+
+	if existing, ok := artifactStreamStates.Load(key); ok {
+		return existing.(*artifactStreamState)
+	}
+
+	state := &artifactStreamState{}
+	actual, _ := artifactStreamStates.LoadOrStore(key, state)
+
+	return actual.(*artifactStreamState)
+}
+
+func resetArtifactStreamState(artifact *Artifact) {
+	artifactStreamStates.Delete(artifactStreamKey(artifact))
+}
 
 /*
 Read implements the io.Reader interface for the Artifact.
 It marshals the entire artifact into the provided byte slice.
 */
 func (artifact *Artifact) Read(p []byte) (n int, err error) {
-	buf, err := artifact.Message().Marshal()
+	state := artifactStreamStateFor(artifact)
 
-	if err != nil {
-		errnie.Error(err)
-		return 0, err
+	if state.readDone {
+		return 0, io.EOF
 	}
 
-	// Copy as much as we can into the provided buffer
-	n = copy(p, buf)
+	if state.readWire == nil {
+		state.readWire, err = artifact.Message().Marshal()
 
-	// If we couldn't copy everything, return ErrShortBuffer
-	if n < len(buf) {
-		errnie.Error(io.ErrShortBuffer)
-		return n, io.ErrShortBuffer
+		if err != nil {
+			return 0, errnie.Error(err, "p", string(p))
+		}
+
+		state.readOffset = 0
 	}
 
-	return n, io.EOF
+	if state.readOffset >= len(state.readWire) {
+		state.readWire = nil
+		state.readOffset = 0
+		state.readDone = true
+
+		return 0, io.EOF
+	}
+
+	n = copy(p, state.readWire[state.readOffset:])
+	state.readOffset += n
+
+	if state.readOffset >= len(state.readWire) {
+		state.readWire = nil
+		state.readOffset = 0
+		state.readDone = true
+
+		return n, io.EOF
+	}
+
+	return n, nil
 }
 
 /*
@@ -37,15 +89,43 @@ It unmarshals the provided bytes into the current artifact.
 */
 func (artifact *Artifact) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
-		errnie.Error(errors.New("empty input"))
 		return 0, errnie.Error(errors.New("empty input"))
 	}
 
-	// Use the existing Unmarshal method and check if it succeeded
-	if result := artifact.Unmarshal(p); result == nil {
-		errnie.Error(errors.New("failed to unmarshal event"))
-		return 0, errors.New("failed to unmarshal event")
+	state := artifactStreamStateFor(artifact)
+	state.writeBuffer = append(state.writeBuffer, p...)
+
+	var (
+		msg     *capnp.Message
+		inbound Artifact
+		segment *capnp.Segment
+	)
+
+	if msg, err = capnp.Unmarshal(state.writeBuffer); err != nil {
+		return len(p), nil
 	}
+
+	if inbound, err = ReadRootArtifact(msg); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	if segment, err = artifact.Message().Reset(capnp.SingleSegment(nil)); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	writable, err := NewRootArtifact(segment)
+
+	if err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(inbound)); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	*artifact = writable
+	state.writeBuffer = nil
+	resetArtifactStreamState(artifact)
 
 	return len(p), nil
 }
@@ -54,6 +134,8 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 Close implements the io.Closer interface for the Artifact.
 */
 func (artifact *Artifact) Close() error {
+	resetArtifactStreamState(artifact)
 	artifact = nil
+
 	return nil
 }

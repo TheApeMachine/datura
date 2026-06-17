@@ -30,33 +30,33 @@ func TestNewMetrics(t *testing.T) {
 
 func TestLatencyTracker(t *testing.T) {
 	Convey("Given a new latency tracker", t, func() {
-		tracker := NewLatencyTracker(100)
+		tracker := NewLatency(100)
 
 		Convey("When recording latencies", func() {
-			tracker.RecordLatency(10 * time.Millisecond)
-			tracker.RecordLatency(20 * time.Millisecond)
-			tracker.RecordLatency(30 * time.Millisecond)
+			tracker.Record(10 * time.Millisecond)
+			tracker.Record(20 * time.Millisecond)
+			tracker.Record(30 * time.Millisecond)
 
 			Convey("Then average should be calculated correctly", func() {
-				avg := tracker.AverageLatency()
+				avg := tracker.Average()
 				So(avg, ShouldEqual, 20*time.Millisecond)
 			})
 		})
 
 		Convey("When no latencies are recorded", func() {
-			avg := tracker.AverageLatency()
+			avg := tracker.Average()
 			So(avg, ShouldEqual, 0)
 		})
 
 		Convey("When window wraps around", func() {
 			// Fill window
 			for i := 0; i < 100; i++ {
-				tracker.RecordLatency(10 * time.Millisecond)
+				tracker.Record(10 * time.Millisecond)
 			}
 			// Add one more to wrap
-			tracker.RecordLatency(20 * time.Millisecond)
+			tracker.Record(20 * time.Millisecond)
 
-			avg := tracker.AverageLatency()
+			avg := tracker.Average()
 			So(avg > 10*time.Millisecond, ShouldBeTrue)
 			So(avg < 20*time.Millisecond, ShouldBeTrue)
 		})
@@ -73,7 +73,7 @@ func TestMetricsRecording(t *testing.T) {
 			Convey("Then counters should be updated", func() {
 				So(metrics.insertCount.Load(), ShouldEqual, 1)
 				So(metrics.bytesTransmitted.Load(), ShouldEqual, 100)
-				So(metrics.insertLatency.AverageLatency(), ShouldEqual, 10*time.Millisecond)
+				So(metrics.insertLatency.Average(), ShouldEqual, 10*time.Millisecond)
 			})
 		})
 
@@ -82,7 +82,7 @@ func TestMetricsRecording(t *testing.T) {
 
 			Convey("Then counters should be updated", func() {
 				So(metrics.lookupCount.Load(), ShouldEqual, 1)
-				So(metrics.lookupLatency.AverageLatency(), ShouldEqual, 5*time.Millisecond)
+				So(metrics.lookupLatency.Average(), ShouldEqual, 5*time.Millisecond)
 			})
 		})
 
@@ -92,7 +92,7 @@ func TestMetricsRecording(t *testing.T) {
 			Convey("Then counters should be updated", func() {
 				So(metrics.syncCount.Load(), ShouldEqual, 1)
 				So(metrics.bytesReceived.Load(), ShouldEqual, 200)
-				So(metrics.syncLatency.AverageLatency(), ShouldEqual, 15*time.Millisecond)
+				So(metrics.syncLatency.Average(), ShouldEqual, 15*time.Millisecond)
 			})
 		})
 
@@ -122,8 +122,10 @@ func TestMetricsNetworkStats(t *testing.T) {
 			metrics.SetNodeRole("leader", 1.0)
 
 			Convey("Then role should be updated", func() {
-				So(metrics.nodeRole, ShouldEqual, "leader")
-				So(metrics.nodeWeight, ShouldEqual, 1.0)
+				snapshot := metrics.GetMetrics()
+				node := snapshot["node"].(map[string]interface{})
+				So(node["role"], ShouldEqual, "leader")
+				So(node["weight"], ShouldEqual, 1.0)
 			})
 		})
 
@@ -147,7 +149,7 @@ func TestMetricsElectionStats(t *testing.T) {
 
 			Convey("Then vote counters should be updated", func() {
 				So(metrics.votesReceived.Load(), ShouldEqual, 2)
-				So(metrics.lastVoter, ShouldEqual, "node2")
+				So(loadString(&metrics.lastVoter), ShouldEqual, "node2")
 			})
 		})
 	})

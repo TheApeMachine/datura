@@ -6,179 +6,178 @@ that help monitor and optimize the distributed tree's behavior.
 package dmt
 
 import (
-	"sync"
+	"math"
 	"sync/atomic"
 	"time"
 )
 
 /*
 Metrics tracks performance and operational metrics for the radix tree.
-It maintains atomic counters for operations, latency tracking for performance
-measurement, and various network and election-related metrics for distributed
-operation monitoring.
 */
 type Metrics struct {
-	// Operation counters
 	insertCount   atomic.Uint64
 	lookupCount   atomic.Uint64
 	syncCount     atomic.Uint64
 	conflictCount atomic.Uint64
-
-	// Election metrics
 	votesReceived atomic.Uint64
 	termNumber    atomic.Uint64
-	lastVoter     string
-
-	// Latency tracking
-	insertLatency  *LatencyTracker
-	lookupLatency  *LatencyTracker
-	syncLatency    *LatencyTracker
-	networkLatency *LatencyTracker
-
-	// Network metrics
+	lastVoter     atomic.Pointer[string]
+	insertLatency  *Latency
+	lookupLatency  *Latency
+	syncLatency    *Latency
+	networkLatency *Latency
 	bytesTransmitted atomic.Uint64
 	bytesReceived    atomic.Uint64
 	peerCount        atomic.Int32
-
-	// Node status
-	isLeader     atomic.Bool
-	nodeRole     string
-	nodeWeight   float64
-	lastSyncTime time.Time
-	mu           sync.RWMutex
+	isLeader         atomic.Bool
+	nodeRole         atomic.Pointer[string]
+	nodeWeightBits   atomic.Uint64
+	lastSyncUnixNano atomic.Int64
 }
 
 /*
-NewMetrics creates a new metrics tracker with initialized latency trackers
-for various operation types. Each latency tracker maintains a window of
-100 measurements.
+NewMetrics creates a new metrics tracker with initialized latency trackers.
 */
 func NewMetrics() *Metrics {
-	return &Metrics{
-		insertLatency:  NewLatencyTracker(100),
-		lookupLatency:  NewLatencyTracker(100),
-		syncLatency:    NewLatencyTracker(100),
-		networkLatency: NewLatencyTracker(100),
+	metrics := &Metrics{
+		insertLatency:  NewLatency(100),
+		lookupLatency:  NewLatency(100),
+		syncLatency:    NewLatency(100),
+		networkLatency: NewLatency(100),
 	}
+
+	emptyRole := ""
+	metrics.nodeRole.Store(&emptyRole)
+
+	return metrics
+}
+
+func storeString(target *atomic.Pointer[string], value string) {
+	copied := value
+	target.Store(&copied)
+}
+
+func loadString(source *atomic.Pointer[string]) string {
+	value := source.Load()
+
+	if value == nil {
+		return ""
+	}
+
+	return *value
+}
+
+func storeFloat64Bits(target *atomic.Uint64, value float64) {
+	target.Store(math.Float64bits(value))
+}
+
+func loadFloat64Bits(source *atomic.Uint64) float64 {
+	return math.Float64frombits(source.Load())
 }
 
 /*
 RecordInsert records metrics for an insert operation.
-It updates the insert counter, records the operation latency, and
-tracks the number of bytes transmitted.
 */
-func (m *Metrics) RecordInsert(duration time.Duration, bytes int) {
-	m.insertCount.Add(1)
-	m.insertLatency.RecordLatency(duration)
-	m.bytesTransmitted.Add(uint64(bytes))
+func (metrics *Metrics) RecordInsert(duration time.Duration, bytes int) {
+	metrics.insertCount.Add(1)
+	metrics.insertLatency.Record(duration)
+	metrics.bytesTransmitted.Add(uint64(bytes))
 }
 
 /*
 RecordLookup records metrics for a lookup operation.
-It updates the lookup counter and records the operation latency.
 */
-func (m *Metrics) RecordLookup(duration time.Duration) {
-	m.lookupCount.Add(1)
-	m.lookupLatency.RecordLatency(duration)
+func (metrics *Metrics) RecordLookup(duration time.Duration) {
+	metrics.lookupCount.Add(1)
+	metrics.lookupLatency.Record(duration)
 }
 
 /*
 RecordSync records metrics for a sync operation.
-It updates the sync counter, records the operation latency,
-tracks received bytes, and updates the last sync timestamp.
 */
-func (m *Metrics) RecordSync(duration time.Duration, bytes int) {
-	m.syncCount.Add(1)
-	m.syncLatency.RecordLatency(duration)
-	m.bytesReceived.Add(uint64(bytes))
-	m.mu.Lock()
-	m.lastSyncTime = time.Now()
-	m.mu.Unlock()
+func (metrics *Metrics) RecordSync(duration time.Duration, bytes int) {
+	metrics.syncCount.Add(1)
+	metrics.syncLatency.Record(duration)
+	metrics.bytesReceived.Add(uint64(bytes))
+	metrics.lastSyncUnixNano.Store(time.Now().UnixNano())
 }
 
 /*
 RecordConflict records a detected conflict during operations.
-It increments the conflict counter for monitoring consistency issues.
 */
-func (m *Metrics) RecordConflict() {
-	m.conflictCount.Add(1)
+func (metrics *Metrics) RecordConflict() {
+	metrics.conflictCount.Add(1)
 }
 
 /*
 UpdatePeerCount updates the current peer count.
-It atomically stores the new count of connected peers.
 */
-func (m *Metrics) UpdatePeerCount(count int32) {
-	m.peerCount.Store(count)
+func (metrics *Metrics) UpdatePeerCount(count int32) {
+	metrics.peerCount.Store(count)
 }
 
 /*
 SetNodeRole updates the node's role and weight in the network.
-It stores the role string and associated weight value for metrics reporting.
 */
-func (m *Metrics) SetNodeRole(role string, weight float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.nodeRole = role
-	m.nodeWeight = weight
+func (metrics *Metrics) SetNodeRole(role string, weight float64) {
+	storeString(&metrics.nodeRole, role)
+	storeFloat64Bits(&metrics.nodeWeightBits, weight)
 }
 
 /*
 SetLeader updates the node's leader status.
-It atomically stores whether this node is currently the leader.
 */
-func (m *Metrics) SetLeader(isLeader bool) {
-	m.isLeader.Store(isLeader)
+func (metrics *Metrics) SetLeader(isLeader bool) {
+	metrics.isLeader.Store(isLeader)
 }
 
 /*
 RecordVote records a vote received during election.
-It increments the votes received counter and updates the last voter.
 */
-func (m *Metrics) RecordVote(voter string) {
-	m.votesReceived.Add(1)
-	m.mu.Lock()
-	m.lastVoter = voter
-	m.mu.Unlock()
+func (metrics *Metrics) RecordVote(voter string) {
+	metrics.votesReceived.Add(1)
+	storeString(&metrics.lastVoter, voter)
 }
 
 /*
 GetMetrics returns a snapshot of current metrics.
-It provides a comprehensive view of the node's operational state,
-including performance metrics, election status, and network statistics.
 */
-func (m *Metrics) GetMetrics() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (metrics *Metrics) GetMetrics() map[string]interface{} {
+	lastSyncNano := metrics.lastSyncUnixNano.Load()
+	lastSyncTime := time.Time{}
+
+	if lastSyncNano > 0 {
+		lastSyncTime = time.Unix(0, lastSyncNano)
+	}
 
 	return map[string]interface{}{
 		"operations": map[string]uint64{
-			"insert":   m.insertCount.Load(),
-			"lookup":   m.lookupCount.Load(),
-			"sync":     m.syncCount.Load(),
-			"conflict": m.conflictCount.Load(),
+			"insert":   metrics.insertCount.Load(),
+			"lookup":   metrics.lookupCount.Load(),
+			"sync":     metrics.syncCount.Load(),
+			"conflict": metrics.conflictCount.Load(),
 		},
 		"election": map[string]interface{}{
-			"votes_received": m.votesReceived.Load(),
-			"term_number":    m.termNumber.Load(),
-			"last_voter":     m.lastVoter,
+			"votes_received": metrics.votesReceived.Load(),
+			"term_number":    metrics.termNumber.Load(),
+			"last_voter":     loadString(&metrics.lastVoter),
 		},
 		"latencies": map[string]float64{
-			"insert":  float64(m.insertLatency.AverageLatency()) / float64(time.Millisecond),
-			"lookup":  float64(m.lookupLatency.AverageLatency()) / float64(time.Millisecond),
-			"sync":    float64(m.syncLatency.AverageLatency()) / float64(time.Millisecond),
-			"network": float64(m.networkLatency.AverageLatency()) / float64(time.Millisecond),
+			"insert":  float64(metrics.insertLatency.Average()) / float64(time.Millisecond),
+			"lookup":  float64(metrics.lookupLatency.Average()) / float64(time.Millisecond),
+			"sync":    float64(metrics.syncLatency.Average()) / float64(time.Millisecond),
+			"network": float64(metrics.networkLatency.Average()) / float64(time.Millisecond),
 		},
 		"network": map[string]interface{}{
-			"bytes_tx":   m.bytesTransmitted.Load(),
-			"bytes_rx":   m.bytesReceived.Load(),
-			"peer_count": m.peerCount.Load(),
+			"bytes_tx":   metrics.bytesTransmitted.Load(),
+			"bytes_rx":   metrics.bytesReceived.Load(),
+			"peer_count": metrics.peerCount.Load(),
 		},
 		"node": map[string]interface{}{
-			"is_leader":      m.isLeader.Load(),
-			"role":           m.nodeRole,
-			"weight":         m.nodeWeight,
-			"last_sync_time": m.lastSyncTime,
+			"is_leader":      metrics.isLeader.Load(),
+			"role":           loadString(&metrics.nodeRole),
+			"weight":         loadFloat64Bits(&metrics.nodeWeightBits),
+			"last_sync_time": lastSyncTime,
 		},
 	}
 }

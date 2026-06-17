@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,7 +102,8 @@ func TestUpdateTerm(t *testing.T) {
 
 		Convey("When a update term is performed", func() {
 			tree.UpdateTerm(1)
-			So(tree.term, ShouldEqual, 1)
+			term, _ := tree.GetLogState()
+			So(term, ShouldEqual, 1)
 		})
 	})
 }
@@ -145,8 +148,9 @@ func TestTreeWithPersistence(t *testing.T) {
 
 					// Verify term and index were loaded
 					term, index := tree2.GetLogState()
-					So(term, ShouldEqual, tree.term)
-					So(index, ShouldEqual, tree.logIndex)
+					termBefore, indexBefore := tree.GetLogState()
+					So(term, ShouldEqual, termBefore)
+					So(index, ShouldEqual, indexBefore)
 
 					// Verify data was recovered
 					value, exists := tree2.Get([]byte("test-key"))
@@ -230,6 +234,35 @@ func TestTreeTermUpdate(t *testing.T) {
 				term, _ = newTree.GetLogState()
 				So(term, ShouldEqual, uint64(5))
 			})
+		})
+	})
+}
+
+func TestTreeConcurrentInsert(test *testing.T) {
+	Convey("Given concurrent writers on one tree", test, func() {
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
+		defer tree.Close()
+
+		var waitGroup sync.WaitGroup
+
+		for workerIndex := range 32 {
+			waitGroup.Add(1)
+
+			go func(index int) {
+				defer waitGroup.Done()
+
+				key := []byte("toxicity/BTC-USD/book/" + strconv.Itoa(index) + ".")
+				tree.Insert(key, []byte("book"))
+			}(workerIndex)
+		}
+
+		waitGroup.Wait()
+
+		Convey("It should retain inserted keys", func() {
+			value, ok := tree.Get([]byte("toxicity/BTC-USD/book/0."))
+			So(ok, ShouldBeTrue)
+			So(string(value), ShouldEqual, "book")
 		})
 	})
 }

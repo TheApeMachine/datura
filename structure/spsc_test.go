@@ -83,7 +83,7 @@ func TestSPSCRingPush(t *testing.T) {
 
 func TestSPSCRingReadWrite(t *testing.T) {
 	Convey("Given an SPSCRing with a bound artifact", t, func() {
-		ring, err := NewSPSCRing[int](4, false, nil)
+		ring, err := NewSPSCRing[int](4, false, datura.Acquire("spsc", datura.Artifact_Type_json))
 		So(err, ShouldBeNil)
 
 		source := datura.Acquire("spsc", datura.Artifact_Type_json)
@@ -93,7 +93,8 @@ func TestSPSCRingReadWrite(t *testing.T) {
 		So(marshalErr, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire := source.Marshal()
+		wire, marshalErr := source.Message().Marshal()
+		So(marshalErr, ShouldBeNil)
 
 		written, writeErr := ring.Write(wire)
 
@@ -112,9 +113,10 @@ func TestSPSCRingReadWrite(t *testing.T) {
 			So(ring.Len(), ShouldEqual, 0)
 
 			decoded := datura.Acquire("spsc", datura.Artifact_Type_json)
-			So(decoded.Unmarshal(buffer[:readCount]), ShouldNotBeNil)
+			_, writeErr := decoded.Write(buffer[:readCount])
+			So(writeErr, ShouldBeNil)
 
-			out, payloadErr := decoded.Payload()
+			out, payloadErr := decoded.DecryptPayload()
 			So(payloadErr, ShouldBeNil)
 			So(string(out), ShouldEqual, "9")
 		})
@@ -194,7 +196,7 @@ func TestSPSCRingImplementsRing(t *testing.T) {
 }
 
 func BenchmarkSPSCRingReadWrite(b *testing.B) {
-	ring, err := NewSPSCRing[int](1024, false, nil)
+	ring, err := NewSPSCRing[int](1024, false, datura.Acquire("spsc", datura.Artifact_Type_json))
 
 	if err != nil {
 		b.Fatal(err)
@@ -213,7 +215,12 @@ func BenchmarkSPSCRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire := source.Marshal()
+	wire, err := source.Message().Marshal()
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
 	buffer := make([]byte, 4096)
 
 	b.ReportAllocs()

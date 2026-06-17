@@ -11,8 +11,7 @@ import (
 
 func TestNewPersistentStore(t *testing.T) {
 	Convey("Given a temporary directory", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		Convey("When creating a new persistent store", func() {
 			store, err := NewPersistentStore(tmpDir)
@@ -36,8 +35,7 @@ func TestNewPersistentStore(t *testing.T) {
 
 func TestLogInsert(t *testing.T) {
 	Convey("Given a new persistent store", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		store, err := NewPersistentStore(tmpDir)
 		So(err, ShouldBeNil)
@@ -63,14 +61,12 @@ func TestLogInsert(t *testing.T) {
 
 func TestLoadLastState(t *testing.T) {
 	Convey("Given a persistent store with existing entries", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		store, err := NewPersistentStore(tmpDir)
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		// Add some entries
 		entries := []struct {
 			key   []byte
 			value []byte
@@ -82,8 +78,8 @@ func TestLoadLastState(t *testing.T) {
 			{[]byte("key3"), []byte("value3"), 2, 3},
 		}
 
-		for _, e := range entries {
-			err := store.LogInsert(e.key, e.value, e.term, e.index)
+		for _, entry := range entries {
+			err := store.LogInsert(entry.key, entry.value, entry.term, entry.index)
 			So(err, ShouldBeNil)
 		}
 
@@ -104,21 +100,18 @@ func TestLoadLastState(t *testing.T) {
 
 func TestCreateSnapshot(t *testing.T) {
 	Convey("Given a persistent store with entries", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		store, err := NewPersistentStore(tmpDir)
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		// Add enough entries to trigger snapshot
-		for i := uint64(1); i <= 1001; i++ {
-			err := store.LogInsert([]byte("key"), []byte("value"), 1, i)
+		for index := uint64(1); index <= 1001; index++ {
+			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
 			So(err, ShouldBeNil)
 		}
 
 		Convey("When waiting for snapshot creation", func() {
-			// Wait a bit for async snapshot to complete
 			time.Sleep(100 * time.Millisecond)
 
 			Convey("Then a snapshot file should exist", func() {
@@ -129,7 +122,6 @@ func TestCreateSnapshot(t *testing.T) {
 				Convey("And the WAL should be truncated", func() {
 					walInfo, err := os.Stat(filepath.Join(tmpDir, "wal.log"))
 					So(err, ShouldBeNil)
-					// WAL should now only contain the snapshot entry
 					So(walInfo.Size(), ShouldBeLessThan, 100)
 				})
 			})
@@ -139,16 +131,14 @@ func TestCreateSnapshot(t *testing.T) {
 
 func TestTruncateWAL(t *testing.T) {
 	Convey("Given a persistent store with a large WAL", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		store, err := NewPersistentStore(tmpDir)
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		// Add many entries
-		for i := uint64(1); i <= 100; i++ {
-			err := store.LogInsert([]byte("key"), []byte("value"), 1, i)
+		for index := uint64(1); index <= 100; index++ {
+			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
 			So(err, ShouldBeNil)
 		}
 
@@ -156,7 +146,7 @@ func TestTruncateWAL(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When truncating the WAL", func() {
-			err := store.truncateWAL()
+			err := store.TruncateWAL()
 			So(err, ShouldBeNil)
 
 			Convey("Then the WAL should be smaller", func() {
@@ -176,8 +166,7 @@ func TestTruncateWAL(t *testing.T) {
 
 func TestGetLastState(t *testing.T) {
 	Convey("Given a persistent store", t, func() {
-		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
-		defer os.RemoveAll(tmpDir)
+		tmpDir := t.TempDir()
 
 		store, err := NewPersistentStore(tmpDir)
 		So(err, ShouldBeNil)
@@ -198,4 +187,27 @@ func TestGetLastState(t *testing.T) {
 			So(index, ShouldEqual, uint64(5))
 		})
 	})
+}
+
+func BenchmarkPersistentStoreLogInsert(benchmark *testing.B) {
+	tmpDir := benchmark.TempDir()
+
+	store, err := NewPersistentStore(tmpDir)
+	if err != nil {
+		benchmark.Fatal(err)
+	}
+	defer store.Close()
+
+	key := []byte("benchmark-key")
+	value := []byte("benchmark-value")
+
+	benchmark.ResetTimer()
+
+	for benchmark.Loop() {
+		index := store.lastIndex.Add(1)
+
+		if logErr := store.LogInsert(key, value, 1, index); logErr != nil {
+			benchmark.Fatal(logErr)
+		}
+	}
 }
