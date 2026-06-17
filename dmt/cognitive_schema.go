@@ -1,6 +1,9 @@
 package dmt
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
 const (
 	sensoryNamespace     = "s/"
@@ -8,6 +11,12 @@ const (
 	basinNamespace       = "b/"
 	episodicTimestampLen = 8
 	episodicHeaderLen    = len(episodicNamespace) + episodicTimestampLen
+)
+
+var (
+	sensoryNamespaceBytes  = []byte(sensoryNamespace)
+	basinNamespaceBytes    = []byte(basinNamespace)
+	episodicNamespaceBytes = []byte(episodicNamespace)
 )
 
 /*
@@ -81,4 +90,26 @@ func timestampFromEpisodicKey(storageKey []byte) (uint64, []byte, bool) {
 	sequence := storageKey[episodicHeaderLen:]
 
 	return timestamp, sequence, true
+}
+
+func classSequenceFromBasinKey(storageKey []byte) (className []byte, basinSequence []byte, mapped bool) {
+	if len(storageKey) <= len(basinNamespace) {
+		return nil, nil, false
+	}
+
+	if string(storageKey[:len(basinNamespace)]) != basinNamespace {
+		return nil, nil, false
+	}
+
+	remainder := storageKey[len(basinNamespace):]
+	classSeparator := bytes.IndexByte(remainder, '/')
+
+	if classSeparator <= 0 {
+		return nil, nil, false
+	}
+
+	className = remainder[:classSeparator]
+	basinSequence = remainder[classSeparator+1:]
+
+	return className, basinSequence, true
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 
 	capnp "capnproto.org/go/capnp/v3"
@@ -135,6 +136,21 @@ Done implements the Forest RPC done method.
 */
 func (idx *ForestServer) Done(ctx context.Context, call Server_done) error {
 	return nil
+}
+
+/*
+EvaluateClassification routes a context probe through the classification engine.
+*/
+func (idx *ForestServer) EvaluateClassification(sequence []byte) (dmt.ClassificationResult, error) {
+	tree := idx.forest.GetFastestTree()
+
+	if tree == nil {
+		return dmt.ClassificationResult{}, errors.New("no active trees available")
+	}
+
+	var scratch dmt.ClassificationScratch
+
+	return tree.Classify(sequence, &scratch), nil
 }
 
 /*

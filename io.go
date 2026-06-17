@@ -7,16 +7,20 @@ import (
 	"unsafe"
 
 	capnp "capnproto.org/go/capnp/v3"
+	"github.com/bytedance/sonic/ast"
 	"github.com/theapemachine/errnie"
 )
 
 type artifactStreamState struct {
-	readWire    []byte
-	readOffset  int
-	readDone    bool
-	writeBuffer []byte
-	cache       map[string]any
-	indexed     bool
+	readWire        []byte
+	readOffset      int
+	readDone        bool
+	writeBuffer     []byte
+	cache           map[string]any
+	indexed         bool
+	payloadBytes    []byte
+	payloadRoot     ast.Node
+	payloadParsed   bool
 }
 
 var artifactStreamStates sync.Map
@@ -55,6 +59,9 @@ func resetArtifactStreamState(artifact *Artifact) {
 	state.readDone = false
 	state.writeBuffer = nil
 	state.indexed = false
+	state.payloadBytes = nil
+	state.payloadRoot = ast.Node{}
+	state.payloadParsed = false
 
 	for cacheKey := range state.cache {
 		delete(state.cache, cacheKey)

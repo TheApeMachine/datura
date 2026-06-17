@@ -184,10 +184,12 @@ func (tree *Tree) CompareSensoryBranches(leftPrefix, rightPrefix []byte) float64
 
 /*
 ExecuteDecayConsolidation degrades stale namespace weights and prunes dead branches.
+Preserved sequences skip decay so freshly replayed REM paths are retained.
 */
 func (tree *Tree) ExecuteDecayConsolidation(
 	namespacePrefix []byte,
 	decayFactor float64,
+	preservedSequences ...[]byte,
 ) {
 	if tree == nil || decayFactor <= 0 {
 		return
@@ -203,17 +205,21 @@ func (tree *Tree) ExecuteDecayConsolidation(
 	iterator.SeekPrefix(namespacePrefix)
 
 	mutations := make([]decayMutation, 0, namespaceEntries)
-	pruneThreshold := pruneProbabilityThreshold(namespaceEntries)
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, namespacePrefix) {
 			break
 		}
 
+		if sensoryKeyPreserved(key, preservedSequences) {
+			continue
+		}
+
 		weight := UnmarshalCognitive(value)
 		weight.Probability *= decayFactor
+		entryPruneThreshold := pruneProbabilityThreshold(namespaceEntries, weight)
 
-		if weight.Probability < pruneThreshold {
+		if weight.Probability < entryPruneThreshold {
 			mutations = append(mutations, decayMutation{
 				key:    append([]byte(nil), key...),
 				delete: true,
@@ -304,12 +310,15 @@ func probabilityFloorFromWeight(weight PackedWeight, parentCount uint64) float64
 	return 1.0 / denominator
 }
 
-func pruneProbabilityThreshold(namespaceEntries int) float64 {
+func pruneProbabilityThreshold(namespaceEntries int, weight CognitiveState) float64 {
 	if namespaceEntries <= 0 {
 		return math.SmallestNonzeroFloat64
 	}
 
-	return 1.0 / float64(namespaceEntries)
+	namespaceMass := float64(namespaceEntries)
+	countMass := float64(weight.Count) + 1.0
+
+	return 1.0 / (namespaceMass * countMass)
 }
 
 func ambiguityEntropyThreshold(branchCount int, parentState CognitiveState) float64 {
@@ -360,6 +369,58 @@ func deriveDecayFactor(replayedObservations, namespaceEntries uint64) float64 {
 	}
 
 	return float64(replayedObservations) / float64(denominator)
+}
+
+func sensoryKeyPreserved(storageKey []byte, preservedSequences [][]byte) bool {
+	sequence, mapped := sequenceFromSensoryKey(storageKey)
+
+	if !mapped {
+		return false
+	}
+
+	for _, preservedSequence := range preservedSequences {
+		if bytes.Equal(sequence, preservedSequence) {
+			return true
+		}
+
+		if bytes.HasPrefix(preservedSequence, sequence) {
+			if len(preservedSequence) == len(sequence) {
+				return true
+			}
+
+			if preservedSequence[len(sequence)] == '_' {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func sensoryPrefixPaths(sequence []byte) [][]byte {
+	if len(sequence) == 0 {
+		return nil
+	}
+
+	tokenStart := 0
+	paths := make([][]byte, 0, countTokenBoundaries(sequence))
+
+	for index := 0; index <= len(sequence); index++ {
+		if index < len(sequence) && sequence[index] != '_' {
+			continue
+		}
+
+		if index == tokenStart {
+			tokenStart = index + 1
+
+			continue
+		}
+
+		paths = append(paths, append([]byte(nil), sequence[:index]...))
+		tokenStart = index + 1
+	}
+
+	return paths
 }
 
 func tokenSequenceSimilarity(leftSequence, rightSequence []byte) float64 {

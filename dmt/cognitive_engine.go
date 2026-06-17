@@ -273,6 +273,7 @@ and applies retroactive inhibition across the sensory namespace.
 */
 func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint64) {
 	replayedObservations := uint64(0)
+	preservedSequences := make([][]byte, 0, 8)
 
 	tree.WalkPrefix([]byte(episodicNamespace), func(storageKey, value []byte) bool {
 		timestamp, sequence, mapped := timestampFromEpisodicKey(storageKey)
@@ -294,6 +295,11 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 		}
 
 		tree.TrainSensorySequence(sequence)
+		preservedSequences = append(preservedSequences, sensoryPrefixPaths(sequence)...)
+
+		var classifyScratch ClassificationScratch
+		_ = tree.optimizeWeightsInline(sequence, &classifyScratch)
+
 		replayedObservations++
 
 		return true
@@ -302,7 +308,7 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 	namespaceEntries := uint64(countNamespaceEntries(tree, []byte(sensoryNamespace)))
 	decayFactor := deriveDecayFactor(replayedObservations, namespaceEntries)
 
-	tree.ExecuteDecayConsolidation([]byte(sensoryNamespace), decayFactor)
+	tree.ExecuteDecayConsolidation([]byte(sensoryNamespace), decayFactor, preservedSequences...)
 }
 
 /*

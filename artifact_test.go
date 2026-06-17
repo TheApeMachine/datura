@@ -122,7 +122,7 @@ func TestArtifactMetadata(t *testing.T) {
 			artifact := Acquire("test-artifact", Artifact_Type_json).
 				WithRole("user").
 				WithScope("prompt").
-				WithAttrubutes(attributes)
+				WithAttributes(attributes)
 
 			So(artifact, ShouldNotBeNil)
 

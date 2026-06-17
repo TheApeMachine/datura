@@ -204,6 +204,13 @@ func (forest *Forest) syncReferenceTree(trees []*Tree) *Tree {
 }
 
 /*
+GetFastestTree returns the tree with the lowest average operation latency.
+*/
+func (forest *Forest) GetFastestTree() *Tree {
+	return forest.getFastestTree()
+}
+
+/*
 Get retrieves a value from the forest using the most performant tree.
 It automatically selects the tree with the best average response time to
 handle the request. Returns the value and true if the key exists, or nil

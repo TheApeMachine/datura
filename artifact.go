@@ -217,10 +217,12 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
+	invalidatePayloadCache(artifact)
+
 	return artifact
 }
 
-func (artifact *Artifact) WithAttrubutes(attributes map[string]any) *Artifact {
+func (artifact *Artifact) WithAttributes(attributes map[string]any) *Artifact {
 	var (
 		mdList    Artifact_Attribute_List
 		newMdList Artifact_Attribute_List
