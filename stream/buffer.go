@@ -30,8 +30,6 @@ Parameters:
 Returns a configured Buffer instance that's ready to use.
 */
 func NewBuffer(fn func(*datura.Artifact) error) *Buffer {
-	errnie.Debug("stream.NewBuffer")
-
 	return &Buffer{
 		artifact: datura.Acquire("buffer", datura.Artifact_Type_json),
 		fn:       fn,
@@ -50,8 +48,6 @@ Returns:
   - err: Any error encountered during reading
 */
 func (buffer *Buffer) Read(p []byte) (n int, err error) {
-	errnie.Debug("stream.Buffer.Read")
-
 	if buffer.artifact == nil {
 		return 0, io.EOF
 	}
@@ -90,8 +86,6 @@ Returns:
   - err: Any error encountered during writing
 */
 func (buffer *Buffer) Write(p []byte) (n int, err error) {
-	errnie.Debug("stream.Buffer.Write")
-
 	if len(p) == 0 {
 		return 0, errnie.Error(errors.New("empty input"))
 	}
@@ -126,7 +120,6 @@ It properly closes both the pipe reader and writer to prevent resource leaks.
 Returns any error encountered during the closing process.
 */
 func (buffer *Buffer) Close() error {
-	errnie.Debug("stream.Buffer.Close")
 	buffer.pendingWrite = nil
 
 	return buffer.artifact.Close()

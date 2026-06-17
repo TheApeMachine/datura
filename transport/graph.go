@@ -65,8 +65,6 @@ Returns:
   - *Graph: A new Graph instance configured with the provided options
 */
 func NewGraph(opts ...GraphOption) *Graph {
-	errnie.Debug("graph.NewGraph")
-
 	graph := &Graph{
 		registry: nil,
 		nodes:    make(map[string]*Node),
@@ -92,8 +90,6 @@ Returns:
   - err: Any error that occurred during reading
 */
 func (graph *Graph) Read(p []byte) (n int, err error) {
-	errnie.Debug("graph.Read")
-
 	if graph.registry == nil {
 		return 0, errnie.Error(errors.New("registry not set"))
 	}
@@ -134,8 +130,6 @@ Returns:
   - err: Any error that occurred during writing
 */
 func (graph *Graph) Write(p []byte) (n int, err error) {
-	errnie.Debug("graph.Write")
-
 	if graph.registry == nil {
 		return 0, errnie.Error(errors.New("registry not set"))
 	}
@@ -158,8 +152,6 @@ Returns:
   - error: Any error that occurred while closing the registry
 */
 func (graph *Graph) Close() error {
-	errnie.Debug("graph.Close")
-
 	if graph.registry == nil {
 		return errnie.Error(errors.New("registry not set"))
 	}

@@ -77,7 +77,6 @@ Returns:
   - err: Any error that occurred during reading
 */
 func (feedback *Feedback) Read(p []byte) (n int, err error) {
-	errnie.Debug("feedback.Read")
 	return feedback.tee.Read(p)
 }
 
@@ -93,7 +92,6 @@ Returns:
   - err: Any error that occurred during writing
 */
 func (feedback *Feedback) Write(p []byte) (n int, err error) {
-	errnie.Debug("feedback.Write")
 	// Reset the tee with the updated forward component after writing
 	if n, err = feedback.forward.Write(p); err != nil {
 		return n, errnie.Error(err)
@@ -110,8 +108,6 @@ Returns:
   - error: Any error that occurred while closing either component
 */
 func (feedback *Feedback) Close() error {
-	errnie.Debug("feedback.Close")
-
 	// Close the forward component if it implements io.Closer
 	if closer, ok := feedback.forward.(io.Closer); ok {
 		if err := closer.Close(); err != nil {

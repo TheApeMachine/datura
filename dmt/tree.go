@@ -43,13 +43,32 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 	return iradix.New[[]byte]()
 }
 
-func (tree *Tree) recordOp(duration time.Duration) {
+const treeOpSampleMask = uint64(63)
+
+func (tree *Tree) beginOp() (started time.Time, track bool) {
+	if tree == nil {
+		return time.Time{}, false
+	}
+
+	if tree.opCount.Load()&treeOpSampleMask != 0 {
+		return time.Time{}, false
+	}
+
+	return time.Now(), true
+}
+
+func (tree *Tree) endOp(started time.Time, track bool) {
 	if tree == nil {
 		return
 	}
 
 	tree.opCount.Add(1)
-	tree.opTotalNanos.Add(duration.Nanoseconds())
+
+	if !track {
+		return
+	}
+
+	tree.opTotalNanos.Add(time.Since(started).Nanoseconds())
 }
 
 /*
@@ -73,6 +92,12 @@ func NewTree(persistDir string) (*Tree, error) {
 		root := tree.loadRoot()
 
 		for _, entry := range entries {
+			if entry.Op == opDelete {
+				root, _, _ = root.Delete(entry.Key)
+
+				continue
+			}
+
 			root, _, _ = root.Insert(entry.Key, entry.Value)
 		}
 
@@ -92,7 +117,7 @@ is greater than or equal to the provided key in lexicographical order.
 Returns the value and true if found, or nil and false if no such key exists.
 */
 func (tree *Tree) Seek(key []byte) ([]byte, bool) {
-	started := time.Now()
+	started, track := tree.beginOp()
 	root := tree.loadRoot()
 
 	it := root.Root().Iterator()
@@ -100,13 +125,13 @@ func (tree *Tree) Seek(key []byte) ([]byte, bool) {
 
 	for seekKey, value, ok := it.Next(); ok; seekKey, value, ok = it.Next() {
 		if bytes.Compare(seekKey, key) >= 0 {
-			tree.recordOp(time.Since(started))
+			tree.endOp(started, track)
 
 			return value, true
 		}
 	}
 
-	tree.recordOp(time.Since(started))
+	tree.endOp(started, track)
 
 	return nil, false
 }
@@ -118,7 +143,7 @@ The walk stops early if fn returns false. This is the history read: write
 observations keyed by Artifact.Prefix, then walk the scope prefix to replay them.
 */
 func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
-	started := time.Now()
+	started, track := tree.beginOp()
 	root := tree.loadRoot()
 
 	it := root.Root().Iterator()
@@ -126,13 +151,13 @@ func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
 
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 		if !fn(key, value) {
-			tree.recordOp(time.Since(started))
+			tree.endOp(started, track)
 
 			return
 		}
 	}
 
-	tree.recordOp(time.Since(started))
+	tree.endOp(started, track)
 }
 
 /*
@@ -146,16 +171,14 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 		return nil, false
 	}
 
-	started := time.Now()
-	keyCopy := append([]byte(nil), key...)
-	valueCopy := append([]byte(nil), value...)
+	started, track := tree.beginOp()
 
 	for {
 		oldRoot := tree.loadRoot()
-		newRoot, _, _ := oldRoot.Insert(keyCopy, valueCopy)
+		newRoot, _, _ := oldRoot.Insert(key, value)
 
 		if newRoot == oldRoot {
-			tree.recordOp(time.Since(started))
+			tree.endOp(started, track)
 
 			return tree, false
 		}
@@ -166,15 +189,15 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 			if tree.persist != nil {
 				guardStep(tree.state, func() error {
 					return tree.persist.LogInsert(
-						keyCopy,
-						valueCopy,
+						key,
+						value,
 						tree.term.Load(),
 						index,
 					)
 				})
 			}
 
-			tree.recordOp(time.Since(started))
+			tree.endOp(started, track)
 
 			return tree, true
 		}
@@ -186,9 +209,9 @@ Get retrieves the value associated with the given key.
 Returns the value and true if the key exists, or nil and false if it doesn't.
 */
 func (tree *Tree) Get(key []byte) ([]byte, bool) {
-	started := time.Now()
+	started, track := tree.beginOp()
 	value, ok := tree.loadRoot().Get(key)
-	tree.recordOp(time.Since(started))
+	tree.endOp(started, track)
 
 	return value, ok
 }
@@ -207,7 +230,7 @@ func (tree *Tree) AVG() int64 {
 		return 0
 	}
 
-	return tree.opTotalNanos.Load() / int64(count)
+	return tree.opTotalNanos.Load() * int64(treeOpSampleMask+1) / int64(count)
 }
 
 /*

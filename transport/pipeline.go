@@ -35,7 +35,6 @@ Example:
 	io.Copy(os.Stdout, p2)
 */
 func NewPipeline(components ...io.ReadWriter) io.ReadWriter {
-	errnie.Debug("workflow.NewPipeline")
 	return &Pipeline{components: components}
 }
 
@@ -46,7 +45,6 @@ It reads from the first component and passes data through the pipeline.
 Returns EOF when no more data is available.
 */
 func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
-	errnie.Debug("workflow.Pipeline.Read")
 
 	if len(pipeline.components) == 0 {
 		return 0, io.EOF
@@ -97,7 +95,6 @@ It writes data to the first component in the pipeline.
 Note that writing is optional - components can produce data independently.
 */
 func (pipeline *Pipeline) Write(p []byte) (n int, err error) {
-	errnie.Debug("workflow.Pipeline.Write")
 
 	if len(pipeline.components) == 0 {
 		return len(p), nil
@@ -113,8 +110,6 @@ Close implements the io.Closer interface.
 It closes all components in the pipeline that implement io.Closer.
 */
 func (pipeline *Pipeline) Close() error {
-	errnie.Debug("workflow.Pipeline.Close")
-
 	for _, component := range pipeline.components {
 		if closer, ok := component.(io.Closer); ok {
 			if err := closer.Close(); err != nil {

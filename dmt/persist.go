@@ -111,27 +111,19 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
-			if err := ps.walWriter.WriteByte(opInsert); err != nil {
-				return err
-			}
+			var frame [25]byte
 
-			if err := binary.Write(ps.walWriter, binary.LittleEndian, term); err != nil {
-				return err
-			}
+			frame[0] = opInsert
+			binary.LittleEndian.PutUint64(frame[1:9], term)
+			binary.LittleEndian.PutUint64(frame[9:17], index)
+			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
+			binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
 
-			if err := binary.Write(ps.walWriter, binary.LittleEndian, index); err != nil {
-				return err
-			}
-
-			if err := binary.Write(ps.walWriter, binary.LittleEndian, uint32(len(key))); err != nil {
+			if _, err := ps.walWriter.Write(frame[:]); err != nil {
 				return err
 			}
 
 			if _, err := ps.walWriter.Write(key); err != nil {
-				return err
-			}
-
-			if err := binary.Write(ps.walWriter, binary.LittleEndian, uint32(len(value))); err != nil {
 				return err
 			}
 
@@ -160,6 +152,50 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 			return nil, ps.createSnapshot()
 		})
 	}
+
+	return nil
+}
+
+/*
+LogDelete logs a delete operation to the WAL through the serialized worker pool.
+*/
+func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
+	if ps.closed.Load() {
+		return fmt.Errorf("persistent store is closed")
+	}
+
+	err := ps.runWal("delete", func() error {
+		ps.state.Reset()
+
+		guardStep(ps.state, func() error {
+			var frame [21]byte
+
+			frame[0] = opDelete
+			binary.LittleEndian.PutUint64(frame[1:9], term)
+			binary.LittleEndian.PutUint64(frame[9:17], index)
+			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
+
+			if _, err := ps.walWriter.Write(frame[:]); err != nil {
+				return err
+			}
+
+			_, err := ps.walWriter.Write(key)
+
+			return err
+		})
+
+		guardStep(ps.state, ps.walWriter.Flush)
+		guardStep(ps.state, ps.walFile.Sync)
+
+		return ps.state.Err()
+	})
+
+	if err != nil {
+		return err
+	}
+
+	ps.lastTerm.Store(term)
+	ps.lastIndex.Store(index)
 
 	return nil
 }
@@ -211,11 +247,14 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
-			if err := ps.walWriter.WriteByte(opTermUpdate); err != nil {
-				return err
-			}
+			var frame [9]byte
 
-			return binary.Write(ps.walWriter, binary.LittleEndian, term)
+			frame[0] = opTermUpdate
+			binary.LittleEndian.PutUint64(frame[1:9], term)
+
+			_, err := ps.walWriter.Write(frame[:])
+
+			return err
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
@@ -265,34 +304,34 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 
 		switch op {
 		case opInsert:
-			var term, index uint64
-			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &term)
-			})
+			var header [24]byte
 
 			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &index)
+				_, err := io.ReadFull(reader, header[:])
+
+				return err
 			})
 
-			var keyLen uint32
-			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &keyLen)
-			})
+			if ps.state.Failed() {
+				break
+			}
+
+			term := binary.LittleEndian.Uint64(header[0:8])
+			index := binary.LittleEndian.Uint64(header[8:16])
+			keyLen := binary.LittleEndian.Uint32(header[16:20])
+			valLen := binary.LittleEndian.Uint32(header[20:24])
 
 			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
 				_, err := io.ReadFull(reader, key)
-				return err
-			})
 
-			var valLen uint32
-			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &valLen)
+				return err
 			})
 
 			value := make([]byte, valLen)
 			guardStep(ps.state, func() error {
 				_, err := io.ReadFull(reader, value)
+
 				return err
 			})
 
@@ -307,30 +346,73 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 
-		case opTermUpdate:
-			var term uint64
+		case opDelete:
+			var header [20]byte
+
 			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &term)
+				_, err := io.ReadFull(reader, header[:])
+
+				return err
 			})
 
-			ps.lastTerm.Store(term)
+			if ps.state.Failed() {
+				break
+			}
 
-		case opSnapshot:
-			var term, index uint64
+			term := binary.LittleEndian.Uint64(header[0:8])
+			index := binary.LittleEndian.Uint64(header[8:16])
+			keyLen := binary.LittleEndian.Uint32(header[16:20])
+
+			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &term)
+				_, err := io.ReadFull(reader, key)
+
+				return err
 			})
 
-			guardStep(ps.state, func() error {
-				return binary.Read(reader, binary.LittleEndian, &index)
+			entries = append(entries, WALEntry{
+				Op:    opDelete,
+				Term:  term,
+				Index: index,
+				Key:   key,
 			})
 
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 
+		case opTermUpdate:
+			var termBuf [8]byte
+
+			guardStep(ps.state, func() error {
+				_, err := io.ReadFull(reader, termBuf[:])
+
+				return err
+			})
+
 			if ps.state.Failed() {
-				return entries, ps.state.Err()
+				break
 			}
+
+			ps.lastTerm.Store(binary.LittleEndian.Uint64(termBuf[:]))
+
+		case opSnapshot:
+			var snapshotHeader [16]byte
+
+			guardStep(ps.state, func() error {
+				_, err := io.ReadFull(reader, snapshotHeader[:])
+
+				return err
+			})
+
+			if ps.state.Failed() {
+				break
+			}
+
+			term := binary.LittleEndian.Uint64(snapshotHeader[0:8])
+			index := binary.LittleEndian.Uint64(snapshotHeader[8:16])
+
+			ps.lastTerm.Store(term)
+			ps.lastIndex.Store(index)
 		default:
 			return entries, fmt.Errorf("invalid wal operation: %d", op)
 		}
@@ -381,23 +463,28 @@ func (ps *PersistentStore) createSnapshot() error {
 		defer file.Close()
 
 		guardStep(ps.state, func() error {
-			return binary.Write(file, binary.LittleEndian, ps.lastTerm.Load())
+			var stateFrame [16]byte
+
+			binary.LittleEndian.PutUint64(stateFrame[0:8], ps.lastTerm.Load())
+			binary.LittleEndian.PutUint64(stateFrame[8:16], ps.lastIndex.Load())
+
+			_, err := file.Write(stateFrame[:])
+
+			return err
 		})
 
 		guardStep(ps.state, func() error {
-			return binary.Write(file, binary.LittleEndian, ps.lastIndex.Load())
-		})
+			var walFrame [17]byte
 
-		guardStep(ps.state, func() error {
-			return ps.walWriter.WriteByte(opSnapshot)
-		})
+			walFrame[0] = opSnapshot
+			binary.LittleEndian.PutUint64(walFrame[1:9], ps.lastTerm.Load())
+			binary.LittleEndian.PutUint64(walFrame[9:17], ps.lastIndex.Load())
 
-		guardStep(ps.state, func() error {
-			return binary.Write(ps.walWriter, binary.LittleEndian, ps.lastTerm.Load())
-		})
+			if _, err := ps.walWriter.Write(walFrame[:]); err != nil {
+				return err
+			}
 
-		guardStep(ps.state, func() error {
-			return binary.Write(ps.walWriter, binary.LittleEndian, ps.lastIndex.Load())
+			return nil
 		})
 
 		guardStep(ps.state, ps.truncateWAL)
@@ -420,15 +507,15 @@ func (ps *PersistentStore) truncateWAL() error {
 	writer := bufio.NewWriter(newFile)
 
 	guardStep(ps.state, func() error {
-		return writer.WriteByte(opSnapshot)
-	})
+		var walFrame [17]byte
 
-	guardStep(ps.state, func() error {
-		return binary.Write(writer, binary.LittleEndian, ps.lastTerm.Load())
-	})
+		walFrame[0] = opSnapshot
+		binary.LittleEndian.PutUint64(walFrame[1:9], ps.lastTerm.Load())
+		binary.LittleEndian.PutUint64(walFrame[9:17], ps.lastIndex.Load())
 
-	guardStep(ps.state, func() error {
-		return binary.Write(writer, binary.LittleEndian, ps.lastIndex.Load())
+		_, err := writer.Write(walFrame[:])
+
+		return err
 	})
 
 	guardStep(ps.state, writer.Flush)

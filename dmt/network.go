@@ -61,10 +61,18 @@ It maintains both the raw network connection and the RPC client
 for communicating with the remote node.
 */
 type peer struct {
-	addr    string
-	conn    net.Conn
-	rpcConn *rpc.Conn
-	client  RadixRPC
+	addr       string
+	nodeIDHash uint64
+	conn       net.Conn
+	rpcConn    *rpc.Conn
+	client     RadixRPC
+}
+
+/*
+Addr returns the peer network address.
+*/
+func (peer *peer) Addr() string {
+	return peer.addr
 }
 
 /*
@@ -249,10 +257,11 @@ func (n *NetworkNode) connectToPeer(addr string) {
 	client := RadixRPC(rpcConn.Bootstrap(n.ctx))
 
 	p := &peer{
-		addr:    addr,
-		conn:    conn,
-		rpcConn: rpcConn,
-		client:  client,
+		addr:       addr,
+		nodeIDHash: hashNodeID(addr),
+		conn:       conn,
+		rpcConn:    rpcConn,
+		client:     client,
 	}
 
 	n.peers.Upsert(addr, p)
@@ -579,7 +588,7 @@ func (n *NetworkNode) Close() error {
 		guardStep(n.state, peerEntry.conn.Close)
 	}
 
-	n.peers.Store(&Peers{byAddr: make(map[string]*peer)})
+	n.peers.Store(&Peers{entries: make([]peerEntry, 0)})
 
 	return n.state.Err()
 }
@@ -645,6 +654,104 @@ func (n *NetworkNode) Heartbeat(ctx context.Context, call RadixRPC_heartbeat) er
 	result.SetTerm(term)
 	result.SetSuccess(success)
 	return state.Err()
+}
+
+/*
+StreamTargetedPrefixSync resolves local uncertainty by applying peer diff entries for one prefix.
+*/
+func (n *NetworkNode) StreamTargetedPrefixSync(
+	ctx context.Context,
+	peerAddr string,
+	prefix []byte,
+) error {
+	peerEntry := n.findPeer(peerAddr)
+
+	if peerEntry == nil {
+		return fmt.Errorf("peer %q is not connected", peerAddr)
+	}
+
+	n.updateMerkleRoot()
+	currentTerm := n.election.getCurrentTerm()
+	lastLogIndex := n.election.getLastLogIndex()
+
+	state := newBatch("dmt/network/targeted-sync")
+	future, release := peerEntry.client.Sync(n.ctx, func(params RadixRPC_sync_Params) error {
+		var rootHash []byte
+		root := n.merkleTree.Root()
+
+		if root != nil {
+			rootHash = root.Hash
+		}
+
+		if err := params.SetMerkleRoot(rootHash); err != nil {
+			return err
+		}
+
+		params.SetTerm(currentTerm)
+		params.SetLogIndex(lastLogIndex)
+
+		return nil
+	})
+	defer release()
+
+	result := guardValue(state, future.Struct)
+	diff := guardValue(state, result.Diff)
+	entries := guardValue(state, diff.Entries)
+
+	if state.Failed() {
+		return state.Err()
+	}
+
+	n.applyFilteredSyncEntries(entries, prefix)
+
+	return nil
+}
+
+func (n *NetworkNode) findPeer(peerAddr string) *peer {
+	peersSnapshot := n.peers.Load()
+
+	for _, entry := range peersSnapshot.entries {
+		if entry.addr == peerAddr {
+			return entry.node
+		}
+	}
+
+	return nil
+}
+
+func (n *NetworkNode) applyFilteredSyncEntries(
+	entries SyncEntry_List,
+	prefix []byte,
+) {
+	state := newBatch("dmt/network/apply-sync")
+
+	for index := 0; index < entries.Len(); index++ {
+		entry := entries.At(index)
+		key := guardValue(state, entry.Key)
+		value := guardValue(state, entry.Value)
+
+		if state.Failed() {
+			return
+		}
+
+		key = append([]byte(nil), key...)
+
+		if len(prefix) > 0 && !bytes.HasPrefix(key, prefix) {
+			continue
+		}
+
+		value = append([]byte(nil), value...)
+		entryTerm := entry.Term()
+		entryIndex := entry.Index()
+
+		n.forest.Insert(key, value)
+		n.merkleTree.Insert(key, value)
+		n.election.updateLogState(entryIndex, entryTerm)
+	}
+
+	if entries.Len() > 0 {
+		n.merkleTree.Rebuild()
+	}
 }
 
 /*

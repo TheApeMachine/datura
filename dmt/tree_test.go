@@ -75,8 +75,11 @@ func TestAVG(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When a avg is performed", func() {
-			tree.Insert([]byte("test"), []byte("test"))
-			tree.Get([]byte("test"))
+			for range 128 {
+				tree.Insert([]byte("test"), []byte("test"))
+				tree.Get([]byte("test"))
+			}
+
 			avg := tree.AVG()
 			So(avg, ShouldBeGreaterThan, 0)
 		})

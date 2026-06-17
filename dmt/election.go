@@ -45,14 +45,14 @@ type Election struct {
 	node           *NetworkNode
 	role           atomic.Uint32
 	term           atomic.Uint64
-	votedFor       atomic.Pointer[string]
+	votedFor       atomic.Uint64
 	lastLogTerm    atomic.Uint64
 	lastLogIndex   atomic.Uint64
 	votesReceived  atomic.Uint32
 	votesNeeded    atomic.Uint32
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
-	voteRing       *structure.MPMCRing[string]
+	voteRing       *structure.MPMCRing[uint64]
 	closed         atomic.Bool
 }
 
@@ -69,7 +69,7 @@ func NewElection(config ElectionConfig, node *NetworkNode) *Election {
 	election.role.Store(uint32(Follower))
 	election.heartbeatTimer.Stop()
 
-	voteRing, err := structure.NewMPMCRing[string](node.ctx, 128)
+	voteRing, err := structure.NewMPMCRing[uint64](node.ctx, 128)
 
 	if errnie.Error(err) == nil {
 		election.voteRing = voteRing
@@ -106,8 +106,7 @@ func (election *Election) tick(jobCtx context.Context) {
 func (election *Election) startElection() {
 	election.role.Store(uint32(Candidate))
 	currentTerm := election.term.Add(1)
-	votedFor := election.node.config.NodeID
-	storeString(&election.votedFor, votedFor)
+	election.votedFor.Store(hashNodeID(election.node.config.NodeID))
 
 	election.node.metrics.SetLeader(false)
 
@@ -136,31 +135,24 @@ func (election *Election) startElection() {
 			}
 
 			if result.Value().VoteGranted() {
-				election.publishVote(peer.addr)
+				election.publishVote(peer.nodeIDHash)
+				election.drainVotes()
 			}
 
 			return nil, nil
 		})
 	}
 
-	deadline := time.After(election.config.ElectionTimeout)
+	election.resetElectionTimer()
+	election.tryPromoteToLeader()
+}
 
-	for election.votesReceived.Load() < uint32(votesNeeded) {
-		election.drainVotes()
-
-		select {
-		case <-deadline:
-			return
-		default:
-			if election.closed.Load() {
-				return
-			}
-
-			time.Sleep(time.Millisecond)
-		}
+func (election *Election) tryPromoteToLeader() {
+	if election.votesReceived.Load() < election.votesNeeded.Load() {
+		return
 	}
 
-	if election.votesReceived.Load() >= uint32(votesNeeded) {
+	if election.role.CompareAndSwap(uint32(Candidate), uint32(Leader)) {
 		election.becomeLeader()
 	}
 }
@@ -211,8 +203,7 @@ func (election *Election) stepDown(newTerm uint64) {
 func (election *Election) stepDownLocked(newTerm uint64) {
 	election.role.Store(uint32(Follower))
 	election.term.Store(newTerm)
-	emptyVote := ""
-	election.votedFor.Store(&emptyVote)
+	election.votedFor.Store(0)
 	election.node.metrics.SetLeader(false)
 	election.resetElectionTimer()
 }
@@ -231,12 +222,12 @@ func (election *Election) getState() NodeState {
 	return NodeState(election.role.Load())
 }
 
-func (election *Election) publishVote(voter string) {
-	if election.voteRing == nil {
+func (election *Election) publishVote(voterID uint64) {
+	if election.voteRing == nil || voterID == 0 {
 		return
 	}
 
-	for !election.voteRing.Push(voter) {
+	for !election.voteRing.Push(voterID) {
 		if election.closed.Load() {
 			return
 		}
@@ -251,26 +242,24 @@ func (election *Election) drainVotes() {
 	}
 
 	for {
-		voter := election.voteRing.Pop()
+		voterID := election.voteRing.Pop()
 
-		if voter == "" {
+		if voterID == 0 {
 			return
 		}
 
-		election.onVote(voter)
-	}
-}
+		if election.getState() != Candidate {
+			return
+		}
 
-func (election *Election) onVote(voter string) {
-	if election.getState() != Candidate {
-		return
-	}
+		received := election.votesReceived.Add(1)
 
-	if election.node != nil && election.node.metrics != nil {
-		election.node.metrics.RecordVote(voter)
-	}
+		if received >= election.votesNeeded.Load() {
+			election.tryPromoteToLeader()
 
-	election.votesReceived.Add(1)
+			return
+		}
+	}
 }
 
 func (election *Election) handleVoteRequest(
@@ -286,9 +275,10 @@ func (election *Election) handleVoteRequest(
 		currentTerm = term
 	}
 
-	votedFor := loadString(&election.votedFor)
+	candidateHash := hashNodeID(candidateId)
+	votedFor := election.votedFor.Load()
 
-	if term < currentTerm || (votedFor != "" && votedFor != candidateId) {
+	if term < currentTerm || (votedFor != 0 && votedFor != candidateHash) {
 		return false
 	}
 
@@ -299,7 +289,7 @@ func (election *Election) handleVoteRequest(
 		return false
 	}
 
-	storeString(&election.votedFor, candidateId)
+	election.votedFor.Store(candidateHash)
 	election.resetElectionTimer()
 
 	return true
@@ -413,7 +403,13 @@ func (election *Election) storeTermForTest(term uint64) {
 
 // storeVotedForForTest sets votedFor in tests.
 func (election *Election) storeVotedForForTest(candidateId string) {
-	storeString(&election.votedFor, candidateId)
+	if candidateId == "" {
+		election.votedFor.Store(0)
+
+		return
+	}
+
+	election.votedFor.Store(hashNodeID(candidateId))
 }
 
 // storeLogStateForTest sets log indices in tests.
@@ -423,8 +419,8 @@ func (election *Election) storeLogStateForTest(index uint64, term uint64) {
 }
 
 // votedForForTest returns votedFor in tests.
-func (election *Election) votedForForTest() string {
-	return loadString(&election.votedFor)
+func (election *Election) votedForForTest() uint64 {
+	return election.votedFor.Load()
 }
 
 // lastLogTermForTest returns lastLogTerm in tests.

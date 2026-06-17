@@ -51,7 +51,7 @@ func TestNewElection(t *testing.T) {
 				So(election.node, ShouldEqual, node)
 				So(election.getState(), ShouldEqual, Follower)
 				So(election.getCurrentTerm(), ShouldEqual, 0)
-				So(election.votedForForTest(), ShouldEqual, "")
+				So(election.votedForForTest(), ShouldEqual, uint64(0))
 			})
 		})
 	})
@@ -77,7 +77,7 @@ func TestElectionStateTransitions(t *testing.T) {
 			Convey("Then state should be updated", func() {
 				So(election.getState(), ShouldEqual, Follower)
 				So(election.getCurrentTerm(), ShouldEqual, uint64(5))
-				So(election.votedForForTest(), ShouldEqual, "")
+				So(election.votedForForTest(), ShouldEqual, uint64(0))
 			})
 		})
 
@@ -111,7 +111,7 @@ func TestVoteHandling(t *testing.T) {
 				granted := election.handleVoteRequest(2, "candidate1", 1, 1)
 				So(granted, ShouldBeTrue)
 				So(election.getCurrentTerm(), ShouldEqual, uint64(2))
-				So(election.votedForForTest(), ShouldEqual, "candidate1")
+				So(election.votedForForTest(), ShouldEqual, hashNodeID("candidate1"))
 			})
 
 			Convey("With lower term", func() {

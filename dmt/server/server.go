@@ -138,6 +138,21 @@ func (idx *ForestServer) Done(ctx context.Context, call Server_done) error {
 }
 
 /*
+IntelligentIngestPipeline stores data and evaluates branch curiosity for peer sync.
+*/
+func (idx *ForestServer) IntelligentIngestPipeline(key, value []byte) {
+	idx.forest.Insert(key, value)
+	idx.forest.EvaluateCuriosityAndTriggerSync(key)
+}
+
+/*
+IntelligentLookupPipeline resolves a key with analogical fallback routing.
+*/
+func (idx *ForestServer) IntelligentLookupPipeline(key []byte) ([]byte, bool) {
+	return idx.forest.GetAnalogousFallback(key)
+}
+
+/*
 Write stores a Morton-packed key in the forest. The key is encoded as
 8-byte big-endian to preserve radix tree sort order.
 */
@@ -145,10 +160,11 @@ func (idx *ForestServer) Write(
 	ctx context.Context, call Server_write,
 ) error {
 	key := call.Args().Key()
-	keyBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(keyBytes, key)
 
-	idx.forest.Insert(keyBytes, nil)
+	var keyBytes [8]byte
+	binary.BigEndian.PutUint64(keyBytes[:], key)
+
+	idx.IntelligentIngestPipeline(keyBytes[:], nil)
 
 	return nil
 }
@@ -186,18 +202,41 @@ func (idx *ForestServer) Lookup(
 		return out.Err()
 	}
 
-	for index := range keys.Value().Len() {
-		keyBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(keyBytes, keys.Value().At(index))
+	var keyBytes [8]byte
 
-		_, exists := idx.forest.Get(keyBytes)
-		if exists {
-			element := out.Value().At(index)
-			_ = element
+	for index := range keys.Value().Len() {
+		binary.BigEndian.PutUint64(keyBytes[:], keys.Value().At(index))
+
+		value, exists := idx.IntelligentLookupPipeline(keyBytes[:])
+
+		if !exists || len(value) == 0 {
+			continue
+		}
+
+		element := out.Value().At(index)
+
+		if err := populateArtifactElement(element, value); err != nil {
+			return errnie.Error(err, "rpc_output_population_failed")
 		}
 	}
 
 	return nil
+}
+
+func populateArtifactElement(element datura.Artifact, packedValue []byte) error {
+	message, err := capnp.UnmarshalPacked(packedValue)
+
+	if err != nil {
+		return err
+	}
+
+	inbound, err := datura.ReadRootArtifact(message)
+
+	if err != nil {
+		return err
+	}
+
+	return capnp.Struct(element).CopyFrom(capnp.Struct(inbound))
 }
 
 /*

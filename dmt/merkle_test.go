@@ -13,7 +13,7 @@ func TestNewMerkleTree(t *testing.T) {
 
 		Convey("Then it should be properly initialized", func() {
 			So(merkleTree, ShouldNotBeNil)
-			So(merkleTree.LeafMap(), ShouldNotBeNil)
+			So(merkleTree.Leaves(), ShouldNotBeNil)
 			So(merkleTree.Root(), ShouldBeNil)
 			So(merkleTree.Modified(), ShouldBeFalse)
 		})

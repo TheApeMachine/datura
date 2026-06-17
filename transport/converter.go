@@ -4,7 +4,6 @@ import (
 	"bytes"
 
 	"github.com/theapemachine/datura"
-	"github.com/theapemachine/errnie"
 	"github.com/theapemachine/datura/stream"
 )
 
@@ -35,8 +34,6 @@ func NewConverter() *Converter {
 
 	conv := &Converter{
 		buffer: stream.NewBuffer(func(artifact *datura.Artifact) (err error) {
-			errnie.Debug("workflow.Converter.buffer.fn")
-
 			// If not Params, write the raw payload
 			out.Write([]byte(datura.Peek[string](artifact, "output")))
 
@@ -59,7 +56,6 @@ Returns:
   - err: Any error that occurred during reading
 */
 func (c *Converter) Read(p []byte) (n int, err error) {
-	errnie.Debug("workflow.Converter.Read")
 	return c.out.Read(p)
 }
 
@@ -74,7 +70,6 @@ Returns:
   - err: Any error that occurred during writing
 */
 func (c *Converter) Write(p []byte) (n int, err error) {
-	errnie.Debug("workflow.Converter.Write")
 	return c.buffer.Write(p)
 }
 
@@ -86,6 +81,5 @@ Returns:
   - error: Always nil as there's nothing to close
 */
 func (c *Converter) Close() error {
-	errnie.Debug("workflow.Converter.Close")
 	return nil
 }

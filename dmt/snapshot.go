@@ -21,11 +21,11 @@ func (snapshot *Snapshot) Trees() []*Tree {
 }
 
 func (snapshot *Snapshot) Append(tree *Tree) *Snapshot {
-	for {
-		current := snapshot.load()
-		nextTrees := append(append([]*Tree(nil), current.trees...), tree)
-		nextSnapshot := &Snapshot{trees: nextTrees}
+	current := snapshot.load()
+	nextTrees := make([]*Tree, len(current.trees)+1)
 
-		return nextSnapshot
-	}
+	copy(nextTrees, current.trees)
+	nextTrees[len(current.trees)] = tree
+
+	return &Snapshot{trees: nextTrees}
 }

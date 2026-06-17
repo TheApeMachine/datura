@@ -29,13 +29,38 @@ var artifactPool = sync.Pool{
 			return nil
 		}
 
-		artifact.SetUuid([]byte(uuid.NewString()))
-		artifact.SetTimestamp(time.Now().UnixNano())
-
-		stored := artifact
-
-		return &stored
+		return &pooledArtifact{
+			Artifact: artifact,
+		}
 	},
+}
+
+var artifactPoolIndex sync.Map
+
+/*
+pooledArtifact groups a Cap'n Proto artifact with pool bookkeeping.
+The exported surface remains *Artifact pointers into the embedded struct.
+*/
+type pooledArtifact struct {
+	Artifact
+}
+
+func (pooled *pooledArtifact) resetForPool() {
+	resetArtifactStreamState(&pooled.Artifact)
+
+	segment, err := pooled.Artifact.Message().Reset(capnp.SingleSegment(nil))
+
+	if errnie.Error(err) != nil {
+		return
+	}
+
+	fresh, err := NewRootArtifact(segment)
+
+	if errnie.Error(err) != nil {
+		return
+	}
+
+	pooled.Artifact = fresh
 }
 
 func Acquire(
@@ -43,55 +68,80 @@ func Acquire(
 	artifactType Artifact_Type,
 ) *Artifact {
 	pooled := artifactPool.Get()
+
 	if pooled == nil {
 		return nil
 	}
 
-	artifact, ok := pooled.(*Artifact)
+	pa, ok := pooled.(*pooledArtifact)
+
 	if !ok {
 		return nil
 	}
 
-	if errnie.Error(artifact.SetOrigin(origin)) != nil {
+	if errnie.Error(pa.SetUuid([]byte(uuid.NewString()))) != nil {
 		return nil
 	}
 
-	artifact.SetType(artifactType)
+	pa.SetTimestamp(time.Now().UnixNano())
 
-	return artifact
+	if errnie.Error(pa.SetOrigin(origin)) != nil {
+		return nil
+	}
+
+	pa.SetType(artifactType)
+	artifactPoolIndex.Store(&pa.Artifact, pa)
+
+	return &pa.Artifact
 }
 
 func (artifact *Artifact) Prefix() string {
-	prefix := make([]string, 0)
+	var builder strings.Builder
 
-	if origin, err := artifact.Origin(); err == nil {
-		prefix = append(prefix, origin)
+	builder.Grow(256)
+
+	var numBuf [32]byte
+
+	if origin, err := artifact.Origin(); err == nil && origin != "" {
+		builder.WriteString(origin)
+		builder.WriteByte('/')
 	}
 
-	if destination, err := artifact.Destination(); err == nil {
-		prefix = append(prefix, destination)
+	if destination, err := artifact.Destination(); err == nil && destination != "" {
+		builder.WriteString(destination)
+		builder.WriteByte('/')
 	}
 
-	if role, err := artifact.Role(); err == nil {
-		prefix = append(prefix, role)
+	if role, err := artifact.Role(); err == nil && role != "" {
+		builder.WriteString(role)
+		builder.WriteByte('/')
 	}
 
-	if scope, err := artifact.Scope(); err == nil {
-		prefix = append(prefix, scope)
+	if scope, err := artifact.Scope(); err == nil && scope != "" {
+		builder.WriteString(scope)
+		builder.WriteByte('/')
 	}
 
-	if ts := artifact.Timestamp(); ts > 0 {
-		prefix = append(prefix, strconv.FormatInt(ts, 36))
+	if timestamp := artifact.Timestamp(); timestamp > 0 {
+		base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
+		builder.Write(base36)
+		builder.WriteByte('/')
 	}
 
-	if uuid, err := artifact.Uuid(); err == nil {
-		prefix = append(prefix, string(uuid))
+	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+		builder.Write(uuidBytes)
 	}
 
-	out := strings.Join(prefix, "/") + "."
+	out := builder.String()
 
-	if t := artifact.Type(); t != 0 {
-		out += t.String()
+	if len(out) > 0 && out[len(out)-1] == '/' {
+		out = out[:len(out)-1]
+	}
+
+	out += "."
+
+	if artifactType := artifact.Type(); artifactType != 0 {
+		out += artifactType.String()
 	}
 
 	return out
@@ -101,6 +151,17 @@ func (artifact *Artifact) Release() {
 	if artifact == nil {
 		return
 	}
+
+	pooled, ok := artifactPoolIndex.LoadAndDelete(artifact)
+
+	if !ok {
+		resetArtifactStreamState(artifact)
+		return
+	}
+
+	pa := pooled.(*pooledArtifact)
+	pa.resetForPool()
+	artifactPool.Put(pa)
 }
 
 func (artifact *Artifact) WithDestination(destination string) *Artifact {
@@ -115,22 +176,44 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	}
 
 	cryptoSuite := NewCryptoSuite()
+	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
 
-	encryptedPayload, encryptedKey, ephemeralPubKey, err := cryptoSuite.EncryptPayload(payload)
+	if errnie.Error(artifact.SetEncryptedPayload(make([]byte, cipherLen))) != nil {
+		return nil
+	}
+
+	if errnie.Error(artifact.SetEncryptedKey(make([]byte, aesKeyBytes))) != nil {
+		return nil
+	}
+
+	if errnie.Error(artifact.SetEphemeralPublicKey(make([]byte, p256PubKeyBytes))) != nil {
+		return nil
+	}
+
+	encPayloadBuf, err := artifact.EncryptedPayload()
 
 	if errnie.Error(err) != nil {
 		return nil
 	}
 
-	if errnie.Error(artifact.SetEncryptedPayload(encryptedPayload)) != nil {
+	encKeyBuf, err := artifact.EncryptedKey()
+
+	if errnie.Error(err) != nil {
 		return nil
 	}
 
-	if errnie.Error(artifact.SetEncryptedKey(encryptedKey)) != nil {
+	ephemeralKeyBuf, err := artifact.EphemeralPublicKey()
+
+	if errnie.Error(err) != nil {
 		return nil
 	}
 
-	if errnie.Error(artifact.SetEphemeralPublicKey(ephemeralPubKey)) != nil {
+	if errnie.Error(cryptoSuite.EncryptPayloadDirect(
+		encPayloadBuf,
+		encKeyBuf,
+		ephemeralKeyBuf,
+		payload,
+	)) != nil {
 		return nil
 	}
 
@@ -188,6 +271,8 @@ func (artifact *Artifact) WithAttrubutes(attributes map[string]any) *Artifact {
 		default:
 			item.Value().SetTextValue(fmt.Sprintf("%v", v))
 		}
+
+		syncArtifactCacheEntry(artifact, key, value)
 	}
 
 	return artifact
@@ -218,13 +303,11 @@ func (artifact *Artifact) Metadata() (Artifact_Attribute_List, error) {
 }
 
 func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
-	errnie.Debug("datura.WithMeta")
 	errnie.Error(artifact.SetMetaValue(key, value))
 	return artifact
 }
 
 func (artifact *Artifact) WithError(err error) *Artifact {
-	errnie.Debug("datura.WithError")
 	artifact.WithPayload([]byte(err.Error()))
 	return artifact
 }

@@ -15,6 +15,8 @@ type artifactStreamState struct {
 	readOffset  int
 	readDone    bool
 	writeBuffer []byte
+	cache       map[string]any
+	indexed     bool
 }
 
 var artifactStreamStates sync.Map
@@ -30,14 +32,35 @@ func artifactStreamStateFor(artifact *Artifact) *artifactStreamState {
 		return existing.(*artifactStreamState)
 	}
 
-	state := &artifactStreamState{}
+	state := &artifactStreamState{
+		cache: make(map[string]any, 8),
+	}
 	actual, _ := artifactStreamStates.LoadOrStore(key, state)
 
 	return actual.(*artifactStreamState)
 }
 
 func resetArtifactStreamState(artifact *Artifact) {
-	artifactStreamStates.Delete(artifactStreamKey(artifact))
+	key := artifactStreamKey(artifact)
+
+	existing, loaded := artifactStreamStates.Load(key)
+
+	if !loaded {
+		return
+	}
+
+	state := existing.(*artifactStreamState)
+	state.readWire = nil
+	state.readOffset = 0
+	state.readDone = false
+	state.writeBuffer = nil
+	state.indexed = false
+
+	for cacheKey := range state.cache {
+		delete(state.cache, cacheKey)
+	}
+
+	artifactStreamStates.Delete(key)
 }
 
 /*

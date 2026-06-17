@@ -10,104 +10,177 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
-// CryptoSuite handles encryption and decryption operations for Artifacts
+const (
+	aesKeyBytes     = 32
+	p256PubKeyBytes = 65
+)
+
+/*
+CryptoSuite handles encryption and decryption operations for Artifacts.
+*/
 type CryptoSuite struct {
 	curve ecdh.Curve
 }
 
-// NewCryptoSuite creates a new CryptoSuite using P-256 curve
+/*
+NewCryptoSuite creates a new CryptoSuite using P-256 curve.
+*/
 func NewCryptoSuite() *CryptoSuite {
 	return &CryptoSuite{
 		curve: ecdh.P256(),
 	}
 }
 
-// GenerateEphemeralKeyPair generates a new ECDH key pair for one-time use
-func (cs *CryptoSuite) GenerateEphemeralKeyPair() (*ecdh.PrivateKey, error) {
-	return cs.curve.GenerateKey(rand.Reader)
+/*
+GenerateEphemeralKeyPair generates a new ECDH key pair for one-time use.
+*/
+func (cryptoSuite *CryptoSuite) GenerateEphemeralKeyPair() (*ecdh.PrivateKey, error) {
+	return cryptoSuite.curve.GenerateKey(rand.Reader)
 }
 
-// EncryptPayload encrypts a payload using AES-GCM with an ephemeral key
-// Returns the encrypted payload, encrypted key, and ephemeral public key
-func (cs *CryptoSuite) EncryptPayload(payload []byte) ([]byte, []byte, []byte, error) {
-	// Generate ephemeral key pair
-	ephemeralKey, err := cs.GenerateEphemeralKeyPair()
+/*
+EncryptedPayloadSize returns the Cap'n Proto data field size for AES-GCM ciphertext.
+*/
+func (cryptoSuite *CryptoSuite) EncryptedPayloadSize(plaintextLen int) int {
+	block, err := aes.NewCipher(make([]byte, aesKeyBytes))
 
 	if err != nil {
-		return nil, nil, nil, errnie.Error(err, "payload", payload)
+		return 12 + plaintextLen + 16
 	}
 
-	// Generate AES key
-	aesKey := make([]byte, 32)
-
-	if _, err := rand.Read(aesKey); err != nil {
-		return nil, nil, nil, errnie.Error(err, "payload", payload)
-	}
-
-	// Create AES cipher
-	block, err := aes.NewCipher(aesKey)
-
-	if err != nil {
-		return nil, nil, nil, errnie.Error(err, "payload", payload)
-	}
-
-	// Create GCM mode
 	gcm, err := cipher.NewGCM(block)
 
 	if err != nil {
-		return nil, nil, nil, errnie.Error(err, "payload", payload)
+		return 12 + plaintextLen + 16
 	}
 
-	// Generate nonce
-	nonce := make([]byte, gcm.NonceSize())
+	return gcm.NonceSize() + plaintextLen + gcm.Overhead()
+}
 
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, nil, nil, errnie.Error(err, "payload", payload)
+/*
+EncryptPayloadDirect encrypts a payload into pre-allocated destination slices.
+*/
+func (cryptoSuite *CryptoSuite) EncryptPayloadDirect(
+	dstPayload, dstKey, dstPubKey, payload []byte,
+) error {
+	ephemeralKey, err := cryptoSuite.GenerateEphemeralKeyPair()
+
+	if err != nil {
+		return errnie.Error(err, "ephemeral_key")
 	}
 
-	// Encrypt payload
-	encryptedPayload := gcm.Seal(nonce, nonce, payload, nil)
+	var aesKey [aesKeyBytes]byte
 
-	// For testing purposes, we'll use a simplified key exchange
-	// In production, this should use proper ECIES
-	var encryptedKey = make([]byte, len(aesKey))
-	copy(encryptedKey, aesKey) // For testing, we'll pass the key directly
+	if _, err = rand.Read(aesKey[:]); err != nil {
+		return errnie.Error(err, "rand_aes")
+	}
 
-	// Get the public key bytes
-	ephemeralPubKey := ephemeralKey.PublicKey().Bytes()
+	block, err := aes.NewCipher(aesKey[:])
+
+	if err != nil {
+		return errnie.Error(err, "cipher")
+	}
+
+	gcm, err := cipher.NewGCM(block)
+
+	if err != nil {
+		return errnie.Error(err, "gcm")
+	}
+
+	nonceSize := gcm.NonceSize()
+	needed := nonceSize + len(payload) + gcm.Overhead()
+
+	if len(dstPayload) < needed {
+		return errnie.Error(errors.New("dstPayload too short"))
+	}
+
+	if len(dstKey) < aesKeyBytes {
+		return errnie.Error(errors.New("dstKey too short"))
+	}
+
+	pubKeyBytes := ephemeralKey.PublicKey().Bytes()
+
+	if len(dstPubKey) < len(pubKeyBytes) {
+		return errnie.Error(errors.New("dstPubKey too short"))
+	}
+
+	nonceBuf := dstPayload[:nonceSize]
+
+	if _, err = rand.Read(nonceBuf); err != nil {
+		return errnie.Error(err, "rand_nonce")
+	}
+
+	gcm.Seal(dstPayload[:nonceSize], nonceBuf, payload, nil)
+	copy(dstKey, aesKey[:])
+	copy(dstPubKey, pubKeyBytes)
+
+	return nil
+}
+
+/*
+EncryptPayload encrypts a payload using AES-GCM with an ephemeral key.
+*/
+func (cryptoSuite *CryptoSuite) EncryptPayload(payload []byte) ([]byte, []byte, []byte, error) {
+	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
+	encryptedPayload := make([]byte, cipherLen)
+	encryptedKey := make([]byte, aesKeyBytes)
+	ephemeralPubKey := make([]byte, p256PubKeyBytes)
+
+	err := cryptoSuite.EncryptPayloadDirect(
+		encryptedPayload,
+		encryptedKey,
+		ephemeralPubKey,
+		payload,
+	)
+
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	return encryptedPayload, encryptedKey, ephemeralPubKey, nil
 }
 
-// DecryptPayload decrypts a payload using the provided keys
-func (cs *CryptoSuite) DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey []byte) ([]byte, error) {
-	// For testing purposes, we'll use the key directly
-	// In production, this should use proper ECIES
-	aesKey := make([]byte, len(encryptedKey))
-	copy(aesKey, encryptedKey)
-
-	// Create AES cipher
-	block, err := aes.NewCipher(aesKey)
-
-	if err != nil {
-		return nil, errnie.Error(err, "payload", encryptedPayload)
+/*
+DecryptPayloadDirect decrypts into dst when capacity allows, otherwise allocates.
+*/
+func (cryptoSuite *CryptoSuite) DecryptPayloadDirect(
+	dst, encryptedPayload, encryptedKey []byte,
+) ([]byte, error) {
+	if len(encryptedKey) < aesKeyBytes {
+		return nil, errnie.Error(errors.New("encrypted key too short"))
 	}
 
-	// Create GCM mode
+	block, err := aes.NewCipher(encryptedKey[:aesKeyBytes])
+
+	if err != nil {
+		return nil, errnie.Error(err, "cipher_decrypt")
+	}
+
 	gcm, err := cipher.NewGCM(block)
 
 	if err != nil {
-		return nil, errnie.Error(err, "payload", encryptedPayload)
+		return nil, errnie.Error(err, "gcm_decrypt")
 	}
 
-	// Split nonce and ciphertext
-	if len(encryptedPayload) < gcm.NonceSize() {
-		return nil, errnie.Error(errors.New("ciphertext too short"), "payload", encryptedPayload)
+	nonceSize := gcm.NonceSize()
+
+	if len(encryptedPayload) < nonceSize {
+		return nil, errnie.Error(errors.New("ciphertext too short"))
 	}
 
-	nonce := encryptedPayload[:gcm.NonceSize()]
-	ciphertext := encryptedPayload[gcm.NonceSize():]
+	nonce := encryptedPayload[:nonceSize]
+	ciphertext := encryptedPayload[nonceSize:]
 
-	// Decrypt payload
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	return gcm.Open(dst[:0], nonce, ciphertext, nil)
+}
+
+/*
+DecryptPayload decrypts a payload using the provided keys.
+*/
+func (cryptoSuite *CryptoSuite) DecryptPayload(
+	encryptedPayload, encryptedKey, ephemeralPubKey []byte,
+) ([]byte, error) {
+	_ = ephemeralPubKey
+
+	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
 }

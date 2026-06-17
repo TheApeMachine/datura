@@ -1,21 +1,25 @@
 package dmt
 
+import (
+	"bytes"
+	"sort"
+)
+
 /*
 merkleSnapshot is an immutable Merkle tree view published through atomic pointers.
+Leaves are kept in sorted key order for allocation-free binary search lookups.
 */
 type merkleSnapshot struct {
 	root     *MerkleNode
-	leafMap  map[string]*MerkleNode
-	nodeMap  map[string]*MerkleNode
+	leaves   []*MerkleNode
 	parent   map[*MerkleNode]*MerkleNode
 	modified bool
 }
 
 func newMerkleSnapshot() *merkleSnapshot {
 	return &merkleSnapshot{
-		leafMap: make(map[string]*MerkleNode),
-		nodeMap: make(map[string]*MerkleNode),
-		parent:  make(map[*MerkleNode]*MerkleNode),
+		leaves: make([]*MerkleNode, 0),
+		parent: make(map[*MerkleNode]*MerkleNode),
 	}
 }
 
@@ -27,37 +31,20 @@ func (snapshot *merkleSnapshot) load() *merkleSnapshot {
 	return snapshot
 }
 
-func (snapshot *merkleSnapshot) withLeaf(keyHex string, leaf *MerkleNode) *merkleSnapshot {
+/*
+LookupLeaf performs an allocation-free binary search across the sorted leaf slice.
+*/
+func (snapshot *merkleSnapshot) LookupLeaf(key []byte) (*MerkleNode, bool) {
 	current := snapshot.load()
-	nextLeafMap := make(map[string]*MerkleNode, len(current.leafMap)+1)
+	leafCount := len(current.leaves)
 
-	for key, value := range current.leafMap {
-		nextLeafMap[key] = value
+	leafIndex := sort.Search(leafCount, func(index int) bool {
+		return bytes.Compare(current.leaves[index].Key, key) >= 0
+	})
+
+	if leafIndex < leafCount && bytes.Equal(current.leaves[leafIndex].Key, key) {
+		return current.leaves[leafIndex], true
 	}
 
-	nextLeafMap[keyHex] = leaf
-
-	return &merkleSnapshot{
-		root:     current.root,
-		leafMap:  nextLeafMap,
-		nodeMap:  current.nodeMap,
-		parent:   current.parent,
-		modified: true,
-	}
-}
-
-func (snapshot *merkleSnapshot) rebuilt(
-	root *MerkleNode,
-	nodeMap map[string]*MerkleNode,
-	parent map[*MerkleNode]*MerkleNode,
-) *merkleSnapshot {
-	current := snapshot.load()
-
-	return &merkleSnapshot{
-		root:     root,
-		leafMap:  current.leafMap,
-		nodeMap:  nodeMap,
-		parent:   parent,
-		modified: false,
-	}
+	return nil, false
 }

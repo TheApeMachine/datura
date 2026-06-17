@@ -3,7 +3,6 @@ package dmt
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"sync/atomic"
@@ -52,20 +51,42 @@ Insert stores a key-value pair as a leaf. Copies key/value to avoid caller
 aliasing. Rebuild required before GetDiff or VerifyProof.
 */
 func (tree *MerkleTree) Insert(key, value []byte) {
-	keyCopy := append([]byte(nil), key...)
-	valueCopy := append([]byte(nil), value...)
-
 	leaf := &MerkleNode{
-		Key:   keyCopy,
-		Value: valueCopy,
-		Hash:  tree.hashKV(keyCopy, valueCopy),
+		Key:   append([]byte(nil), key...),
+		Value: append([]byte(nil), value...),
 	}
-
-	keyHex := hex.EncodeToString(keyCopy)
+	leaf.Hash = tree.hashKV(leaf.Key, leaf.Value)
 
 	for {
 		current := tree.loadSnapshot()
-		next := current.withLeaf(keyHex, leaf)
+		currentLeaves := current.leaves
+		leafCount := len(currentLeaves)
+
+		insertIndex := sort.Search(leafCount, func(index int) bool {
+			return bytes.Compare(currentLeaves[index].Key, leaf.Key) >= 0
+		})
+
+		var nextLeaves []*MerkleNode
+
+		if insertIndex < leafCount && bytes.Equal(currentLeaves[insertIndex].Key, leaf.Key) {
+			nextLeaves = make([]*MerkleNode, leafCount)
+			copy(nextLeaves, currentLeaves)
+			nextLeaves[insertIndex] = leaf
+		}
+
+		if insertIndex >= leafCount || !bytes.Equal(currentLeaves[insertIndex].Key, leaf.Key) {
+			nextLeaves = make([]*MerkleNode, leafCount+1)
+			copy(nextLeaves[:insertIndex], currentLeaves[:insertIndex])
+			nextLeaves[insertIndex] = leaf
+			copy(nextLeaves[insertIndex+1:], currentLeaves[insertIndex:])
+		}
+
+		next := &merkleSnapshot{
+			root:     current.root,
+			leaves:   nextLeaves,
+			parent:   current.parent,
+			modified: true,
+		}
 
 		if tree.snapshot.CompareAndSwap(current, next) {
 			return
@@ -84,24 +105,17 @@ func (tree *MerkleTree) Rebuild() {
 			return
 		}
 
-		leaves := make([]*MerkleNode, 0, len(current.leafMap))
-		keys := make([]string, 0, len(current.leafMap))
+		parent := make(map[*MerkleNode]*MerkleNode, len(current.leaves)*2)
+		scratchBuffer := make([]*MerkleNode, 0, len(current.leaves))
 
-		nodeMap := make(map[string]*MerkleNode, len(current.leafMap))
-		parent := make(map[*MerkleNode]*MerkleNode, len(current.leafMap)*2)
+		root := tree.buildLevelZeroAlloc(current.leaves, scratchBuffer, parent)
 
-		for key := range current.leafMap {
-			keys = append(keys, key)
+		next := &merkleSnapshot{
+			root:     root,
+			leaves:   current.leaves,
+			parent:   parent,
+			modified: false,
 		}
-
-		sort.Strings(keys)
-
-		for _, key := range keys {
-			leaves = append(leaves, current.leafMap[key])
-		}
-
-		root := tree.buildLevel(leaves, nodeMap, parent)
-		next := current.rebuilt(root, nodeMap, parent)
 
 		if tree.snapshot.CompareAndSwap(current, next) {
 			return
@@ -109,9 +123,9 @@ func (tree *MerkleTree) Rebuild() {
 	}
 }
 
-func (tree *MerkleTree) buildLevel(
+func (tree *MerkleTree) buildLevelZeroAlloc(
 	nodes []*MerkleNode,
-	nodeMap map[string]*MerkleNode,
+	scratchBuffer []*MerkleNode,
 	parent map[*MerkleNode]*MerkleNode,
 ) *MerkleNode {
 	if len(nodes) == 0 {
@@ -122,7 +136,7 @@ func (tree *MerkleTree) buildLevel(
 		return nodes[0]
 	}
 
-	parents := make([]*MerkleNode, 0, (len(nodes)+1)/2)
+	levelOffset := len(scratchBuffer)
 
 	for index := 0; index < len(nodes); index += 2 {
 		var right *MerkleNode
@@ -138,18 +152,18 @@ func (tree *MerkleTree) buildLevel(
 			Hash:  tree.hashChildren(left, right),
 		}
 
-		hashHex := hex.EncodeToString(parentNode.Hash)
-		nodeMap[hashHex] = parentNode
 		parent[left] = parentNode
 
 		if right != nil {
 			parent[right] = parentNode
 		}
 
-		parents = append(parents, parentNode)
+		scratchBuffer = append(scratchBuffer, parentNode)
 	}
 
-	return tree.buildLevel(parents, nodeMap, parent)
+	nextLevelNodes := scratchBuffer[levelOffset:]
+
+	return tree.buildLevelZeroAlloc(nextLevelNodes, scratchBuffer, parent)
 }
 
 /*
@@ -188,9 +202,7 @@ func (tree *MerkleTree) diffNode(
 	}
 
 	if leftNode.Key != nil {
-		keyHex := hex.EncodeToString(leftNode.Key)
-
-		if otherLeaf, exists := other.leafMap[keyHex]; exists {
+		if otherLeaf, exists := other.LookupLeaf(leftNode.Key); exists {
 			if !bytes.Equal(leftNode.Value, otherLeaf.Value) {
 				*diffs = append(*diffs, DiffEntry{
 					Key:      leftNode.Key,
@@ -221,28 +233,54 @@ func (tree *MerkleTree) diffNode(
 }
 
 func (tree *MerkleTree) fullDiff(left, right *merkleSnapshot) []DiffEntry {
-	diffs := make([]DiffEntry, 0, len(left.leafMap))
+	leftLeaves := left.leaves
+	rightLeaves := right.leaves
+	diffs := make([]DiffEntry, 0, len(leftLeaves))
 
-	for _, leaf := range left.leafMap {
-		keyHex := hex.EncodeToString(leaf.Key)
+	leftIndex, rightIndex := 0, 0
 
-		if otherLeaf, exists := right.leafMap[keyHex]; exists {
-			if !bytes.Equal(leaf.Value, otherLeaf.Value) {
+	for leftIndex < len(leftLeaves) && rightIndex < len(rightLeaves) {
+		leftLeaf := leftLeaves[leftIndex]
+		rightLeaf := rightLeaves[rightIndex]
+		compareKeys := bytes.Compare(leftLeaf.Key, rightLeaf.Key)
+
+		if compareKeys == 0 {
+			if !bytes.Equal(leftLeaf.Value, rightLeaf.Value) {
 				diffs = append(diffs, DiffEntry{
-					Key:      leaf.Key,
-					Value:    leaf.Value,
+					Key:      leftLeaf.Key,
+					Value:    leftLeaf.Value,
 					Modified: true,
 				})
 			}
 
+			leftIndex++
+			rightIndex++
+
 			continue
 		}
 
+		if compareKeys < 0 {
+			diffs = append(diffs, DiffEntry{
+				Key:      leftLeaf.Key,
+				Value:    leftLeaf.Value,
+				Modified: false,
+			})
+			leftIndex++
+
+			continue
+		}
+
+		rightIndex++
+	}
+
+	for leftIndex < len(leftLeaves) {
+		leftLeaf := leftLeaves[leftIndex]
 		diffs = append(diffs, DiffEntry{
-			Key:      leaf.Key,
-			Value:    leaf.Value,
+			Key:      leftLeaf.Key,
+			Value:    leftLeaf.Value,
 			Modified: false,
 		})
+		leftIndex++
 	}
 
 	return diffs
@@ -253,8 +291,7 @@ Verify returns true if the key exists and its stored value matches.
 */
 func (tree *MerkleTree) Verify(key, value []byte) bool {
 	snapshot := tree.loadSnapshot()
-	keyHex := hex.EncodeToString(key)
-	leaf, exists := snapshot.leafMap[keyHex]
+	leaf, exists := snapshot.LookupLeaf(key)
 
 	if !exists {
 		return false
@@ -268,8 +305,7 @@ GetProof returns sibling hashes from leaf to root.
 */
 func (tree *MerkleTree) GetProof(key []byte) ([][]byte, error) {
 	snapshot := tree.loadSnapshot()
-	keyHex := hex.EncodeToString(key)
-	leaf, exists := snapshot.leafMap[keyHex]
+	leaf, exists := snapshot.LookupLeaf(key)
 
 	if !exists {
 		guardStep(tree.state, func() error {
@@ -283,9 +319,9 @@ func (tree *MerkleTree) GetProof(key []byte) ([][]byte, error) {
 	current := leaf
 
 	for current != snapshot.root {
-		parent := snapshot.parent[current]
+		parentNode := snapshot.parent[current]
 
-		if parent == nil {
+		if parentNode == nil {
 			guardStep(tree.state, func() error {
 				return fmt.Errorf("invalid tree structure")
 			})
@@ -293,19 +329,19 @@ func (tree *MerkleTree) GetProof(key []byte) ([][]byte, error) {
 			return nil, tree.state.Err()
 		}
 
-		if parent.Left == current {
-			if parent.Right != nil {
-				entry := append([]byte{0x00}, parent.Right.Hash...)
+		if parentNode.Left == current {
+			if parentNode.Right != nil {
+				entry := append([]byte{0x00}, parentNode.Right.Hash...)
 				proof = append(proof, entry)
 			}
 		}
 
-		if parent.Left != current {
-			entry := append([]byte{0x01}, parent.Left.Hash...)
+		if parentNode.Left != current {
+			entry := append([]byte{0x01}, parentNode.Left.Hash...)
 			proof = append(proof, entry)
 		}
 
-		current = parent
+		current = parentNode
 	}
 
 	return proof, nil
@@ -322,6 +358,7 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 	}
 
 	hash := tree.hashKV(key, value)
+	hasher := sha256.New()
 
 	for _, entry := range proof {
 		if len(entry) <= 1 {
@@ -331,13 +368,19 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 		position := entry[0]
 		siblingHash := entry[1:]
 
+		hasher.Reset()
+
 		if position == 0x00 {
-			hash = tree.hashChildren(&MerkleNode{Hash: hash}, &MerkleNode{Hash: siblingHash})
+			hasher.Write(hash)
+			hasher.Write(siblingHash)
 		}
 
 		if position == 0x01 {
-			hash = tree.hashChildren(&MerkleNode{Hash: siblingHash}, &MerkleNode{Hash: hash})
+			hasher.Write(siblingHash)
+			hasher.Write(hash)
 		}
+
+		hash = hasher.Sum(hash[:0])
 	}
 
 	return bytes.Equal(hash, snapshot.root.Hash)
@@ -372,7 +415,7 @@ func (tree *MerkleTree) Modified() bool {
 	return tree.loadSnapshot().modified
 }
 
-// LeafMap exposes the leaf map for tests.
-func (tree *MerkleTree) LeafMap() map[string]*MerkleNode {
-	return tree.loadSnapshot().leafMap
+// Leaves exposes the sorted leaf slice for tests.
+func (tree *MerkleTree) Leaves() []*MerkleNode {
+	return tree.loadSnapshot().leaves
 }

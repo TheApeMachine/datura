@@ -1,20 +1,25 @@
 package dmt
 
 import (
+	"sort"
 	"sync/atomic"
 )
 
+type peerEntry struct {
+	addr string
+	node *peer
+}
+
 /*
-Peers is an immutable view of connected network peers.
-Writers publish a new snapshot pointer; readers load it without locking.
+Peers manages cluster node targets using a lock-free sorted flat slice.
 */
 type Peers struct {
-	byAddr map[string]*peer
+	entries []peerEntry
 }
 
 func (peers *Peers) load() *Peers {
 	if peers == nil {
-		return &Peers{byAddr: make(map[string]*peer)}
+		return &Peers{entries: make([]peerEntry, 0)}
 	}
 
 	return peers
@@ -22,60 +27,77 @@ func (peers *Peers) load() *Peers {
 
 func (peers *Peers) List() []*peer {
 	current := peers.load()
-	peerList := make([]*peer, 0, len(current.byAddr))
+	peerList := make([]*peer, len(current.entries))
 
-	for _, peerEntry := range current.byAddr {
-		peerList = append(peerList, peerEntry)
+	for index, entry := range current.entries {
+		peerList[index] = entry.node
 	}
 
 	return peerList
 }
 
 func (peers *Peers) Has(addr string) bool {
-	_, exists := peers.load().byAddr[addr]
+	current := peers.load()
+	entryCount := len(current.entries)
 
-	return exists
+	entryIndex := sort.Search(entryCount, func(index int) bool {
+		return current.entries[index].addr >= addr
+	})
+
+	return entryIndex < entryCount && current.entries[entryIndex].addr == addr
 }
 
-func (peers *Peers) With(addr string, peerEntry *peer) *Peers {
+func (peers *Peers) With(addr string, peerEntryNode *peer) *Peers {
 	current := peers.load()
-	nextByAddr := make(map[string]*peer, len(current.byAddr)+1)
+	currentEntries := current.entries
+	entryCount := len(currentEntries)
 
-	for key, value := range current.byAddr {
-		nextByAddr[key] = value
+	entryIndex := sort.Search(entryCount, func(index int) bool {
+		return currentEntries[index].addr >= addr
+	})
+
+	if entryIndex < entryCount && currentEntries[entryIndex].addr == addr {
+		nextEntries := make([]peerEntry, entryCount)
+		copy(nextEntries, currentEntries)
+		nextEntries[entryIndex].node = peerEntryNode
+
+		return &Peers{entries: nextEntries}
 	}
 
-	nextByAddr[addr] = peerEntry
+	nextEntries := make([]peerEntry, entryCount+1)
+	copy(nextEntries[:entryIndex], currentEntries[:entryIndex])
+	nextEntries[entryIndex] = peerEntry{addr: addr, node: peerEntryNode}
+	copy(nextEntries[entryIndex+1:], currentEntries[entryIndex:])
 
-	return &Peers{byAddr: nextByAddr}
+	return &Peers{entries: nextEntries}
 }
 
 func (peers *Peers) Without(addr string) *Peers {
 	current := peers.load()
+	currentEntries := current.entries
+	entryCount := len(currentEntries)
 
-	if _, exists := current.byAddr[addr]; !exists {
+	entryIndex := sort.Search(entryCount, func(index int) bool {
+		return currentEntries[index].addr >= addr
+	})
+
+	if entryIndex >= entryCount || currentEntries[entryIndex].addr != addr {
 		return current
 	}
 
-	nextByAddr := make(map[string]*peer, len(current.byAddr)-1)
+	nextEntries := make([]peerEntry, entryCount-1)
+	copy(nextEntries[:entryIndex], currentEntries[:entryIndex])
+	copy(nextEntries[entryIndex:], currentEntries[entryIndex+1:])
 
-	for key, value := range current.byAddr {
-		if key == addr {
-			continue
-		}
-
-		nextByAddr[key] = value
-	}
-
-	return &Peers{byAddr: nextByAddr}
+	return &Peers{entries: nextEntries}
 }
 
 func (peers *Peers) Len() int {
-	return len(peers.load().byAddr)
+	return len(peers.load().entries)
 }
 
 /*
-peerRegistry publishes peer map updates through atomic snapshot pointers.
+peerRegistry publishes peer snapshot updates through atomic pointers.
 */
 type peerRegistry struct {
 	snapshot atomic.Pointer[Peers]
@@ -83,7 +105,7 @@ type peerRegistry struct {
 
 func newPeerRegistry() *peerRegistry {
 	registry := &peerRegistry{}
-	registry.snapshot.Store(&Peers{byAddr: make(map[string]*peer)})
+	registry.snapshot.Store(&Peers{entries: make([]peerEntry, 0)})
 
 	return registry
 }

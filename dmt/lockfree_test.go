@@ -3,6 +3,7 @@ package dmt
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -45,23 +46,26 @@ func TestElectionVoteRing(test *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		voteRing, err := structure.NewMPMCRing[string](ctx, 128)
+		voteRing, err := structure.NewMPMCRing[uint64](ctx, 128)
 		So(err, ShouldBeNil)
 		defer voteRing.Close()
 
 		election := &Election{
-			voteRing: voteRing,
-			node:     &NetworkNode{metrics: NewMetrics()},
+			voteRing:    voteRing,
+			node:        &NetworkNode{metrics: NewMetrics()},
+			votesNeeded: atomic.Uint32{},
 		}
+		election.votesNeeded.Store(3)
 
 		Convey("When publishing votes", func() {
 			election.role.Store(uint32(Candidate))
-			election.publishVote("peer-a")
-			election.publishVote("peer-b")
+			election.votesReceived.Store(1)
+			election.publishVote(hashNodeID("peer-a"))
+			election.publishVote(hashNodeID("peer-b"))
 			election.drainVotes()
 
 			Convey("It should count granted votes", func() {
-				So(election.votesReceived.Load(), ShouldEqual, 2)
+				So(election.votesReceived.Load(), ShouldEqual, uint32(3))
 			})
 		})
 	})

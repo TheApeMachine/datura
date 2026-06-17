@@ -105,51 +105,52 @@ func (forest *Forest) Close() error {
 }
 
 /*
-synchronizeTrees ensures all trees have consistent data by comparing and
-updating them based on the most up-to-date tree.
+synchronizeTrees ensures all internal trees share an identical immutable view.
+Trailing trees catch up via O(1) root pointer assignment instead of Merkle diffs.
 */
 func (forest *Forest) synchronizeTrees(trees []*Tree) {
 	if len(trees) <= 1 {
 		return
 	}
 
-	// Use the first tree as reference
-	reference := trees[0]
+	reference := forest.syncReferenceTree(trees)
 
-	// Build Merkle tree for reference
-	refMerkle := NewMerkleTree()
-	it := reference.loadRoot().Root().Iterator()
-	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-		refMerkle.Insert(key, value)
+	if reference == nil {
+		return
 	}
-	refMerkle.Rebuild()
 
-	// Sync other trees using Merkle diffs
-	for _, tree := range trees[1:] {
-		// Build Merkle tree for target
-		targetMerkle := NewMerkleTree()
-		it := tree.loadRoot().Root().Iterator()
-		for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-			targetMerkle.Insert(key, value)
-		}
-		targetMerkle.Rebuild()
+	refRoot := reference.loadRoot()
+	refTerm, refIndex := reference.GetLogState()
 
-		// Get diff and apply changes
-		diffs := refMerkle.GetDiff(targetMerkle)
-		for _, diff := range diffs {
-			tree.Insert(diff.Key, diff.Value)
+	for _, tree := range trees {
+		if tree == reference {
+			continue
 		}
+
+		if tree.loadRoot() == refRoot {
+			continue
+		}
+
+		tree.root.Store(refRoot)
+		tree.term.Store(refTerm)
+		tree.logIndex.Store(refIndex)
 	}
 }
 
 /*
-AddTree incorporates a new Tree instance into the forest.
-Each added tree will be maintained with identical data but may have different
-performance characteristics based on its specific implementation or state.
+AddTree incorporates a new Tree instance into the forest using lock-free snapshot CAS.
 */
 func (forest *Forest) AddTree(tree *Tree) {
-	forest.snapshot.Store(forest.snapshot.Load().Append(tree))
-	forest.synchronizeTrees(forest.snapshot.Load().Trees())
+	for {
+		current := forest.snapshot.Load()
+		next := current.Append(tree)
+
+		if forest.snapshot.CompareAndSwap(current, next) {
+			forest.synchronizeTrees(next.Trees())
+
+			return
+		}
+	}
 }
 
 /*
@@ -176,6 +177,30 @@ func (forest *Forest) getFastestTree() *Tree {
 	}
 
 	return fastestTree
+}
+
+/*
+syncReferenceTree selects the fastest tree that already holds replicated state.
+Empty trailing replicas are never used as the synchronization source.
+*/
+func (forest *Forest) syncReferenceTree(trees []*Tree) *Tree {
+	if len(trees) == 0 {
+		return nil
+	}
+
+	fastestTree := forest.getFastestTree()
+
+	if fastestTree != nil && fastestTree.loadRoot().Len() > 0 {
+		return fastestTree
+	}
+
+	for _, tree := range trees {
+		if tree.loadRoot().Len() > 0 {
+			return tree
+		}
+	}
+
+	return trees[0]
 }
 
 /*
@@ -227,19 +252,19 @@ func (forest *Forest) Insert(key []byte, value []byte) {
 }
 
 /*
-Iterate walks all key-value pairs in the fastest tree, calling fn for each.
-Stops early if fn returns false.
+Iterate walks all key-value pairs in the fastest tree with zero intermediate allocations.
 */
 func (forest *Forest) Iterate(fn func(key []byte, value []byte) bool) {
 	tree := forest.getFastestTree()
+
 	if tree == nil {
 		return
 	}
 
 	root := tree.loadRoot()
-	it := root.Root().Iterator()
+	iterator := root.Root().Iterator()
 
-	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
+	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !fn(key, value) {
 			return
 		}
