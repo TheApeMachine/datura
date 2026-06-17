@@ -10,6 +10,7 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/theapemachine/datura"
 )
 
 func TestNewForest(t *testing.T) {
@@ -83,9 +84,25 @@ func TestForestOperations(t *testing.T) {
 			})
 
 			Convey("And seek operations should work", func() {
-				value, exists := forest.Seek([]byte("key"))
-				So(exists, ShouldBeTrue)
-				So(value, ShouldResemble, []byte("value1")) // Should find first key alphabetically
+				artifact := datura.Acquire("forest", datura.Artifact_Type_json)
+				So(artifact, ShouldNotBeNil)
+				defer artifact.Release()
+
+				artifact.WithPayload([]byte("value1"))
+				forest.Insert([]byte("key1"), artifact.Marshal())
+
+				var found bool
+
+				for result := range forest.Seek([]byte("key")) {
+					found = true
+
+					payload, payloadErr := result.Payload()
+
+					So(payloadErr, ShouldBeNil)
+					So(payload, ShouldResemble, []byte("value1"))
+				}
+
+				So(found, ShouldBeTrue)
 			})
 		})
 	})
@@ -101,7 +118,7 @@ func TestForestSynchronization(t *testing.T) {
 		defer forest.Close()
 
 		// Add a second tree
-		tree2, err := NewTree("")
+		tree2 := NewTree("")
 		So(err, ShouldBeNil)
 		forest.AddTree(tree2)
 
@@ -127,7 +144,7 @@ func TestForestAddTreeSynchronization(t *testing.T) {
 
 		forest.Insert([]byte("seed-key"), []byte("seed-value"))
 
-		tree2, err := NewTree("")
+		tree2 := NewTree("")
 		So(err, ShouldBeNil)
 
 		Convey("When a new tree is added", func() {
@@ -149,10 +166,8 @@ func TestForestPerformance(t *testing.T) {
 		defer forest.Close()
 
 		// Add trees with different simulated performance characteristics
-		tree1, err := NewTree("")
-		So(err, ShouldBeNil)
-		tree2, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree1 := NewTree("")
+		tree2 := NewTree("")
 
 		forest.AddTree(tree1)
 		forest.AddTree(tree2)
@@ -225,8 +240,7 @@ func TestForestClose(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		// Add additional tree
-		tree2, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree2 := NewTree("")
 		forest.AddTree(tree2)
 
 		Convey("When closing the forest", func() {
@@ -285,21 +299,11 @@ func TestForestConcurrentAddTree(test *testing.T) {
 		var waitGroup sync.WaitGroup
 
 		for range 8 {
-			waitGroup.Add(1)
-
-			go func() {
-				defer waitGroup.Done()
-
-				tree, treeErr := NewTree("")
-
-				if treeErr != nil {
-					return
-				}
-
+			waitGroup.Go(func() {
+				tree := NewTree("")
 				defer tree.Close()
-
 				forest.AddTree(tree)
-			}()
+			})
 		}
 
 		waitGroup.Wait()

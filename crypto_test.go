@@ -75,7 +75,7 @@ func BenchmarkArtifactPrefix(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		if artifact.Prefix() == "" {
+		if len(artifact.Prefix()) == 0 {
 			b.Fatal("prefix empty")
 		}
 	}

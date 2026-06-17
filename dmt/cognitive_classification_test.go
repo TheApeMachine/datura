@@ -9,8 +9,7 @@ import (
 
 func TestClassify(t *testing.T) {
 	Convey("Given competing attractor basins", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		sequence := []byte("the_blue")
 
@@ -46,8 +45,7 @@ func TestClassify(t *testing.T) {
 
 func TestUnsupervisedLearn(t *testing.T) {
 	Convey("Given a trained attractor basin", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		sequence := []byte("the_blue")
 
@@ -79,8 +77,7 @@ func TestUnsupervisedLearn(t *testing.T) {
 
 func TestUnsupervisedLearnNoAttractor(t *testing.T) {
 	Convey("Given an empty attractor landscape", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		var scratch ClassificationScratch
 
@@ -96,8 +93,7 @@ func TestUnsupervisedLearnNoAttractor(t *testing.T) {
 
 func TestClassifyZeroAlloc(t *testing.T) {
 	Convey("Given packed basin weights", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
@@ -125,11 +121,7 @@ func TestClassifyZeroAlloc(t *testing.T) {
 }
 
 func BenchmarkClassify(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
+	tree := NewTree("")
 
 	_, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),
@@ -151,11 +143,7 @@ func BenchmarkClassify(b *testing.B) {
 }
 
 func BenchmarkUnsupervisedLearn(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
+	tree := NewTree("")
 
 	_, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),

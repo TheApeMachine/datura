@@ -25,7 +25,9 @@ struct Artifact {
     type @6 :Type;
 
     enum Type {
-        json @0;
+        json      @0;
+        artifact  @1;
+        artifacts @2;
     }
 
     origin      @7  :Text;

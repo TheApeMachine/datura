@@ -2,8 +2,10 @@ package dmt
 
 import (
 	"context"
+	"iter"
 	"sync/atomic"
 
+	"github.com/theapemachine/datura"
 	"github.com/theapemachine/qpool"
 )
 
@@ -60,7 +62,7 @@ func NewForest(config ForestConfig) (*Forest, error) {
 
 	// Create initial tree (with persistence if directory is provided)
 	tree := guardValue(forest.state, func() (*Tree, error) {
-		return NewTree(config.PersistDir)
+		return NewTree(config.PersistDir), nil
 	})
 
 	forest.AddTree(tree)
@@ -226,15 +228,15 @@ func (forest *Forest) Get(key []byte) ([]byte, bool) {
 
 /*
 Seek performs a prefix-based search using the most performant tree in the forest.
-It finds the first value whose key is greater than or equal to the provided key
-in lexicographical order. Returns the value and true if found, or nil and false
-if no such key exists or if the forest is empty.
+It yields artifacts whose keys share the prefix and are greater than or equal to key.
 */
-func (forest *Forest) Seek(key []byte) ([]byte, bool) {
+func (forest *Forest) Seek(key []byte) iter.Seq[*datura.Artifact] {
 	fastestTree := forest.getFastestTree()
+
 	if fastestTree == nil {
-		return nil, false
+		return iter.Seq[*datura.Artifact](func(yield func(*datura.Artifact) bool) {})
 	}
+
 	return fastestTree.Seek(key)
 }
 

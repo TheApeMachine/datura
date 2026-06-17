@@ -37,6 +37,8 @@ var artifactPool = sync.Pool{
 
 var artifactPoolIndex sync.Map
 
+var Empty = Artifact{}
+
 /*
 pooledArtifact groups a Cap'n Proto artifact with pool bookkeeping.
 The exported surface remains *Artifact pointers into the embedded struct.
@@ -95,22 +97,12 @@ func Acquire(
 	return &pa.Artifact
 }
 
-func (artifact *Artifact) Prefix() string {
+func (artifact *Artifact) Prefix() []byte {
 	var builder strings.Builder
 
 	builder.Grow(256)
 
 	var numBuf [32]byte
-
-	if origin, err := artifact.Origin(); err == nil && origin != "" {
-		builder.WriteString(origin)
-		builder.WriteByte('/')
-	}
-
-	if destination, err := artifact.Destination(); err == nil && destination != "" {
-		builder.WriteString(destination)
-		builder.WriteByte('/')
-	}
 
 	if role, err := artifact.Role(); err == nil && role != "" {
 		builder.WriteString(role)
@@ -119,6 +111,16 @@ func (artifact *Artifact) Prefix() string {
 
 	if scope, err := artifact.Scope(); err == nil && scope != "" {
 		builder.WriteString(scope)
+		builder.WriteByte('/')
+	}
+
+	if origin, err := artifact.Origin(); err == nil && origin != "" {
+		builder.WriteString(origin)
+		builder.WriteByte('/')
+	}
+
+	if destination, err := artifact.Destination(); err == nil && destination != "" {
+		builder.WriteString(destination)
 		builder.WriteByte('/')
 	}
 
@@ -144,7 +146,7 @@ func (artifact *Artifact) Prefix() string {
 		out += artifactType.String()
 	}
 
-	return out
+	return []byte(out)
 }
 
 func (artifact *Artifact) Release() {
@@ -222,7 +224,7 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	return artifact
 }
 
-func (artifact *Artifact) WithAttributes(attributes map[string]any) *Artifact {
+func (artifact *Artifact) WithAttributes(attributes Map) *Artifact {
 	var (
 		mdList    Artifact_Attribute_List
 		newMdList Artifact_Attribute_List

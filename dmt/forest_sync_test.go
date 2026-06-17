@@ -14,8 +14,7 @@ func TestForestSynchronizeTrees(t *testing.T) {
 
 		forest.Insert([]byte("sync-key"), []byte("sync-value"))
 
-		emptyTree, err := NewTree("")
-		So(err, ShouldBeNil)
+		emptyTree := NewTree("")
 
 		Convey("When synchronizing a trailing tree", func() {
 			forest.synchronizeTrees(append(forest.snapshot.Load().Trees(), emptyTree))
@@ -44,11 +43,7 @@ func BenchmarkForestSynchronizeTrees(b *testing.B) {
 		forest.Insert(key, []byte("value"))
 	}
 
-	trailingTree, err := NewTree("")
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	trailingTree := NewTree("")
 	trees := forest.snapshot.Load().Trees()
 
 	for b.Loop() {

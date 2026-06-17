@@ -8,8 +8,7 @@ import (
 
 func TestSensoryNamespace(t *testing.T) {
 	Convey("Given sensory storage keys", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{
 			Count:       5,
@@ -29,8 +28,7 @@ func TestSensoryNamespace(t *testing.T) {
 
 func TestAttractorBasin(t *testing.T) {
 	Convey("Given attractor basin entries", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_2"),
@@ -68,8 +66,7 @@ func TestSelectStochasticToken(t *testing.T) {
 
 func TestExecuteBeamSearch(t *testing.T) {
 	Convey("Given trained sensory branches", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
 		_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
@@ -99,8 +96,7 @@ func TestExecuteBeamSearch(t *testing.T) {
 
 func TestEpisodicREMConsolidation(t *testing.T) {
 	Convey("Given episodic observations", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.CommitToEpisodicBuffer(100, []byte("blue_cab_big"))
 		_, _ = tree.CommitToEpisodicBuffer(200, []byte("blue_cab_big"))
@@ -121,12 +117,7 @@ func TestEpisodicREMConsolidation(t *testing.T) {
 }
 
 func BenchmarkExecuteBeamSearch(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	tree := NewTree("")
 	_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
 	_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
 	_, _ = tree.InsertSensoryWeight([]byte("blue_cab_big"), CognitiveState{Count: 4, Probability: 0.8})
@@ -144,12 +135,7 @@ func BenchmarkExecuteBeamSearch(b *testing.B) {
 }
 
 func BenchmarkTrainSensorySequence(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	tree := NewTree("")
 	sequence := []byte("blue_cab_big")
 
 	for b.Loop() {

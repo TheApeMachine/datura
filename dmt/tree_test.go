@@ -10,12 +10,12 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/theapemachine/datura"
 )
 
 func TestNewTree(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a new tree is created", func() {
 			So(tree, ShouldNotBeNil)
@@ -25,22 +25,35 @@ func TestNewTree(t *testing.T) {
 
 func TestSeek(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a seek is performed", func() {
-			tree.Insert([]byte("test"), []byte("test"))
-			value, ok := tree.Seek([]byte("test"))
-			So(ok, ShouldBeTrue)
-			So(value, ShouldResemble, []byte("test"))
+			artifact := datura.Acquire("test", datura.Artifact_Type_json)
+			So(artifact, ShouldNotBeNil)
+			defer artifact.Release()
+
+			artifact.WithPayload([]byte("test"))
+			tree.Insert([]byte("test"), artifact.Marshal())
+
+			var found bool
+
+			for inbound := range tree.Seek([]byte("test")) {
+				found = true
+
+				payload, err := inbound.Payload()
+
+				So(err, ShouldBeNil)
+				So(payload, ShouldResemble, []byte("test"))
+			}
+
+			So(found, ShouldBeTrue)
 		})
 	})
 }
 
 func TestInsert(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When an insert is performed", func() {
 			newTree, ok := tree.Insert([]byte("test"), []byte("test"))
@@ -57,8 +70,7 @@ func TestInsert(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a get is performed", func() {
 			tree.Insert([]byte("test"), []byte("test"))
@@ -71,8 +83,7 @@ func TestGet(t *testing.T) {
 
 func TestAVG(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a avg is performed", func() {
 			for range 128 {
@@ -88,8 +99,7 @@ func TestAVG(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a close is performed", func() {
 			err := tree.Close()
@@ -100,8 +110,7 @@ func TestClose(t *testing.T) {
 
 func TestUpdateTerm(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a update term is performed", func() {
 			tree.UpdateTerm(1)
@@ -113,8 +122,7 @@ func TestUpdateTerm(t *testing.T) {
 
 func TestGetLogState(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		Convey("When a get log state is performed", func() {
 			term, index := tree.GetLogState()
@@ -130,8 +138,7 @@ func TestTreeWithPersistence(t *testing.T) {
 		defer os.RemoveAll(tmpDir)
 
 		Convey("When creating a tree with persistence", func() {
-			tree, err := NewTree(tmpDir)
-			So(err, ShouldBeNil)
+			tree := NewTree(tmpDir)
 			defer tree.Close()
 
 			Convey("Then the persistence store should be initialized", func() {
@@ -145,8 +152,7 @@ func TestTreeWithPersistence(t *testing.T) {
 
 				Convey("The data should be persisted", func() {
 					// Create new tree instance with same persistence
-					tree2, err := NewTree(tmpDir)
-					So(err, ShouldBeNil)
+					tree2 := NewTree(tmpDir)
 					defer tree2.Close()
 
 					// Verify term and index were loaded
@@ -171,8 +177,7 @@ func TestTreeStateRecovery(t *testing.T) {
 		defer os.RemoveAll(tmpDir)
 
 		// Create and populate first tree
-		tree1, err := NewTree(tmpDir)
-		So(err, ShouldBeNil)
+		tree1 := NewTree(tmpDir)
 
 		entries := []struct {
 			key   string
@@ -191,8 +196,7 @@ func TestTreeStateRecovery(t *testing.T) {
 		tree1.Close()
 
 		Convey("When creating a new tree instance", func() {
-			tree2, err := NewTree(tmpDir)
-			So(err, ShouldBeNil)
+			tree2 := NewTree(tmpDir)
 			defer tree2.Close()
 
 			Convey("Then it should recover the correct state", func() {
@@ -217,8 +221,7 @@ func TestTreeTermUpdate(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
 		defer os.RemoveAll(tmpDir)
 
-		tree, err := NewTree(tmpDir)
-		So(err, ShouldBeNil)
+		tree := NewTree(tmpDir)
 		defer tree.Close()
 
 		Convey("When updating the term", func() {
@@ -230,8 +233,7 @@ func TestTreeTermUpdate(t *testing.T) {
 
 				// Verify term survives restart
 				tree.Close()
-				newTree, err := NewTree(tmpDir)
-				So(err, ShouldBeNil)
+				newTree := NewTree(tmpDir)
 				defer newTree.Close()
 
 				term, _ = newTree.GetLogState()
@@ -243,8 +245,7 @@ func TestTreeTermUpdate(t *testing.T) {
 
 func TestTreeConcurrentInsert(test *testing.T) {
 	Convey("Given concurrent writers on one tree", test, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 		defer tree.Close()
 
 		var waitGroup sync.WaitGroup
@@ -271,10 +272,7 @@ func TestTreeConcurrentInsert(test *testing.T) {
 }
 
 func BenchmarkTreeInsert(b *testing.B) {
-	tree, err := NewTree("")
-	if err != nil {
-		b.Fatalf("failed to create tree: %v", err)
-	}
+	tree := NewTree("")
 	defer tree.Close()
 
 	b.ReportAllocs()
@@ -288,11 +286,29 @@ func BenchmarkTreeInsert(b *testing.B) {
 	}
 }
 
-func BenchmarkTreeGet(b *testing.B) {
-	tree, err := NewTree("")
-	if err != nil {
-		b.Fatalf("failed to create tree: %v", err)
+func BenchmarkTreeSeek(b *testing.B) {
+	tree := NewTree("")
+	defer tree.Close()
+
+	artifact := datura.Acquire("bench", datura.Artifact_Type_json)
+	if artifact == nil {
+		b.Fatal("Acquire returned nil")
 	}
+	defer artifact.Release()
+
+	artifact.WithPayload([]byte("bench-value"))
+	tree.Insert([]byte("bench-key"), artifact.Marshal())
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		for range tree.Seek([]byte("bench-key")) {
+		}
+	}
+}
+
+func BenchmarkTreeGet(b *testing.B) {
+	tree := NewTree("")
 	defer tree.Close()
 
 	const seedCount = 4096

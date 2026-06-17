@@ -10,8 +10,7 @@ import (
 
 func TestComputeContrastiveEvidence(t *testing.T) {
 	Convey("Given competing context weights", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		winnerPath := sensoryStorageKey([]byte("Truck_blue_cab_big_wheel"))
 		runnerPath := sensoryStorageKey([]byte("Car_blue_hood_spoiler"))
@@ -38,8 +37,7 @@ func TestComputeContrastiveEvidence(t *testing.T) {
 
 func TestComputeBasinContrastiveEvidence(t *testing.T) {
 	Convey("Given competing attractor basins", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_2"),
@@ -69,8 +67,7 @@ func TestComputeBasinContrastiveEvidence(t *testing.T) {
 
 func TestExecuteDecayConsolidation(t *testing.T) {
 	Convey("Given stale sensory weights", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		staleKey := sensoryStorageKey([]byte("obsolete_path"))
 		activeKey := sensoryStorageKey([]byte("active_path"))
@@ -100,14 +97,12 @@ func TestExecuteDecayConsolidation(t *testing.T) {
 
 func TestCalculateBranchEntropy(t *testing.T) {
 	Convey("Given flat and peaked branch distributions", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertContextWeight([]byte("ctx/a"), PackedWeight{Count: 5, Probability: 0.5})
 		_, _ = tree.InsertContextWeight([]byte("ctx/b"), PackedWeight{Count: 5, Probability: 0.5})
 
-		peakedTree, err := NewTree("")
-		So(err, ShouldBeNil)
+		peakedTree := NewTree("")
 
 		_, _ = peakedTree.InsertContextWeight([]byte("ctx/a"), PackedWeight{Count: 9, Probability: 0.9})
 		_, _ = peakedTree.InsertContextWeight([]byte("ctx/b"), PackedWeight{Count: 1, Probability: 0.1})
@@ -125,8 +120,7 @@ func TestCalculateBranchEntropy(t *testing.T) {
 
 func TestMeasureBranchAmbiguity(t *testing.T) {
 	Convey("Given a flat sensory branch split", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 5, Probability: 1.0})
 		_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 3, Probability: 0.5})
@@ -145,8 +139,7 @@ func TestMeasureBranchAmbiguity(t *testing.T) {
 
 func TestCompareSensoryBranches(t *testing.T) {
 	Convey("Given two related sensory prefixes", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		leftPrefix := []byte("blue_cab_big_wheel")
 		rightPrefix := []byte("blue_hood_spoiler")
@@ -163,8 +156,7 @@ func TestCompareSensoryBranches(t *testing.T) {
 
 func TestFindStructuralAnalog(t *testing.T) {
 	Convey("Given keys with shared structural prefixes", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		knownKey := []byte("blue_cab_big")
 		unknownKey := []byte("blue_drone_rotor")
@@ -185,8 +177,7 @@ func TestFindStructuralAnalog(t *testing.T) {
 
 func TestGetAnalogousFallback(t *testing.T) {
 	Convey("Given a forest with a structural sibling", t, func() {
-		forest, err := NewForest(ForestConfig{})
-		So(err, ShouldBeNil)
+		forest, _ := NewForest(ForestConfig{})
 
 		knownKey := []byte("blue_cab_big")
 		unknownKey := []byte("blue_drone_rotor")
@@ -206,8 +197,7 @@ func TestGetAnalogousFallback(t *testing.T) {
 
 func TestExecuteREMSleepConsolidationDecay(t *testing.T) {
 	Convey("Given episodic replay with stale sensory clutter", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		_, _ = tree.Insert(sensoryStorageKey([]byte("stale")), MarshalCognitive(CognitiveState{
 			Count:       1,
@@ -230,12 +220,7 @@ func TestExecuteREMSleepConsolidationDecay(t *testing.T) {
 }
 
 func BenchmarkComputeContrastiveEvidence(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	tree := NewTree("")
 	winnerPath := sensoryStorageKey([]byte("Truck_blue_cab_big_wheel"))
 	runnerPath := sensoryStorageKey([]byte("Car_blue_hood_spoiler"))
 
@@ -254,11 +239,7 @@ func BenchmarkComputeContrastiveEvidence(b *testing.B) {
 }
 
 func BenchmarkCalculateBranchEntropy(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
+	tree := NewTree("")
 
 	_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 5, Probability: 1.0})
 	_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 3, Probability: 0.5})
@@ -272,12 +253,7 @@ func BenchmarkCalculateBranchEntropy(b *testing.B) {
 }
 
 func BenchmarkExecuteDecayConsolidation(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	tree := NewTree("")
 	for index := 0; index < 64; index++ {
 		path := sensoryStorageKey([]byte(fmt.Sprintf("path_%d", index)))
 		probability := 0.9
@@ -298,11 +274,7 @@ func BenchmarkExecuteDecayConsolidation(b *testing.B) {
 }
 
 func BenchmarkFindStructuralAnalog(b *testing.B) {
-	tree, err := NewTree("")
-
-	if err != nil {
-		b.Fatal(err)
-	}
+	tree := NewTree("")
 
 	for index := 0; index < 128; index++ {
 		key := []byte(fmt.Sprintf("blue_path_%d", index))
@@ -318,8 +290,7 @@ func BenchmarkFindStructuralAnalog(b *testing.B) {
 
 func TestComputeContrastiveEvidenceZeroAlloc(t *testing.T) {
 	Convey("Given packed contrastive paths", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
+		tree := NewTree("")
 
 		winnerPath := sensoryStorageKey([]byte("winner"))
 		runnerPath := sensoryStorageKey([]byte("runner"))

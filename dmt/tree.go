@@ -8,10 +8,14 @@ package dmt
 
 import (
 	"bytes"
+	"iter"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	iradix "github.com/hashicorp/go-immutable-radix/v2"
+	"github.com/theapemachine/datura"
+	"github.com/theapemachine/errnie"
 )
 
 /*
@@ -57,6 +61,9 @@ func (tree *Tree) beginOp() (started time.Time, track bool) {
 	return time.Now(), true
 }
 
+/*
+endOp increments the operation count and tracks the time taken.
+*/
 func (tree *Tree) endOp(started time.Time, track bool) {
 	if tree == nil {
 		return
@@ -71,69 +78,101 @@ func (tree *Tree) endOp(started time.Time, track bool) {
 	tree.opTotalNanos.Add(time.Since(started).Nanoseconds())
 }
 
+var (
+	tree     *Tree
+	treeOnce sync.Once
+)
+
 /*
 NewTree creates and returns a new empty Tree instance.
 The underlying radix tree is initialized with no entries.
 */
-func NewTree(persistDir string) (*Tree, error) {
-	tree := &Tree{
-		state: newBatch("dmt/tree"),
-	}
-
-	emptyRoot := iradix.New[[]byte]()
-	tree.root.Store(emptyRoot)
-
-	if persistDir != "" {
-		tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
-			return NewPersistentStore(persistDir)
-		})
-
-		entries := guardValue(tree.state, tree.persist.Replay)
-		root := tree.loadRoot()
-
-		for _, entry := range entries {
-			if entry.Op == opDelete {
-				root, _, _ = root.Delete(entry.Key)
-
-				continue
-			}
-
-			root, _, _ = root.Insert(entry.Key, entry.Value)
+func NewTree(persistDir string) *Tree {
+	treeOnce.Do(func() {
+		tree = &Tree{
+			state: newBatch("dmt/tree"),
 		}
 
-		tree.root.Store(root)
+		emptyRoot := iradix.New[[]byte]()
+		tree.root.Store(emptyRoot)
 
-		term, index := tree.persist.GetLastState()
-		tree.term.Store(term)
-		tree.logIndex.Store(index)
-	}
+		if persistDir != "" {
+			tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
+				return NewPersistentStore(persistDir)
+			})
 
-	return tree, tree.state.Err()
+			entries := guardValue(tree.state, tree.persist.Replay)
+			root := tree.loadRoot()
+
+			for _, entry := range entries {
+				if entry.Op == opDelete {
+					root, _, _ = root.Delete(entry.Key)
+					continue
+				}
+
+				root, _, _ = root.Insert(entry.Key, entry.Value)
+			}
+
+			tree.root.Store(root)
+
+			term, index := tree.persist.GetLastState()
+			tree.term.Store(term)
+			tree.logIndex.Store(index)
+		}
+	})
+
+	return tree
 }
 
 /*
-Seek performs a prefix-based search in the tree, finding the first value whose key
-is greater than or equal to the provided key in lexicographical order.
-Returns the value and true if found, or nil and false if no such key exists.
+Seek performs a prefix-based search in the tree, and returns anything
+matching the longest common prefix.
 */
-func (tree *Tree) Seek(key []byte) ([]byte, bool) {
+func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 	started, track := tree.beginOp()
 	root := tree.loadRoot()
 
 	it := root.Root().Iterator()
 	it.SeekPrefix(key)
 
-	for seekKey, value, ok := it.Next(); ok; seekKey, value, ok = it.Next() {
-		if bytes.Compare(seekKey, key) >= 0 {
-			tree.endOp(started, track)
+	return iter.Seq[*datura.Artifact](func(yield func(*datura.Artifact) bool) {
+		for seekKey, value, ok := it.Next(); ok; seekKey, value, ok = it.Next() {
+			if bytes.Compare(seekKey, key) < 0 {
+				errnie.Error(errnie.Err(
+					errnie.NotFound, "seek key not found", nil,
+				))
+				continue
+			}
 
-			return value, true
+			inbound := datura.Acquire("dmt-seek", datura.Artifact_Type_json)
+
+			if inbound == nil {
+				errnie.Error(errnie.Err(
+					errnie.Validation, "artifact pool exhausted", nil,
+				))
+				continue
+			}
+
+			if inbound.Unmarshal(value) == nil {
+				errnie.Error(errnie.Err(
+					errnie.Validation, "failed to unmarshal artifact", nil,
+				))
+				inbound.Release()
+				continue
+			}
+
+			if !yield(inbound) {
+				inbound.Release()
+				tree.endOp(started, track)
+
+				return
+			}
+
+			inbound.Release()
 		}
-	}
 
-	tree.endOp(started, track)
-
-	return nil, false
+		tree.endOp(started, track)
+	})
 }
 
 /*
