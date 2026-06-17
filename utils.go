@@ -1,49 +1,64 @@
 package datura
 
-import "github.com/theapemachine/errnie"
+import "errors"
+
+/*
+PayloadQuiet decrypts when crypto metadata is present.
+It returns false without logging for missing or invalid crypto fields.
+*/
+func (artifact *Artifact) PayloadQuiet() ([]byte, bool) {
+	if artifact == nil {
+		return nil, false
+	}
+
+	encryptedKey, err := artifact.EncryptedKey()
+
+	if err != nil || len(encryptedKey) < aesKeyBytes {
+		return nil, false
+	}
+
+	encryptedPayload, err := artifact.EncryptedPayload()
+
+	if err != nil || len(encryptedPayload) == 0 {
+		return nil, false
+	}
+
+	cryptoSuite := NewCryptoSuite()
+	payload, err := cryptoSuite.decryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+
+	if err != nil || len(payload) == 0 {
+		return nil, false
+	}
+
+	return payload, true
+}
 
 /*
 DecryptPayload decrypts the artifact encrypted payload into a newly allocated slice.
 */
 func (artifact *Artifact) DecryptPayload() (payload []byte, err error) {
-	buffer := make([]byte, 0)
+	payload, payloadOK := artifact.PayloadQuiet()
 
-	return artifact.DecryptPayloadInto(buffer)
+	if !payloadOK {
+		return nil, errors.New("datura: payload unavailable")
+	}
+
+	return payload, nil
 }
 
 /*
 DecryptPayloadInto decrypts directly into dst when capacity allows.
 */
 func (artifact *Artifact) DecryptPayloadInto(dst []byte) ([]byte, error) {
-	encryptedKey, err := artifact.EncryptedKey()
+	payload, payloadOK := artifact.PayloadQuiet()
 
-	if err != nil {
-		return nil, errnie.Error(err, "encryptedKey", encryptedKey)
+	if !payloadOK {
+		return nil, errors.New("datura: payload unavailable")
 	}
 
-	ephemeralPubKey, err := artifact.EphemeralPublicKey()
-
-	if err != nil {
-		return nil, errnie.Error(err, "ephemeralPubKey", ephemeralPubKey)
+	if cap(dst) >= len(payload) {
+		return append(dst[:0], payload...), nil
 	}
 
-	encryptedPayload, err := artifact.EncryptedPayload()
-
-	if err != nil {
-		return nil, errnie.Error(err, "encryptedPayload", encryptedPayload)
-	}
-
-	cryptoSuite := NewCryptoSuite()
-	payload, err := cryptoSuite.DecryptPayloadDirect(dst, encryptedPayload, encryptedKey)
-
-	if err != nil {
-		return nil, errnie.Error(
-			err,
-			"encryptedPayload", encryptedPayload,
-			"encryptedKey", encryptedKey,
-			"ephemeralPubKey", ephemeralPubKey,
-		)
-	}
-
-	return payload, nil
+	return append([]byte(nil), payload...), nil
 }

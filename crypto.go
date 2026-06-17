@@ -146,26 +146,38 @@ DecryptPayloadDirect decrypts into dst when capacity allows, otherwise allocates
 func (cryptoSuite *CryptoSuite) DecryptPayloadDirect(
 	dst, encryptedPayload, encryptedKey []byte,
 ) ([]byte, error) {
+	payload, err := cryptoSuite.decryptPayloadDirect(dst, encryptedPayload, encryptedKey)
+
+	if err != nil {
+		return nil, errnie.Error(err)
+	}
+
+	return payload, nil
+}
+
+func (cryptoSuite *CryptoSuite) decryptPayloadDirect(
+	dst, encryptedPayload, encryptedKey []byte,
+) ([]byte, error) {
 	if len(encryptedKey) < aesKeyBytes {
-		return nil, errnie.Error(errors.New("encrypted key too short"))
+		return nil, errors.New("encrypted key too short")
 	}
 
 	block, err := aes.NewCipher(encryptedKey[:aesKeyBytes])
 
 	if err != nil {
-		return nil, errnie.Error(err, "cipher_decrypt")
+		return nil, err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 
 	if err != nil {
-		return nil, errnie.Error(err, "gcm_decrypt")
+		return nil, err
 	}
 
 	nonceSize := gcm.NonceSize()
 
 	if len(encryptedPayload) < nonceSize {
-		return nil, errnie.Error(errors.New("ciphertext too short"))
+		return nil, errors.New("ciphertext too short")
 	}
 
 	nonce := encryptedPayload[:nonceSize]

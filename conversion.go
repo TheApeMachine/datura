@@ -1,6 +1,8 @@
 package datura
 
 import (
+	"errors"
+
 	capnp "capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
@@ -23,8 +25,10 @@ other type by unmarshalling it into the provided type.
 func (artifact *Artifact) To(v any) (err error) {
 	var payload []byte
 
-	if payload, err = artifact.DecryptPayload(); err != nil {
-		return errnie.Error(err, "payload", payload)
+	payload, payloadOK := artifact.PayloadQuiet()
+
+	if !payloadOK {
+		return errors.New("datura: payload unavailable")
 	}
 
 	if err = sonic.Unmarshal(payload, v); err != nil {

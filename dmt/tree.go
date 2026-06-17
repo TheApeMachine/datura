@@ -144,6 +144,10 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 				continue
 			}
 
+			if len(value) == 0 {
+				continue
+			}
+
 			inbound := datura.Acquire("dmt-seek", datura.Artifact_Type_json)
 
 			if inbound == nil {

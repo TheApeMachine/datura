@@ -12,15 +12,15 @@ import (
 )
 
 type artifactStreamState struct {
-	readWire        []byte
-	readOffset      int
-	readDone        bool
-	writeBuffer     []byte
-	cache           map[string]any
-	indexed         bool
-	payloadBytes    []byte
-	payloadRoot     ast.Node
-	payloadParsed   bool
+	readWire      []byte
+	readOffset    int
+	readDone      bool
+	writeBuffer   []byte
+	cache         map[string]any
+	indexed       bool
+	payloadBytes  []byte
+	payloadRoot   ast.Node
+	payloadParsed bool
 }
 
 var artifactStreamStates sync.Map
@@ -119,7 +119,7 @@ It unmarshals the provided bytes into the current artifact.
 */
 func (artifact *Artifact) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
-		return 0, errnie.Error(errors.New("empty input"))
+		return 0, errors.New("empty input")
 	}
 
 	state := artifactStreamStateFor(artifact)

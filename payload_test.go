@@ -114,6 +114,36 @@ func TestPeekPayloadCache(t *testing.T) {
 	})
 }
 
+func TestPayloadQuiet(testingTB *testing.T) {
+	Convey("Given an artifact without encrypted payload metadata", testingTB, func() {
+		artifact := Acquire("payload-quiet", Artifact_Type_json)
+
+		if artifact == nil {
+			testingTB.Fatal("Acquire returned nil")
+		}
+
+		defer artifact.Release()
+
+		Convey("PayloadQuiet should return false without error logging", func() {
+			payload, payloadOK := artifact.PayloadQuiet()
+			So(payloadOK, ShouldBeFalse)
+			So(payload, ShouldBeNil)
+		})
+	})
+
+	Convey("Given an artifact with encrypted payload metadata", testingTB, func() {
+		artifact := tradeArtifact(testingTB)
+
+		defer artifact.Release()
+
+		Convey("PayloadQuiet should decrypt the payload", func() {
+			payload, payloadOK := artifact.PayloadQuiet()
+			So(payloadOK, ShouldBeTrue)
+			So(len(payload), ShouldBeGreaterThan, 0)
+		})
+	})
+}
+
 func BenchmarkPeekPayloadOK(b *testing.B) {
 	b.ResetTimer()
 
