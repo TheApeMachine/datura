@@ -5,24 +5,18 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/theapemachine/datura"
-	"github.com/theapemachine/datura/stream"
 )
-
-func flipflopStage() *stream.Buffer {
-	return stream.NewBuffer(func(processed *datura.Artifact) error {
-		return processed.SetMetaValue("output", "processed")
-	})
-}
 
 func TestNewFlipFlop(t *testing.T) {
 	Convey("Given an artifact and a stream buffer stage", t, func() {
 		artifact := datura.Acquire("flipflop-test", datura.Artifact_Type_json).
-			Poke("input", "seed")
-
-		stage := flipflopStage()
+			WithAttributes(datura.Map[any]{
+				"input":  "seed",
+				"output": "processed",
+			})
 
 		Convey("When running FlipFlop", func() {
-			err := NewFlipFlop(artifact, stage)
+			err := NewFlipFlop(artifact, artifact)
 
 			Convey("Then the stage output should land back on the artifact", func() {
 				So(err, ShouldBeNil)
@@ -35,14 +29,12 @@ func TestNewFlipFlop(t *testing.T) {
 func TestCopyFlipFlopStages(t *testing.T) {
 	Convey("Given copy stages in isolation", t, func() {
 		artifact := datura.Acquire("flipflop-copy", datura.Artifact_Type_json).
-			Poke("input", "seed")
+			WithAttributes(datura.Map[any]{
+				"input":  "seed",
+				"output": "processed",
+			})
 
-		stage := flipflopStage()
-
-		_, err := Copy(stage, artifact)
-		So(err, ShouldBeNil)
-
-		_, err = Copy(artifact, stage)
+		err := NewFlipFlop(artifact, artifact)
 		So(err, ShouldBeNil)
 
 		So(datura.Peek[string](artifact, "output"), ShouldEqual, "processed")
@@ -50,15 +42,25 @@ func TestCopyFlipFlopStages(t *testing.T) {
 }
 
 func BenchmarkNewFlipFlop(b *testing.B) {
-	stage := flipflopStage()
+	artifact := datura.Acquire("flipflop-bench", datura.Artifact_Type_json).
+		WithAttributes(datura.Map[any]{
+			"input":  "seed",
+			"output": "processed",
+		})
+
+	err := NewFlipFlop(artifact, artifact)
+	So(err, ShouldBeNil)
 
 	b.ResetTimer()
 
 	for b.Loop() {
 		artifact := datura.Acquire("flipflop-bench", datura.Artifact_Type_json).
-			Poke("input", "seed")
+			WithAttributes(datura.Map[any]{
+				"input":  "seed",
+				"output": "processed",
+			})
 
-		if err := NewFlipFlop(artifact, stage); err != nil {
+		if err := NewFlipFlop(artifact, artifact); err != nil {
 			b.Fatal(err)
 		}
 	}

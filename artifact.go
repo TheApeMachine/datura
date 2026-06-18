@@ -2,13 +2,13 @@ package datura
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	capnp "capnproto.org/go/capnp/v3"
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/theapemachine/errnie"
 )
@@ -219,66 +219,17 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
-	invalidatePayloadCache(artifact)
-
 	return artifact
 }
 
-func (artifact *Artifact) WithAttributes(attributes Map) *Artifact {
-	var (
-		mdList    Artifact_Attribute_List
-		newMdList Artifact_Attribute_List
-		err       error
-	)
+func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
+	encoded, err := sonic.Marshal(attributes)
 
-	if mdList, err = artifact.Attributes(); errnie.Error(err) != nil {
+	if errnie.Error(err) != nil {
 		return nil
 	}
 
-	if newMdList, err = (*artifact).NewAttributes(
-		int32(mdList.Len() + len(attributes)),
-	); errnie.Error(err) != nil {
-		return nil
-	}
-
-	for idx := range mdList.Len() {
-		if errnie.Error(newMdList.Set(idx, mdList.At(idx))) != nil {
-			return nil
-		}
-	}
-
-	nextIdx := mdList.Len()
-
-	for key, value := range attributes {
-		item := newMdList.At(nextIdx)
-		nextIdx++
-
-		if errnie.Error(item.SetKey(key)) != nil {
-			return nil
-		}
-
-		switch v := value.(type) {
-		case string:
-			if errnie.Error(item.Value().SetTextValue(v)) != nil {
-				return nil
-			}
-		case int:
-			item.Value().SetIntValue(int64(v))
-		case int64:
-			item.Value().SetIntValue(v)
-		case float64:
-			item.Value().SetFloatValue(v)
-		case bool:
-			item.Value().SetBoolValue(v)
-		case []byte:
-			item.Value().SetBinaryValue(v)
-		default:
-			item.Value().SetTextValue(fmt.Sprintf("%v", v))
-		}
-
-		syncArtifactCacheEntry(artifact, key, value)
-	}
-
+	errnie.Error(artifact.SetAttributes(encoded))
 	return artifact
 }
 
@@ -294,20 +245,6 @@ func (artifact *Artifact) WithRole(role string) *Artifact {
 
 func (artifact *Artifact) WithScope(scope string) *Artifact {
 	errnie.Error(artifact.SetScope(scope))
-	return artifact
-}
-
-func (artifact *Artifact) Poke(key string, value string) *Artifact {
-	errnie.Error(artifact.SetMetaValue(key, value))
-	return artifact
-}
-
-func (artifact *Artifact) Metadata() (Artifact_Attribute_List, error) {
-	return artifact.Attributes()
-}
-
-func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
-	errnie.Error(artifact.SetMetaValue(key, value))
 	return artifact
 }
 

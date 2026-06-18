@@ -20,8 +20,14 @@ func TestUnpackArtifact(t *testing.T) {
 		Convey("It should inflate into a pooled artifact without heap escapes", func() {
 			artifact, err := UnpackArtifact(packed)
 			So(err, ShouldBeNil)
-			So(Peek[string](artifact, "role"), ShouldEqual, "measurement")
-			So(Peek[string](artifact, "scope"), ShouldEqual, "BTC/USD")
+
+			role, roleErr := artifact.Role()
+			So(roleErr, ShouldBeNil)
+			So(role, ShouldEqual, "measurement")
+
+			scope, scopeErr := artifact.Scope()
+			So(scopeErr, ShouldBeNil)
+			So(scope, ShouldEqual, "BTC/USD")
 
 			Reset(func() {
 				artifact.Release()
@@ -49,10 +55,10 @@ func TestArtifactPrefix(t *testing.T) {
 		artifact.SetType(Artifact_Type_json)
 
 		Convey("It should build the trie address without slice churn", func() {
-			prefix := artifact.Prefix()
-			So(prefix, ShouldContainSubstring, "origin/destination/role/scope/")
+			prefix := string(artifact.Prefix())
+			So(prefix, ShouldContainSubstring, "role/scope/origin/destination/")
 			So(prefix, ShouldContainSubstring, "uuid-bytes")
-			So(prefix, ShouldEndWith, ".")
+			So(prefix, ShouldEndWith, ".json")
 		})
 	})
 }
@@ -75,7 +81,9 @@ func BenchmarkUnpackArtifact(b *testing.B) {
 			b.Fatal(unpackErr)
 		}
 
-		if Peek[string](artifact, "role") != "measurement" {
+		role, roleErr := artifact.Role()
+
+		if roleErr != nil || role != "measurement" {
 			b.Fatal("role missing after unpack")
 		}
 

@@ -10,7 +10,7 @@ import (
 func TestNewOutputArtifact(t *testing.T) {
 	Convey("Given a pipeline that emits an artifact frame", t, func() {
 		artifact := datura.Acquire("output-test", datura.Artifact_Type_json).
-			Poke("output", "test data")
+			WithAttributes(datura.Map[any]{"output": "test data"})
 
 		wire, err := artifact.Message().Marshal()
 		So(err, ShouldBeNil)
@@ -39,7 +39,7 @@ func TestNewOutputJSON(t *testing.T) {
 
 func BenchmarkNewOutputArtifact(b *testing.B) {
 	artifact := datura.Acquire("output-bench", datura.Artifact_Type_json).
-		Poke("output", "bench")
+		WithAttributes(datura.Map[any]{"output": "bench"})
 
 	wire, err := artifact.Message().Marshal()
 

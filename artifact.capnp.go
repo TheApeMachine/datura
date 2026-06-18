@@ -6,8 +6,6 @@ import (
 	capnp "capnproto.org/go/capnp/v3"
 	text "capnproto.org/go/capnp/v3/encoding/text"
 	schemas "capnproto.org/go/capnp/v3/schemas"
-	math "math"
-	strconv "strconv"
 )
 
 type Artifact capnp.Struct
@@ -221,29 +219,19 @@ func (s Artifact) SetScope(v string) error {
 	return capnp.Struct(s).SetText(8, v)
 }
 
-func (s Artifact) Attributes() (Artifact_Attribute_List, error) {
+func (s Artifact) Attributes() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(9)
-	return Artifact_Attribute_List(p.List()), err
+	return []byte(p.Data()), err
 }
 
 func (s Artifact) HasAttributes() bool {
 	return capnp.Struct(s).HasPtr(9)
 }
 
-func (s Artifact) SetAttributes(v Artifact_Attribute_List) error {
-	return capnp.Struct(s).SetPtr(9, v.ToPtr())
+func (s Artifact) SetAttributes(v []byte) error {
+	return capnp.Struct(s).SetData(9, v)
 }
 
-// NewAttributes sets the attributes field to a newly
-// allocated Artifact_Attribute_List, preferring placement in s's segment.
-func (s Artifact) NewAttributes(n int32) (Artifact_Attribute_List, error) {
-	l, err := NewArtifact_Attribute_List(capnp.Struct(s).Segment(), n)
-	if err != nil {
-		return Artifact_Attribute_List{}, err
-	}
-	err = capnp.Struct(s).SetPtr(9, l.ToPtr())
-	return l, err
-}
 func (s Artifact) EncryptedPayload() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(10)
 	return []byte(p.Data()), err
@@ -530,224 +518,6 @@ func NewArtifact_Type_List(s *capnp.Segment, sz int32) (Artifact_Type_List, erro
 	return capnp.NewEnumList[Artifact_Type](s, sz)
 }
 
-type Artifact_Attribute capnp.Struct
-type Artifact_Attribute_value Artifact_Attribute
-type Artifact_Attribute_value_Which uint16
-
-const (
-	Artifact_Attribute_value_Which_textValue   Artifact_Attribute_value_Which = 0
-	Artifact_Attribute_value_Which_intValue    Artifact_Attribute_value_Which = 1
-	Artifact_Attribute_value_Which_floatValue  Artifact_Attribute_value_Which = 2
-	Artifact_Attribute_value_Which_boolValue   Artifact_Attribute_value_Which = 3
-	Artifact_Attribute_value_Which_binaryValue Artifact_Attribute_value_Which = 4
-)
-
-func (w Artifact_Attribute_value_Which) String() string {
-	const s = "textValueintValuefloatValueboolValuebinaryValue"
-	switch w {
-	case Artifact_Attribute_value_Which_textValue:
-		return s[0:9]
-	case Artifact_Attribute_value_Which_intValue:
-		return s[9:17]
-	case Artifact_Attribute_value_Which_floatValue:
-		return s[17:27]
-	case Artifact_Attribute_value_Which_boolValue:
-		return s[27:36]
-	case Artifact_Attribute_value_Which_binaryValue:
-		return s[36:47]
-
-	}
-	return "Artifact_Attribute_value_Which(" + strconv.FormatUint(uint64(w), 10) + ")"
-}
-
-// Artifact_Attribute_TypeID is the unique identifier for the type Artifact_Attribute.
-const Artifact_Attribute_TypeID = 0xe5ef7577388ccd38
-
-func NewArtifact_Attribute(s *capnp.Segment) (Artifact_Attribute, error) {
-	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
-	return Artifact_Attribute(st), err
-}
-
-func NewRootArtifact_Attribute(s *capnp.Segment) (Artifact_Attribute, error) {
-	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
-	return Artifact_Attribute(st), err
-}
-
-func ReadRootArtifact_Attribute(msg *capnp.Message) (Artifact_Attribute, error) {
-	root, err := msg.Root()
-	return Artifact_Attribute(root.Struct()), err
-}
-
-func (s Artifact_Attribute) String() string {
-	str, _ := text.Marshal(0xe5ef7577388ccd38, capnp.Struct(s))
-	return str
-}
-
-func (s Artifact_Attribute) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
-	return capnp.Struct(s).EncodeAsPtr(seg)
-}
-
-func (Artifact_Attribute) DecodeFromPtr(p capnp.Ptr) Artifact_Attribute {
-	return Artifact_Attribute(capnp.Struct{}.DecodeFromPtr(p))
-}
-
-func (s Artifact_Attribute) ToPtr() capnp.Ptr {
-	return capnp.Struct(s).ToPtr()
-}
-func (s Artifact_Attribute) IsValid() bool {
-	return capnp.Struct(s).IsValid()
-}
-
-func (s Artifact_Attribute) Message() *capnp.Message {
-	return capnp.Struct(s).Message()
-}
-
-func (s Artifact_Attribute) Segment() *capnp.Segment {
-	return capnp.Struct(s).Segment()
-}
-func (s Artifact_Attribute) Key() (string, error) {
-	p, err := capnp.Struct(s).Ptr(0)
-	return p.Text(), err
-}
-
-func (s Artifact_Attribute) HasKey() bool {
-	return capnp.Struct(s).HasPtr(0)
-}
-
-func (s Artifact_Attribute) KeyBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(0)
-	return p.TextBytes(), err
-}
-
-func (s Artifact_Attribute) SetKey(v string) error {
-	return capnp.Struct(s).SetText(0, v)
-}
-
-func (s Artifact_Attribute) Value() Artifact_Attribute_value { return Artifact_Attribute_value(s) }
-
-func (s Artifact_Attribute_value) Which() Artifact_Attribute_value_Which {
-	return Artifact_Attribute_value_Which(capnp.Struct(s).Uint16(0))
-}
-func (s Artifact_Attribute_value) IsValid() bool {
-	return capnp.Struct(s).IsValid()
-}
-
-func (s Artifact_Attribute_value) Message() *capnp.Message {
-	return capnp.Struct(s).Message()
-}
-
-func (s Artifact_Attribute_value) Segment() *capnp.Segment {
-	return capnp.Struct(s).Segment()
-}
-func (s Artifact_Attribute_value) TextValue() (string, error) {
-	if capnp.Struct(s).Uint16(0) != 0 {
-		panic("Which() != textValue")
-	}
-	p, err := capnp.Struct(s).Ptr(1)
-	return p.Text(), err
-}
-
-func (s Artifact_Attribute_value) HasTextValue() bool {
-	if capnp.Struct(s).Uint16(0) != 0 {
-		return false
-	}
-	return capnp.Struct(s).HasPtr(1)
-}
-
-func (s Artifact_Attribute_value) TextValueBytes() ([]byte, error) {
-	p, err := capnp.Struct(s).Ptr(1)
-	return p.TextBytes(), err
-}
-
-func (s Artifact_Attribute_value) SetTextValue(v string) error {
-	capnp.Struct(s).SetUint16(0, 0)
-	return capnp.Struct(s).SetText(1, v)
-}
-
-func (s Artifact_Attribute_value) IntValue() int64 {
-	if capnp.Struct(s).Uint16(0) != 1 {
-		panic("Which() != intValue")
-	}
-	return int64(capnp.Struct(s).Uint64(8))
-}
-
-func (s Artifact_Attribute_value) SetIntValue(v int64) {
-	capnp.Struct(s).SetUint16(0, 1)
-	capnp.Struct(s).SetUint64(8, uint64(v))
-}
-
-func (s Artifact_Attribute_value) FloatValue() float64 {
-	if capnp.Struct(s).Uint16(0) != 2 {
-		panic("Which() != floatValue")
-	}
-	return math.Float64frombits(capnp.Struct(s).Uint64(8))
-}
-
-func (s Artifact_Attribute_value) SetFloatValue(v float64) {
-	capnp.Struct(s).SetUint16(0, 2)
-	capnp.Struct(s).SetUint64(8, math.Float64bits(v))
-}
-
-func (s Artifact_Attribute_value) BoolValue() bool {
-	if capnp.Struct(s).Uint16(0) != 3 {
-		panic("Which() != boolValue")
-	}
-	return capnp.Struct(s).Bit(64)
-}
-
-func (s Artifact_Attribute_value) SetBoolValue(v bool) {
-	capnp.Struct(s).SetUint16(0, 3)
-	capnp.Struct(s).SetBit(64, v)
-}
-
-func (s Artifact_Attribute_value) BinaryValue() ([]byte, error) {
-	if capnp.Struct(s).Uint16(0) != 4 {
-		panic("Which() != binaryValue")
-	}
-	p, err := capnp.Struct(s).Ptr(1)
-	return []byte(p.Data()), err
-}
-
-func (s Artifact_Attribute_value) HasBinaryValue() bool {
-	if capnp.Struct(s).Uint16(0) != 4 {
-		return false
-	}
-	return capnp.Struct(s).HasPtr(1)
-}
-
-func (s Artifact_Attribute_value) SetBinaryValue(v []byte) error {
-	capnp.Struct(s).SetUint16(0, 4)
-	return capnp.Struct(s).SetData(1, v)
-}
-
-// Artifact_Attribute_List is a list of Artifact_Attribute.
-type Artifact_Attribute_List = capnp.StructList[Artifact_Attribute]
-
-// NewArtifact_Attribute creates a new list of Artifact_Attribute.
-func NewArtifact_Attribute_List(s *capnp.Segment, sz int32) (Artifact_Attribute_List, error) {
-	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2}, sz)
-	return capnp.StructList[Artifact_Attribute](l), err
-}
-
-// Artifact_Attribute_Future is a wrapper for a Artifact_Attribute promised by a client call.
-type Artifact_Attribute_Future struct{ *capnp.Future }
-
-func (f Artifact_Attribute_Future) Struct() (Artifact_Attribute, error) {
-	p, err := f.Future.Ptr()
-	return Artifact_Attribute(p.Struct()), err
-}
-func (p Artifact_Attribute_Future) Value() Artifact_Attribute_value_Future {
-	return Artifact_Attribute_value_Future{p.Future}
-}
-
-// Artifact_Attribute_value_Future is a wrapper for a Artifact_Attribute_value promised by a client call.
-type Artifact_Attribute_value_Future struct{ *capnp.Future }
-
-func (f Artifact_Attribute_value_Future) Struct() (Artifact_Attribute_value, error) {
-	p, err := f.Future.Ptr()
-	return Artifact_Attribute_value(p.Struct()), err
-}
-
 type Artifact_Approval capnp.Struct
 
 // Artifact_Approval_TypeID is the unique identifier for the type Artifact_Approval.
@@ -838,93 +608,75 @@ func (f Artifact_Approval_Future) Struct() (Artifact_Approval, error) {
 	return Artifact_Approval(p.Struct()), err
 }
 
-const schema_85d3acc39d94e0f8 = "x\xda\x84\x95oh\x1cU\x17\xc6\x9f\xe7\xde\xdd\xec&" +
-	"\xd9\xcdf\xde\xd9\xf2\xf6}1F\x8aB\x8d6\xa4\x8d" +
-	"`-\x95\xb6\xa1\xc1\x9a\x16\xcc\xcd\xd4\"\xf5\x0fN\xb2" +
-	"\x93d\x9a\xcd\xce:;\x93\xb8\xa2\xf4\x8b\x05\x95*\x8a" +
-	"-\x8a\xb4\xe0\x17Q\xa4\xfe\xfb\"\xa8\x88XE\xfd\x12" +
-	"\xb4h\xc1b\x05\xc5\x06D\xac\xd6\xe2\x9f\x8a\xad#w" +
-	"\xd2\x9d][\x8b\xf9\x94\xfd\xcd\x99s\xce<\xf79\xe7" +
-	"\x0e\x1c\x10\x1bS\xab\xf3\x1fK\x08um\xba-\xca\x8b" +
-	"\x9f^])\x0e\xef\x85\xb1\x9c\xbf-\x86/w]\xd3" +
-	"\xfeZZd\x80\xc1\x05v\xd0\xfc\x92\x19\xc0<\xc6y" +
-	"0z\xf2\xfd\xc9\xec\xdc\x0f\x1f>\x0f\xb5\x82\"Z\xbb" +
-	"\xb0w\xed|\xf8\xe3\"n\x15\x19\xa6\x81\xc1\x1b\xc5\x10" +
-	"\xc1\xc1a\xd1K$\xa9T\x81\":\xf3\xd5\xbe\x83\xef" +
-	"\x1d\xfat\x0f\xd2\x05\x9d\xcd\x95\x87\xcd{\xe4M\xc0\xe0" +
-	"s\xf2\x1d\x09F/\x1e\xdbs\xf4\x8a\xb9\xd1\xd7\xa1\x96" +
-	"S$M,U\xce\x9c6\x173\xff\x05\xcc\x93\x99W" +
-	"\xc0H\x1e:\xfd\xc5\xedO}\xf0\x16\x8c\xe5I$h" +
-	">\x9c\xfd\xce\xdc\x9f\xd5/<\x91\xbd\x05\x8c~-m" +
-	">\xfaXt\xd770.\x17\xcd\xf4\xe0\xe0K\xd9\xff" +
-	"\xd3|;\x8e|#{=\xd8\xfc\x8c\xbf\xd5\x8e\x05x" +
-	"7\xfb\x1f\x9aG\xe2\xd8\x85\xec<VE\xb6\x1f\xb8\x93" +
-	"\xf6D \xfb'\xecj\xa5\xban\xd3\xf9\xdf\xfd\x9b\xaa" +
-	"U\xdf\x9b\xb3\xcb\xc0(\xa9\xb22\x05\xa4\x08\x18W\x0f" +
-	"\x01\xeaJI5 h\x90Ej\xb8\xeaM@\x0dH" +
-	"\xaa\xf5\x82\xbb\xef\x9b\x19\xf5=o\x92y\x08\xe6\xc1\xc8" +
-	"\xab:\xbe\x1dx>\x87\xcan\xa5d\xb9S\x1b*v" +
-	"\x10\xfaN\x12\xd0\xe8!uQ\x0fA\xe0\xbb\xe3a\xe0" +
-	"\xf4\xcf\xd9\xe5\xd0\x81*\xca\xd4eQt\xbe\xe8\x03c" +
-	"\x80\xba_R=$\xd8\xc3?5\x16\x80\xb1g\x04P" +
-	"\x0fJ\xaa\xc7\x05{\xc49\x8d%`<\xba\x13P{" +
-	"%\xd5\xd3\x82=\xf2l\xb4\xb1\xc8\x14`\xec\xd7I\xf6" +
-	"I\xaag\x05{R\x7f\xe8\xe84`\x1c\x1c\x07\xd4\x01" +
-	"I\xf5\x82`\x148\xf7\x06;\xecr\x08:\xccA0" +
-	"\x07Fn%F\x0e\x00\xa6!\x98\x06\xa3\xc9\xb2gk" +
-	"\x0a\x19:\xec\x84`'\x18\x8d{^\xb9\xf12!H" +
-	"\xcd\xdc\x8a\xed\xd7w\xd8\xc8\x94\xc3\x8be\x10\x17\xc8\x00" +
-	"\xd5\xcd\x16C\x19\xff[\xd3b\x99e}\xcd\xe36\x8c" +
-	"\xb1\x16\xef\x1b#\xbd\xc3\xbe\xef\xf9\x85\xed\xf5\xaa\x135" +
-	"\xa4\x04\x9d\xa8y\xb4P\x9b\x1b\x07k.\xb0\x0f\xb0>" +
-	"\xa2\xa4\xf5\x19\x9bgk\x1e\xe1\x08`}\xa2\xf9q\x0a" +
-	"R\xc42\x9b\xc78\x06X\x9fk|B\x87K\x11\xeb" +
-	"l~\xcd5\x80u\\\xf3o5O\xc9Xhs\x91" +
-	">`\x9d\xd0\xfc\x94\xe6\xe9T\xac\xb4y\x92;\x01\xeb" +
-	"{\xcd\xcfh\xde\x96*\xb2\x0d0\x7f\x89\xdb9\xa5\xf9" +
-	"Y\xcd3\xe9b<=\xbfs\x1d`\xfdL\xc91!" +
-	"hd\xdb\x8a\xcc\x02\xe69\x8e\x03\xd6Y\x1d\x9e\xd5\xbc" +
-	"=Sd;`\xa6E\x1f0&$\xad\x9c\xc6\x1d\xd9" +
-	"\";\x00\xb3]\xe8.S\x9awk\xde\xd9^d'" +
-	"`\xe6\x85\xee&\xa7\xf9J\xcds\x1dE\xe6\x00\xf3*" +
-	"\xf1\x08`\xad\xd4\xfc:\xcd\xf3\x9dE\xe6\x01s\xb5\xd8" +
-	"\x05X\x03\x9a\xaf\xd7\xbc+Wd\x17`\xde \x9e\x01" +
-	"\xac\xf5\x9ao\xd1\xbc\x90/\xb2\x00\x98\xc3B\xab\xb6Y" +
-	"\xf3\xbb5\xef\xee*\xb2\x1b0\xef\x8c\xf9\x1d\x9aO\x0b" +
-	"\xc1B\x18\xba\xa5\xc4\x18\x13\xd3\xce\xc4L-\x9c\xd5^" +
-	"k\xb0\xc0\x9duj\x81=\x0bV\x1b\xfe\xebu\xf4q" +
-	"\xb3\xbbu9\xb0\x1b\x8c\xaa5',y\x95:zg" +
-	"\xb7\xd8\xb5\xe9$\xc7\xac\xe3\xcf\x94\x9d1\x0f\xd2\x0b\x1a" +
-	"\xb0\x10\xd4\xab\x0e\x0bM\x87\x81,\x80\x1b<\xdf\x9dr" +
-	"+\x89\xfdKN-p+v\x80\x8c\xeb%\xb4\xe0{" +
-	"\xe5dBzk\x13^\xb59/v\xc3\x7f\xd2\xa9\xb1" +
-	"\x0b\x1c\x95dw\xd3\xba\xa0\x86\x91S\x99\xf0\xeb\xd5\xc0" +
-	"ai\xd4\xae\x97=\xbb\xd4\xf2\xc5\x8dg(\x94\xb6:" +
-	"\xf5&\xaeN;\xb3\x8eo\xb3<\x1a\x8e\x97\xdd\x89\xad" +
-	"\xb2\xe5\xa1\xddp:[\x8a&#r\xbeh\xcd\x9d\x8a" +
-	"\x17\x92\x9e\xd0\x7f\x9b\xc5\xfe\xa5\x99R)\xb6.d\xf6" +
-	"\xc5C\xa6r\xc9\x96\x1c\xee\x03\xd4FI\xb5\xadeK" +
-	"\xde\xacw\xcd\x16I\xb5=\x19#C\xe9u\xbaMR" +
-	"\xdd&\x12\xed\x93\xc4K\xda\xff\xd3Y\xef\x9euj5" +
-	"{\xaaE\xdfK5\x1cw\xa6Wx.\xae\xd7\xd3\xa7" +
-	"\xb3\x1a\xcbF\x00\x0a\xc3\x18\x03\x0a\xbbj^%y\x1f" +
-	"@\xf3\x7f\xd6.}?\xc4:\xf4o\xaf\xcb\xa5\xec\xd9" +
-	"8\xbb1\x14go\xdf\x09\xec\x0e+3\x15o\xbe\x12" +
-	"\xcd\xd9e\xb7d\x07.dK\x19y\xa9UO\xe7\x82" +
-	"\xebfE\xf3\xba\xd1\x7f\xcd\x1b\xdbX\xb5\x06\"3\xe3" +
-	"\xd4\x13\xc7\xc5\x97\xc4_\x01\x00\x00\xff\xff\xd3i\xfez"
+const schema_85d3acc39d94e0f8 = "x\xda\x84\x94O\x88\x1cE\x18\xc5\xdf\xab\x9a\xd9\xed\xd9" +
+	"\xcclOS\x1d\\\x05\xdd\x08\x11\xcc\x98,1Q\"" +
+	"A\xc8\x1f\x12\x88I\xc4\xe9\xe9\x1cb\x04\xa13\xd3\xd9" +
+	"\xed\xecLw\xd3\xdd\xb3a\xbc\xecAr\x11\xf1$\x08" +
+	"\x82W\x0f\x12\xfcs\xf1\xa0\x07!\x82\x98\x83\xe0\xa2\x0b" +
+	"\x06sPLP\xc4@\x0cF\x13Hh\xa9Y\xa7g" +
+	"\x10\x83\xb7\xa9_}\xfd\xe6\xd5\xf7\xd5\xab\x9d\xaf\x8a\xfd" +
+	"\xa5'k?OA8\xcd\xf2T^\x13\xbf\x7f\xf8\xb8" +
+	"\xb8\xf8:\xac9\xfeu\xad\xff\xfe\xec\x13\x95\x8f\xcab" +
+	"\x1a\xd8\xfd\xa2\x9c\xa1\x0a\xe44\xa0|y\x0e\xc5\xaec" +
+	"R\xe4\xb7\x7fx\xf3\x9d\xcf/|s\x1eeS\x17\\" +
+	"\x92\x17\xd5\x9a\xdc\x03\xec\xbe%?\x93`\xfe\xde\xe5\xf3" +
+	"\xeb[V\x9a\x1f\xc3\x99\xa3(t\xa9k\x1f4n\xaa" +
+	"\xc7\x8c\x07\x00\xb5\xc3\xf8\x00\xcc\xe5\x85\x9b\xdf\xbf\xf4\xd6" +
+	"\x17\x9f\xc2\x9a+*Au\xc9\xf8U\xad\x1b\xfa\x835" +
+	"\xe3\x050\xff\xb3sh\xfd\x8d\xfc\xe5\x9f`=\"\xc6" +
+	"\xf2\xe0\xee\xeb\xc6CT\xf7\x86\x95w\x8c=x7\xf7" +
+	"\x92,8\xe3\xb53\xb9\xd0\xf6\xe20\xde{\xe0\x9f\xf5" +
+	"\xc2\x818N\xa2\x15\xaf\x0b4I\xc7\x90%\xa0D\xc0" +
+	"\xdav\x10p\xb6J:;\x05-\xd2\xa6\x86;>\x01" +
+	"\x9c\x9d\x92\xce\xb3\x82\xab\xaf,7\x93(:\xc3\x1a\x04" +
+	"k`\x1e\xc5~\xe2eQ\xc2\x83\xdd \xec\xb8\xc1\xe2" +
+	"\xbe\xd0\xcb\xfa\x89_\x14\x8c<\x88\x7fy\x80S\xe5D" +
+	"w,k\xd7\xc4\xf9k\x8d\x89qT\x8e\xce\x1fN\x92" +
+	"(1O\x0cb?\x1f[\x87shd\\}\xc5\x06" +
+	"\xe0~II\xf7[\x8e\xbd\xab5\x1e\x05\xdc\xaf5\xbf" +
+	"BA\x0a\x9b\x02P\x97\xd9\x02\xdc\xef4\xbe\xaa\xcb\xa5" +
+	"\xb0)\x01\xf5#w\x01\xee\x15\xcd\x7f\xd1\xbc$m\x96" +
+	"\x00u\x8d\x09\xe0^\xd5\xfc\x86\xe6\xe5\x92\xcd2\xa0\xae" +
+	"\xf3\x14\xe0\xfe\xa6\xf9m\xcd\xa7J6\xa7\x00ukh" +
+	"\xe7\x86\xe6w5\x9f.\xdb\xc3\x89\xdf\xe1^\xc0\xfd\x83" +
+	"\x92-!h\x19S6\x0d@\xdd\xe3i\xc0\xbd\xab\xcb" +
+	"\x0d\xcd+\xd36+\x80*\x8b\x06\xd0\x12\x92nU\xe3" +
+	"\x19\xc3\xe6\x0c\xa0*B\xbb,i^\xd7|S\xc5\xe6" +
+	"&@\xd5\x84vS\xd5|N\xf3\xea\x8c\xcd*\xa06" +
+	"\x8b\xd7\x00wN\xf3\xad\x9a\xd76\xd9\xac\x01\xeaQq" +
+	"\x16p\xb7h\xbe]\xf3\xd9\xaa\xcdY@m\x13o\x03" +
+	"\xeev\xcd\x9f\xd1\xdc\xac\xd94\x01\xf5\xb4\xd0]{J" +
+	"\xf3\xa6\xe6\xf5Y\x9bu@=?\xe4\xc75?)\x04" +
+	"\xcd~?\xe8\x14\xf3o/\xf9\xed\xe5\xb4\xdf\x03P\xb0" +
+	",\xe8\xf9i\xe6\xf5\xc0\x98e\x08\x96\xc1y_\x8f\x98" +
+	"\xf5\xc9\x0b\xcd:\x98\xc7\xa9\xdf\xefD\xe1\x00\xf3\xbd#" +
+	"^\xbaTh\xf4\xfcd\xb9\xeb\xb7\"\xc8(\x1bA3" +
+	"\x1b\xc4>\xcd\xf1E\x02i\x82\xfb\xa2$X\x0cBV" +
+	"!X\x05\xf3\x8e\x9ffA\xe8e\x98\x0e\xa2\x82\x9aI" +
+	"\xd4\xf5G\x8b\xf9\xb4\x1d\xc5\xc5*\xf7\xb2,\x09N\xf7" +
+	"3H?-\x0c\xf8a;\x19\xc4\x99\xcfN\xd3\x1bt" +
+	"#\xaf3q\xc0\xd1\x1e\xcc\xce1\x7f0\xc6\xf1\x92\xdf" +
+	"\xf3\x13\x8f\xddf\xfft7h\x1f\x93\x13\x9b\xde\xe8b" +
+	"3\xe5,\xd8\x94d}\x9c\x02P\xc3<\x0d\x16\x87\xf9" +
+	"\x02\xff?a\x0b\x1b\xb1qJ\x9c|3\xd8\x18\xe6\xc8" +
+	"\xa9\x16\xa1?\xdc\x00\x9c\xfd\x92\xce\xf1\x89\xd0?\xd7\x02" +
+	"\x9c#\x92\xce\x89\"5\x96\xa3_\x87\xe3\x92\xceIQ" +
+	"\xb4\xba\x10\xdeh\xf5\x7f\x8dv\xb5\xe7\xa7\xa9\xb78\xd1" +
+	"\xce\xfb\x19\x1e:\xd3/Ru\xf8\x7f\x0f7\xb4\xaa\xb5" +
+	"\xf9(@aY-\xc0<\x9bFa\xf1=\x80\xf1o" +
+	"\xa6\xf7\x7f\xee\x86}X81\x90\x1b\xea\xc6P\xdd:" +
+	"8T\xaf\x9c\x02V\xfb\xe1r\x18\x9d\x0b\xf3\x15\xaf\x1b" +
+	"t\xbc,\x80\x8c\xc2\xbf\x03\x00\x00\xff\xff\xcd)u\xbb"
 
 func RegisterSchema(reg *schemas.Registry) {
 	reg.Register(&schemas.Schema{
 		String: schema_85d3acc39d94e0f8,
 		Nodes: []uint64{
 			0x8cc20228b0f1020d,
-			0xa7c7ee760866c493,
 			0xb1092b0e00ae75e5,
 			0xb6507620d585d9aa,
 			0xbbc6975bdbf2ac03,
 			0xe35eff8ed54464f6,
-			0xe5ef7577388ccd38,
 		},
 		Compressed: true,
 	})

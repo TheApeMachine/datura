@@ -157,7 +157,7 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 				continue
 			}
 
-			if inbound.Unmarshal(value) == nil {
+			if inbound.Unpack(value) == nil {
 				errnie.Error(errnie.Err(
 					errnie.Validation, "failed to unmarshal artifact", nil,
 				))

@@ -1,3 +1,3 @@
 package datura
 
-type Map map[string]any
+type Map[T any] map[string]T

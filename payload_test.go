@@ -4,123 +4,70 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bytedance/sonic/ast"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 const tradePayloadFixture = `[{"symbol":"BTC/USD","side":"buy","price":50000,"qty":0.1,"ord_type":"market","trade_id":1,"timestamp":"2024-01-01T00:00:00Z"}]`
 
-func tradeArtifact(testingTB testing.TB) *Artifact {
-	testingTB.Helper()
+func tradeArtifact(t testing.TB) *Artifact {
+	t.Helper()
 
 	artifact := Acquire("payload-test", Artifact_Type_json).
 		WithPayload([]byte(tradePayloadFixture))
 
 	if artifact == nil {
-		testingTB.Fatal("Acquire returned nil")
+		t.Fatal("Acquire returned nil")
 	}
 
 	return artifact
 }
 
-func TestPeekPayloadOK(t *testing.T) {
+func TestPeekPayload(t *testing.T) {
 	Convey("Given a trade array payload", t, func() {
 		artifact := tradeArtifact(t)
 
 		defer artifact.Release()
 
 		Convey("It should read scalar fields by path", func() {
-			symbol, symbolOK := PeekPayloadOK[string](artifact, "0.symbol")
-			So(symbolOK, ShouldBeTrue)
-			So(symbol, ShouldEqual, "BTC/USD")
-
-			price, priceOK := PeekPayloadOK[float64](artifact, "0.price")
-			So(priceOK, ShouldBeTrue)
-			So(price, ShouldEqual, 50000)
-
-			side, sideOK := PeekPayloadOK[string](artifact, "0.side")
-			So(sideOK, ShouldBeTrue)
-			So(side, ShouldEqual, "buy")
+			So(PeekPayload[string](artifact, "0.symbol"), ShouldEqual, "BTC/USD")
+			So(PeekPayload[float64](artifact, "0.price"), ShouldEqual, 50000)
+			So(PeekPayload[string](artifact, "0.side"), ShouldEqual, "buy")
 		})
 
-		Convey("It should report false for missing paths", func() {
-			_, absentOK := PeekPayloadOK[string](artifact, "0.missing")
-			So(absentOK, ShouldBeFalse)
-		})
 	})
-}
 
-func TestPayloadLen(t *testing.T) {
-	Convey("Given a trade array payload", t, func() {
-		artifact := tradeArtifact(t)
+	Convey("Given a nested object payload", t, func() {
+		artifact := Acquire("payload-object-test", Artifact_Type_json).
+			WithPayload([]byte(`{"data":{"price":[{"label":"price","value":10.5,"transform":"ema"}]}}`))
 
 		defer artifact.Release()
 
-		Convey("It should return the root array length", func() {
-			length, lengthOK := PayloadLen(artifact)
-			So(lengthOK, ShouldBeTrue)
-			So(length, ShouldEqual, 1)
+		Convey("It should read object nodes as map[string]any", func() {
+			field := PeekPayload[map[string]any](artifact, "data.price.0")
+
+			So(field["label"], ShouldEqual, "price")
+			So(field["value"], ShouldEqual, 10.5)
+			So(field["transform"], ShouldEqual, "ema")
+		})
+
+		Convey("It should read object nodes as map[string]any", func() {
+			field := PeekPayload[map[string]any](artifact, "data.price.0")
+
+			So(field["label"], ShouldEqual, "price")
+			So(field["value"], ShouldEqual, 10.5)
+			So(field["transform"], ShouldEqual, "ema")
+		})
+
+		Convey("It should read scalar fields under nested paths", func() {
+			So(PeekPayload[string](artifact, "data.price.0.label"), ShouldEqual, "price")
+			So(PeekPayload[float64](artifact, "data.price.0.value"), ShouldEqual, 10.5)
 		})
 	})
 }
 
-func TestPayloadEach(t *testing.T) {
-	Convey("Given a trade array payload", t, func() {
-		artifact := tradeArtifact(t)
-
-		defer artifact.Release()
-
-		Convey("It should visit each element without unmarshaling structs", func() {
-			var (
-				visited int
-				symbol  string
-			)
-
-			PayloadEach(artifact, func(index int, element ast.Node) bool {
-				So(index, ShouldEqual, visited)
-
-				value, err := element.Get("symbol").String()
-				So(err, ShouldBeNil)
-				symbol = value
-				visited++
-
-				return true
-			})
-
-			So(visited, ShouldEqual, 1)
-			So(symbol, ShouldEqual, "BTC/USD")
-		})
-	})
-}
-
-func TestPeekPayloadCache(t *testing.T) {
-	Convey("Given repeated payload peeks", t, func() {
-		artifact := tradeArtifact(t)
-
-		defer artifact.Release()
-
-		Convey("It should reuse the parsed root across lookups", func() {
-			first, firstOK := PeekPayloadOK[float64](artifact, "0.price")
-			So(firstOK, ShouldBeTrue)
-
-			state := artifactStreamStateFor(artifact)
-			So(state.payloadParsed, ShouldBeTrue)
-
-			second, secondOK := PeekPayloadOK[float64](artifact, "0.qty")
-			So(secondOK, ShouldBeTrue)
-			So(first, ShouldEqual, 50000)
-			So(second, ShouldEqual, 0.1)
-		})
-	})
-}
-
-func TestPayloadQuiet(testingTB *testing.T) {
-	Convey("Given an artifact without encrypted payload metadata", testingTB, func() {
+func TestPayloadQuiet(t *testing.T) {
+	Convey("Given an artifact without encrypted payload metadata", t, func() {
 		artifact := Acquire("payload-quiet", Artifact_Type_json)
-
-		if artifact == nil {
-			testingTB.Fatal("Acquire returned nil")
-		}
 
 		defer artifact.Release()
 
@@ -131,8 +78,8 @@ func TestPayloadQuiet(testingTB *testing.T) {
 		})
 	})
 
-	Convey("Given an artifact with encrypted payload metadata", testingTB, func() {
-		artifact := tradeArtifact(testingTB)
+	Convey("Given an artifact with encrypted payload metadata", t, func() {
+		artifact := tradeArtifact(t)
 
 		defer artifact.Release()
 
@@ -144,16 +91,32 @@ func TestPayloadQuiet(testingTB *testing.T) {
 	})
 }
 
-func BenchmarkPeekPayloadOK(b *testing.B) {
+func BenchmarkPeekPayload(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
 		artifact := tradeArtifact(b)
-		price, priceOK := PeekPayloadOK[float64](artifact, "0.price")
+		price := PeekPayload[float64](artifact, "0.price")
 		artifact.Release()
 
-		if !priceOK || price == 0 {
+		if price == 0 {
 			b.Fatal("peek payload missed price")
+		}
+	}
+}
+
+func BenchmarkPeekPayload_Object(b *testing.B) {
+	payload := []byte(`{"data":{"price":[{"label":"price","value":10.5,"transform":"ema"}]}}`)
+
+	b.ResetTimer()
+
+	for b.Loop() {
+		artifact := Acquire("payload-object-bench", Artifact_Type_json).WithPayload(payload)
+		field := PeekPayload[map[string]any](artifact, "data.price.0")
+		artifact.Release()
+
+		if field["value"] == nil {
+			b.Fatal("peek payload missed object field")
 		}
 	}
 }

@@ -4,7 +4,7 @@ go 1.26.1
 
 // replace github.com/theapemachine/errnie => ../errnie
 
-// replace github.com/theapemachine/qpool => ../qpool
+replace github.com/theapemachine/qpool => ../qpool
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2

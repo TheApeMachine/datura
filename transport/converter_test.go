@@ -46,7 +46,7 @@ func TestConverterRead(t *testing.T) {
 			// Create a test artifact with output metadata
 			artifact := datura.Acquire(
 				"converter-test", datura.Artifact_Type_json,
-			).Poke("output", "test data")
+			).WithAttributes(datura.Map[any]{"output": "test data"})
 
 			// Write the artifact
 			data, err := artifact.Message().Marshal()
@@ -78,7 +78,7 @@ func TestConverterWrite(t *testing.T) {
 		Convey("When writing valid artifact data", func() {
 			artifact := datura.Acquire(
 				"converter-test", datura.Artifact_Type_json,
-			).Poke("output", "test data")
+			).WithAttributes(datura.Map[any]{"output": "test data"})
 			data, err := artifact.Message().Marshal()
 			So(err, ShouldBeNil)
 
@@ -137,7 +137,7 @@ func TestConverterClose(t *testing.T) {
 			Convey("Then writing should still work", func() {
 				artifact := datura.Acquire(
 					"converter-test", datura.Artifact_Type_json,
-				).Poke("output", "test data")
+				).WithAttributes(datura.Map[any]{"output": "test data"})
 				data, marshalErr := artifact.Message().Marshal()
 				So(marshalErr, ShouldBeNil)
 
@@ -159,7 +159,7 @@ func TestConverterClose(t *testing.T) {
 func BenchmarkConverterWrite(b *testing.B) {
 	artifact := datura.Acquire(
 		"converter-bench", datura.Artifact_Type_json,
-	).Poke("output", "test data")
+	).WithAttributes(datura.Map[any]{"output": "test data"})
 
 	data, err := artifact.Message().Marshal()
 

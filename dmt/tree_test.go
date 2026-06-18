@@ -33,14 +33,16 @@ func TestSeek(t *testing.T) {
 			defer artifact.Release()
 
 			artifact.WithPayload([]byte("test"))
-			tree.Insert([]byte("test"), artifact.Marshal())
+			wire, err := artifact.Message().Marshal()
+			So(err, ShouldBeNil)
+			tree.Insert([]byte("test"), wire)
 
 			var found bool
 
 			for inbound := range tree.Seek([]byte("test")) {
 				found = true
 
-				payload, err := inbound.Payload()
+				payload, err := inbound.DecryptPayload()
 
 				So(err, ShouldBeNil)
 				So(payload, ShouldResemble, []byte("test"))
@@ -297,7 +299,9 @@ func BenchmarkTreeSeek(b *testing.B) {
 	defer artifact.Release()
 
 	artifact.WithPayload([]byte("bench-value"))
-	tree.Insert([]byte("bench-key"), artifact.Marshal())
+	wire, err := artifact.Message().Marshal()
+	So(err, ShouldBeNil)
+	tree.Insert([]byte("bench-key"), wire)
 
 	b.ReportAllocs()
 

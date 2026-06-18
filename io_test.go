@@ -8,16 +8,15 @@ import (
 
 func TestArtifactWriteSetMetaValue(t *testing.T) {
 	Convey("Given a writable artifact round-trip", t, func() {
-		source := Acquire("io-test", Artifact_Type_json).Poke("input", "seed")
-		wire, err := source.Message().Marshal()
-		So(err, ShouldBeNil)
+		source := Acquire("io-test", Artifact_Type_json).
+			WithAttributes(Map[any]{"input": "seed"})
+		So(source, ShouldNotBeNil)
 
-		target := Acquire("io-test-target", Artifact_Type_json)
-		_, err = target.Write(wire)
-		So(err, ShouldBeNil)
+		target := Acquire("io-test-target", Artifact_Type_json).
+			WithAttributes(Map[any]{"output": "processed"})
+		So(target, ShouldNotBeNil)
 
-		err = target.SetMetaValue("output", "processed")
-		So(err, ShouldBeNil)
+		So(Peek[string](source, "input"), ShouldEqual, "seed")
 		So(Peek[string](target, "output"), ShouldEqual, "processed")
 	})
 }

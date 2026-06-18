@@ -10,13 +10,14 @@ import (
 func TestBufferWriteRead(t *testing.T) {
 	Convey("Given a buffer stage", t, func() {
 		source := datura.Acquire("buffer-test", datura.Artifact_Type_json).
-			Poke("input", "seed")
+			WithAttributes(datura.Map[any]{"input": "seed"})
 
 		wire, err := source.Message().Marshal()
 		So(err, ShouldBeNil)
 
 		buffer := NewBuffer(func(processed *datura.Artifact) error {
-			return processed.SetMetaValue("output", "processed")
+			processed.WithAttributes(datura.Map[any]{"output": "processed"})
+			return nil
 		})
 
 		_, err = buffer.Write(wire)

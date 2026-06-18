@@ -11,65 +11,41 @@ func TestArtifactCreation(t *testing.T) {
 		payload := []byte("Hello, this is a test payload!")
 
 		Convey("When creating a new artifact with options", func() {
-			artifact := Acquire("test-artifact", Artifact_Type_json).Poke(
-				"payload", string(payload),
-			).Poke(
-				"test_key", "test_value",
-			).WithPayload(payload)
+			artifact := Acquire("test-artifact", Artifact_Type_json).
+				WithAttributes(Map[any]{
+					"payload":  string(payload),
+					"test_key": "test_value",
+				}).
+				WithPayload(payload)
 
-			So(artifact, ShouldNotBeNil)
-
-			Convey("Then the artifact should have all required fields", func() {
-				uuid, err := artifact.Uuid()
+			Convey("And the payload should be decryptable", func() {
+				encryptedPayload, err := artifact.EncryptedPayload()
 				So(err, ShouldBeNil)
-				So(len(uuid), ShouldBeGreaterThan, 0)
+				So(encryptedPayload, ShouldNotBeEmpty)
 
-				So(artifact.HasEncryptedPayload(), ShouldBeTrue)
-				So(artifact.HasEncryptedKey(), ShouldBeTrue)
-				So(artifact.HasEphemeralPublicKey(), ShouldBeTrue)
+				encryptedKey, err := artifact.EncryptedKey()
+				So(err, ShouldBeNil)
+				So(encryptedKey, ShouldNotBeEmpty)
 
-				Convey("And the payload should be decryptable", func() {
-					encryptedPayload, err := artifact.EncryptedPayload()
-					So(err, ShouldBeNil)
-					So(encryptedPayload, ShouldNotBeEmpty)
+				ephemeralPubKey, err := artifact.EphemeralPublicKey()
+				So(err, ShouldBeNil)
+				So(ephemeralPubKey, ShouldNotBeEmpty)
 
-					encryptedKey, err := artifact.EncryptedKey()
-					So(err, ShouldBeNil)
-					So(encryptedKey, ShouldNotBeEmpty)
+				crypto := NewCryptoSuite()
+				decryptedPayload, err := crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
+				So(err, ShouldBeNil)
+				So(decryptedPayload, ShouldResemble, payload)
+			})
 
-					ephemeralPubKey, err := artifact.EphemeralPublicKey()
-					So(err, ShouldBeNil)
-					So(ephemeralPubKey, ShouldNotBeEmpty)
+			Convey("And the metadata should be retrievable", func() {
+				metadataList, err := artifact.Attributes()
+				So(err, ShouldBeNil)
+				So(len(metadataList), ShouldBeGreaterThan, 0)
+				So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
 
-					crypto := NewCryptoSuite()
-					decryptedPayload, err := crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
-					So(err, ShouldBeNil)
-					So(decryptedPayload, ShouldResemble, payload)
-				})
-
-				Convey("And the metadata should be retrievable", func() {
-					metadataList, err := artifact.Metadata()
-					So(err, ShouldBeNil)
-					So(metadataList.Len(), ShouldBeGreaterThan, 0)
-
-					found := false
-
-					for idx := range metadataList.Len() {
-						item := metadataList.At(idx)
-						key, keyErr := item.Key()
-						So(keyErr, ShouldBeNil)
-
-						if key != "test_key" {
-							continue
-						}
-
-						value, valueErr := item.Value().TextValue()
-						So(valueErr, ShouldBeNil)
-						So(value, ShouldEqual, "test_value")
-						found = true
-					}
-
-					So(found, ShouldBeTrue)
+				Convey("When poking the attribute again", func() {
+					So(artifact.Poke("toast", "test_key"), ShouldEqual, artifact)
+					So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
 				})
 			})
 		})
@@ -127,18 +103,12 @@ func TestArtifactMetadata(t *testing.T) {
 			So(artifact, ShouldNotBeNil)
 
 			Convey("Then the metadata should be retrievable", func() {
-				metadataList, err := artifact.Metadata()
-				So(err, ShouldBeNil)
-				So(metadataList.Len(), ShouldEqual, 1)
+				So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
 
-				item := metadataList.At(0)
-				key, err := item.Key()
-				So(err, ShouldBeNil)
-				So(key, ShouldEqual, "test_key")
-
-				value, err := item.Value().TextValue()
-				So(err, ShouldBeNil)
-				So(value, ShouldEqual, "test_value")
+				Convey("When poking the attribute again", func() {
+					So(artifact.Poke("toast", "test_key"), ShouldEqual, artifact)
+					So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
+				})
 			})
 		})
 	})

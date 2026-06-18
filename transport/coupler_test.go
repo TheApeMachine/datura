@@ -41,7 +41,7 @@ func TestCouplerWrite(t *testing.T) {
 		coupler := NewCoupler().Connect(origin).Connect(destination)
 
 		frame := datura.Acquire("coupler", datura.Artifact_Type_json).
-			Poke("destination", "median")
+			WithAttributes(datura.Map[any]{"destination": "median"})
 
 		wire, err := frame.Message().Marshal()
 		So(err, ShouldBeNil)
@@ -62,7 +62,7 @@ func TestCouplerWrite(t *testing.T) {
 		coupler := NewCoupler().Connect(origin).Connect(destination)
 
 		frame := datura.Acquire("coupler", datura.Artifact_Type_json).
-			Poke("role", "features")
+			WithPayload([]byte("12345678"))
 
 		wire, err := frame.Message().Marshal()
 		So(err, ShouldBeNil)
@@ -108,7 +108,7 @@ func TestCouplerClose(t *testing.T) {
 
 func BenchmarkCouplerWrite(b *testing.B) {
 	frame := datura.Acquire("coupler-bench", datura.Artifact_Type_json).
-		Poke("destination", "median")
+		WithAttributes(datura.Map[any]{"destination": "median"})
 
 	wire, err := frame.Message().Marshal()
 
