@@ -42,8 +42,9 @@ struct Artifact {
             textValue   @1 :Text;
             intValue    @2 :Int64;
             floatValue  @3 :Float64;
-            boolValue   @4 :Bool;
-            binaryValue @5 :Data;
+            floatValues @4 :List(Float64);
+            boolValue   @5 :Bool;
+            binaryValue @6 :Data;
         }
     }
 

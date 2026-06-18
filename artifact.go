@@ -29,121 +29,95 @@ var artifactPool = sync.Pool{
 			return nil
 		}
 
-		return &pooledArtifact{
-			Artifact: artifact,
-		}
+		errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
+
+		return artifact
 	},
 }
 
-var artifactPoolIndex sync.Map
-
 var Empty = Artifact{}
 
-/*
-pooledArtifact groups a Cap'n Proto artifact with pool bookkeeping.
-The exported surface remains *Artifact pointers into the embedded struct.
-*/
-type pooledArtifact struct {
-	Artifact
-}
-
-func (pooled *pooledArtifact) resetForPool() {
-	resetArtifactStreamState(&pooled.Artifact)
-
-	segment, err := pooled.Artifact.Message().Reset(capnp.SingleSegment(nil))
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	fresh, err := NewRootArtifact(segment)
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	pooled.Artifact = fresh
-}
-
 func Acquire(
-	origin string,
-	artifactType Artifact_Type,
+	origin string, artifactType Artifact_Type,
 ) *Artifact {
-	pooled := artifactPool.Get()
+	artifact := artifactPool.Get().(*Artifact)
 
-	if pooled == nil {
+	if artifact == nil {
 		return nil
 	}
 
-	pa, ok := pooled.(*pooledArtifact)
+	errnie.Error(artifact.SetOrigin(origin))
+	artifact.SetType(artifactType)
+	artifact.SetTimestamp(time.Now().UnixNano())
 
-	if !ok {
-		return nil
-	}
-
-	if errnie.Error(pa.SetUuid([]byte(uuid.NewString()))) != nil {
-		return nil
-	}
-
-	pa.SetTimestamp(time.Now().UnixNano())
-
-	if errnie.Error(pa.SetOrigin(origin)) != nil {
-		return nil
-	}
-
-	pa.SetType(artifactType)
-	artifactPoolIndex.Store(&pa.Artifact, pa)
-
-	return &pa.Artifact
+	return artifact
 }
 
-func (artifact *Artifact) Prefix() []byte {
-	var builder strings.Builder
+func (artifact *Artifact) Prefix(schemes ...string) []byte {
+	var (
+		builder   strings.Builder
+		out       string
+		timestamp int64
+	)
 
 	builder.Grow(256)
-
 	var numBuf [32]byte
 
-	if role, err := artifact.Role(); err == nil && role != "" {
-		builder.WriteString(role)
-		builder.WriteByte('/')
-	}
+	if len(schemes) > 0 {
+		switch schemes[0] {
+		case "timestamp":
+			if timestamp = artifact.Timestamp(); timestamp > 0 {
+				base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
+				builder.Write(base36)
+				builder.WriteByte('/')
+			}
 
-	if scope, err := artifact.Scope(); err == nil && scope != "" {
-		builder.WriteString(scope)
-		builder.WriteByte('/')
-	}
+			t := time.Unix(0, timestamp).UTC()
+			builder.WriteString(t.Format("2006/01/02"))
+			builder.WriteByte('/')
+		default:
+			if role, err := artifact.Role(); err == nil && role != "" {
+				builder.WriteString(role)
+				builder.WriteByte('/')
+			}
 
-	if origin, err := artifact.Origin(); err == nil && origin != "" {
-		builder.WriteString(origin)
-		builder.WriteByte('/')
-	}
+			if scope, err := artifact.Scope(); err == nil && scope != "" {
+				builder.WriteString(scope)
+				builder.WriteByte('/')
+			}
 
-	if destination, err := artifact.Destination(); err == nil && destination != "" {
-		builder.WriteString(destination)
-		builder.WriteByte('/')
-	}
+			if origin, err := artifact.Origin(); err == nil && origin != "" {
+				builder.WriteString(origin)
+				builder.WriteByte('/')
+			}
 
-	if timestamp := artifact.Timestamp(); timestamp > 0 {
-		base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
-		builder.Write(base36)
-		builder.WriteByte('/')
-	}
+			if destination, err := artifact.Destination(); err == nil && destination != "" {
+				builder.WriteString(destination)
+				builder.WriteByte('/')
+			}
 
-	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
-		builder.Write(uuidBytes)
-	}
+			if timestamp = artifact.Timestamp(); timestamp > 0 {
+				base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
+				builder.Write(base36)
+				builder.WriteByte('/')
+			}
 
-	out := builder.String()
+			if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+				builder.Write(uuidBytes)
+			}
 
-	if len(out) > 0 && out[len(out)-1] == '/' {
-		out = out[:len(out)-1]
-	}
+			out = builder.String()
 
-	out += "."
+			if len(out) > 0 && out[len(out)-1] == '/' {
+				out = out[:len(out)-1]
+			}
 
-	if artifactType := artifact.Type(); artifactType != 0 {
-		out += artifactType.String()
+			out += "."
+
+			if artifactType := artifact.Type(); artifactType != 0 {
+				out += artifactType.String()
+			}
+		}
 	}
 
 	return []byte(out)
@@ -154,16 +128,7 @@ func (artifact *Artifact) Release() {
 		return
 	}
 
-	pooled, ok := artifactPoolIndex.LoadAndDelete(artifact)
-
-	if !ok {
-		resetArtifactStreamState(artifact)
-		return
-	}
-
-	pa := pooled.(*pooledArtifact)
-	pa.resetForPool()
-	artifactPool.Put(pa)
+	artifactPool.Put(artifact)
 }
 
 func (artifact *Artifact) WithDestination(destination string) *Artifact {
@@ -219,8 +184,6 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
-	invalidatePayloadCache(artifact)
-
 	return artifact
 }
 
@@ -275,8 +238,6 @@ func (artifact *Artifact) WithAttributes(attributes Map) *Artifact {
 		default:
 			item.Value().SetTextValue(fmt.Sprintf("%v", v))
 		}
-
-		syncArtifactCacheEntry(artifact, key, value)
 	}
 
 	return artifact
@@ -297,17 +258,12 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 	return artifact
 }
 
-func (artifact *Artifact) Poke(key string, value string) *Artifact {
-	errnie.Error(artifact.SetMetaValue(key, value))
-	return artifact
-}
-
 func (artifact *Artifact) Metadata() (Artifact_Attribute_List, error) {
 	return artifact.Attributes()
 }
 
 func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
-	errnie.Error(artifact.SetMetaValue(key, value))
+	errnie.Error(artifact.Poke(key, value))
 	return artifact
 }
 
