@@ -57,6 +57,7 @@ func TestArtifactPrefix(t *testing.T) {
 		Convey("It should build the trie address without slice churn", func() {
 			prefix := string(artifact.Prefix())
 			So(prefix, ShouldContainSubstring, "role/scope/origin/destination/")
+			So(prefix, ShouldContainSubstring, "1970/01/01")
 			So(prefix, ShouldContainSubstring, "uuid-bytes")
 			So(prefix, ShouldEndWith, ".json")
 		})

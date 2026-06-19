@@ -45,7 +45,7 @@ func TestArtifactCreation(t *testing.T) {
 
 				Convey("When poking the attribute again", func() {
 					So(artifact.Poke("toast", "test_key"), ShouldEqual, artifact)
-					So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
+					So(Peek[string](artifact, "test_key"), ShouldEqual, "toast")
 				})
 			})
 		})
@@ -107,7 +107,7 @@ func TestArtifactMetadata(t *testing.T) {
 
 				Convey("When poking the attribute again", func() {
 					So(artifact.Poke("toast", "test_key"), ShouldEqual, artifact)
-					So(Peek[string](artifact, "test_key"), ShouldEqual, "test_value")
+					So(Peek[string](artifact, "test_key"), ShouldEqual, "toast")
 				})
 			})
 		})

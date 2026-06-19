@@ -3,9 +3,6 @@ package datura
 import (
 	"io"
 	"time"
-
-	capnp "capnproto.org/go/capnp/v3"
-	"capnproto.org/go/capnp/v3/schemas"
 )
 
 func mutateArtifactFields(artifact *Artifact) error {
@@ -95,72 +92,6 @@ func populateArtifactFields(artifact *Artifact) error {
 	}
 
 	return readArtifactFields(artifact)
-}
-
-func exerciseCapnpConstructors() error {
-	arena := capnp.SingleSegment(nil)
-	_, segment, err := capnp.NewMessage(arena)
-	if err != nil {
-		return err
-	}
-
-	child, err := NewArtifact(segment)
-	if err != nil {
-		return err
-	}
-
-	artifactList, err := NewArtifact_List(segment, 2)
-	if err != nil {
-		return err
-	}
-
-	if artifactList.Len() != 2 {
-		return io.ErrUnexpectedEOF
-	}
-
-	rootError, err := NewRootArtifact_Error(segment)
-	if err != nil {
-		return err
-	}
-
-	nestedError, err := NewArtifact_Error(segment)
-	if err != nil {
-		return err
-	}
-
-	errorList, err := NewArtifact_Error_List(segment, 2)
-	if err != nil {
-		return err
-	}
-
-	if errorList.Len() != 2 {
-		return io.ErrUnexpectedEOF
-	}
-
-	typeList, err := NewArtifact_Type_List(segment, 2)
-	if err != nil {
-		return err
-	}
-
-	if typeList.Len() != 2 {
-		return io.ErrUnexpectedEOF
-	}
-
-	RegisterSchema(&schemas.Registry{})
-
-	_ = child.IsValid()
-	_ = rootError.IsValid()
-	_ = nestedError.IsValid()
-	_ = Artifact_Type_json.String()
-	_ = Artifact_TypeFromString("json")
-	_ = Artifact_TypeFromString("unknown")
-	_ = Artifact_Error_Type_unknown.String()
-	_ = Artifact_Error_Type_validation.String()
-	_ = Artifact_Error_TypeFromString("unknown")
-	_ = Artifact_Error_TypeFromString("validation")
-	_ = Artifact_Error_TypeFromString("missing")
-
-	return nil
 }
 
 func exerciseConversionRoundTrip(artifact *Artifact) error {

@@ -12,15 +12,19 @@ import (
 )
 
 type artifactStreamState struct {
-	readWire      []byte
-	readOffset    int
-	readDone      bool
-	writeBuffer   []byte
-	cache         map[string]any
-	indexed       bool
-	payloadBytes  []byte
-	payloadRoot   ast.Node
-	payloadParsed bool
+	readWire              []byte
+	readOffset            int
+	readDone              bool
+	writeBuffer           []byte
+	retainStageAttributes bool
+	indexed               bool
+	payloadBytes          []byte
+	payloadRoot           ast.Node
+	payloadParsed         bool
+	attributesBytes       []byte
+	attributesRoot        ast.Node
+	attributesParsed      bool
+	attributesDirty       bool
 }
 
 var artifactStreamStates sync.Map
@@ -36,9 +40,7 @@ func artifactStreamStateFor(artifact *Artifact) *artifactStreamState {
 		return existing.(*artifactStreamState)
 	}
 
-	state := &artifactStreamState{
-		cache: make(map[string]any, 8),
-	}
+	state := &artifactStreamState{}
 	actual, _ := artifactStreamStates.LoadOrStore(key, state)
 
 	return actual.(*artifactStreamState)
@@ -58,16 +60,24 @@ func resetArtifactStreamState(artifact *Artifact) {
 	state.readOffset = 0
 	state.readDone = false
 	state.writeBuffer = nil
+	state.retainStageAttributes = false
 	state.indexed = false
 	state.payloadBytes = nil
 	state.payloadRoot = ast.Node{}
 	state.payloadParsed = false
-
-	for cacheKey := range state.cache {
-		delete(state.cache, cacheKey)
-	}
+	state.attributesBytes = nil
+	state.attributesRoot = ast.Node{}
+	state.attributesParsed = false
+	state.attributesDirty = false
 
 	artifactStreamStates.Delete(key)
+}
+
+func resetArtifactReadState(state *artifactStreamState) {
+	state.readWire = nil
+	state.readOffset = 0
+	state.readDone = false
+	state.writeBuffer = nil
 }
 
 /*
@@ -82,6 +92,7 @@ func (artifact *Artifact) Read(p []byte) (n int, err error) {
 	}
 
 	if state.readWire == nil {
+		flushAttributesRoot(artifact)
 		state.readWire, err = artifact.Message().Marshal()
 
 		if err != nil {
@@ -123,6 +134,17 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 	}
 
 	state := artifactStreamStateFor(artifact)
+
+	var preserved ast.Node
+
+	if state.retainStageAttributes {
+		root, ok := ensureAttributesRoot(artifact)
+
+		if ok {
+			preserved = root
+		}
+	}
+
 	state.writeBuffer = append(state.writeBuffer, p...)
 
 	var (
@@ -155,7 +177,17 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 
 	*artifact = writable
 	state.writeBuffer = nil
-	resetArtifactStreamState(artifact)
+	state.attributesParsed = false
+	state.attributesDirty = false
+	resetArtifactReadState(state)
+
+	if !state.retainStageAttributes {
+		return len(p), nil
+	}
+
+	if errnie.Error(mergeStageAttributes(artifact, preserved)) != nil {
+		return 0, errnie.Error(err)
+	}
 
 	return len(p), nil
 }

@@ -14,9 +14,7 @@ const (
 )
 
 var (
-	sensoryNamespaceBytes  = []byte(sensoryNamespace)
-	basinNamespaceBytes    = []byte(basinNamespace)
-	episodicNamespaceBytes = []byte(episodicNamespace)
+	basinNamespaceBytes = []byte(basinNamespace)
 )
 
 /*

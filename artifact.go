@@ -2,7 +2,6 @@ package datura
 
 import (
 	"errors"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,12 +96,21 @@ func Acquire(
 	return &pa.Artifact
 }
 
-func (artifact *Artifact) Prefix() []byte {
+func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	var builder strings.Builder
 
 	builder.Grow(256)
 
-	var numBuf [32]byte
+	for _, schema := range schemas {
+		switch schema {
+		case "timestamp":
+			if timestamp := artifact.Timestamp(); timestamp > 0 {
+				observed := time.Unix(0, timestamp).UTC()
+				builder.WriteString(observed.Format("2006/01/02"))
+				builder.WriteByte('/')
+			}
+		}
+	}
 
 	if role, err := artifact.Role(); err == nil && role != "" {
 		builder.WriteString(role)
@@ -125,8 +133,8 @@ func (artifact *Artifact) Prefix() []byte {
 	}
 
 	if timestamp := artifact.Timestamp(); timestamp > 0 {
-		base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
-		builder.Write(base36)
+		observed := time.Unix(0, timestamp).UTC()
+		builder.WriteString(observed.Format("2006/01/02"))
 		builder.WriteByte('/')
 	}
 
@@ -142,8 +150,18 @@ func (artifact *Artifact) Prefix() []byte {
 
 	out += "."
 
-	if artifactType := artifact.Type(); artifactType != 0 {
+	artifactType := artifact.Type()
+
+	if artifactType != 0 {
 		out += artifactType.String()
+
+		return []byte(out)
+	}
+
+	uuidBytes, uuidErr := artifact.Uuid()
+
+	if uuidErr == nil && len(uuidBytes) > 0 {
+		out += "json"
 	}
 
 	return []byte(out)
@@ -223,13 +241,18 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 }
 
 func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
-	encoded, err := sonic.Marshal(attributes)
+	encoded := errnie.Does(func() ([]byte, error) {
+		return sonic.Marshal(attributes)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "attributes marshal failed", err))
+	}).Value()
 
-	if errnie.Error(err) != nil {
-		return nil
+	if len(encoded) == 0 {
+		return artifact
 	}
 
 	errnie.Error(artifact.SetAttributes(encoded))
+
 	return artifact
 }
 
@@ -246,6 +269,45 @@ func (artifact *Artifact) WithRole(role string) *Artifact {
 func (artifact *Artifact) WithScope(scope string) *Artifact {
 	errnie.Error(artifact.SetScope(scope))
 	return artifact
+}
+
+/*
+WithAttribute stores one attribute value using dotted key paths.
+*/
+func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
+	if key == "" {
+		return artifact
+	}
+
+	if strings.Contains(key, ".") {
+		segments := strings.Split(key, ".")
+		path := make([]any, len(segments))
+
+		for index, segment := range segments {
+			path[index] = segment
+		}
+
+		artifact.Poke(value, path...)
+
+		return artifact
+	}
+
+	artifact.Poke(value, key)
+
+	return artifact
+}
+
+/*
+Marshal serializes the artifact capnp wire frame.
+*/
+func (artifact *Artifact) Marshal() []byte {
+	wire, err := artifact.Message().Marshal()
+
+	if err != nil {
+		return nil
+	}
+
+	return wire
 }
 
 func (artifact *Artifact) WithError(err error) *Artifact {

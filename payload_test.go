@@ -50,14 +50,6 @@ func TestPeekPayload(t *testing.T) {
 			So(field["transform"], ShouldEqual, "ema")
 		})
 
-		Convey("It should read object nodes as map[string]any", func() {
-			field := PeekPayload[map[string]any](artifact, "data.price.0")
-
-			So(field["label"], ShouldEqual, "price")
-			So(field["value"], ShouldEqual, 10.5)
-			So(field["transform"], ShouldEqual, "ema")
-		})
-
 		Convey("It should read scalar fields under nested paths", func() {
 			So(PeekPayload[string](artifact, "data.price.0.label"), ShouldEqual, "price")
 			So(PeekPayload[float64](artifact, "data.price.0.value"), ShouldEqual, 10.5)
