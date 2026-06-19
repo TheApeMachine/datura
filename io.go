@@ -12,13 +12,11 @@ Read implements the io.Reader interface for the Artifact.
 It marshals the entire artifact into the provided byte slice.
 */
 func (artifact *Artifact) Read(p []byte) (n int, err error) {
-	errnie.Debug("artifact.Read")
-
-	buf, err := artifact.Message().Marshal()
-
-	if err != nil {
-		return n, errnie.Error(err, "p", string(p))
-	}
+	buf := errnie.Does(func() ([]byte, error) {
+		return artifact.Message().Marshal()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "artifact marshal failed", err))
+	}).Value()
 
 	n = copy(p, buf)
 
@@ -34,35 +32,53 @@ Write implements the io.Writer interface for the Artifact.
 It unmarshals the provided bytes into the current artifact.
 */
 func (artifact *Artifact) Write(p []byte) (n int, err error) {
-	errnie.Debug("artifact.Write")
+	msg := errnie.Does(func() (*capnp.Message, error) {
+		return capnp.Unmarshal(p)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"artifact unmarshal failed",
+			err,
+		))
+	}).Value()
 
-	var (
-		msg     *capnp.Message
-		inbound Artifact
-		segment *capnp.Segment
+	inbound := errnie.Does(func() (Artifact, error) {
+		return ReadRootArtifact(msg)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"artifact read root failed",
+			err,
+		))
+	}).Value()
+
+	segment := errnie.Does(func() (*capnp.Segment, error) {
+		return artifact.Message().Reset(
+			capnp.SingleSegment(nil),
+		)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"artifact reset failed",
+			err,
+		))
+	}).Value()
+
+	writable := errnie.Does(func() (Artifact, error) {
+		return NewRootArtifact(segment)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"artifact new root failed",
+			err,
+		))
+	}).Value()
+
+	errnie.Error(
+		capnp.Struct(writable).CopyFrom(
+			capnp.Struct(inbound),
+		),
 	)
-
-	if msg, err = capnp.Unmarshal(p); err != nil {
-		return 0, errnie.Error(err, "p", string(p))
-	}
-
-	if inbound, err = ReadRootArtifact(msg); err != nil {
-		return 0, errnie.Error(err)
-	}
-
-	if segment, err = artifact.Message().Reset(capnp.SingleSegment(nil)); err != nil {
-		return 0, errnie.Error(err)
-	}
-
-	writable, err := NewRootArtifact(segment)
-
-	if err != nil {
-		return 0, errnie.Error(err)
-	}
-
-	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(inbound)); err != nil {
-		return 0, errnie.Error(err)
-	}
 
 	*artifact = writable
 

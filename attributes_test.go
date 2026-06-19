@@ -63,6 +63,21 @@ func TestPoke(t *testing.T) {
 			So(Peek[float64](artifact, "count"), ShouldEqual, 42)
 		})
 	})
+
+	Convey("Given a float64 history slice", t, func() {
+		artifact := Acquire("poke-history", Artifact_Type_json)
+		history := make([]float64, 60)
+
+		for index := range history {
+			history[index] = float64(index + 1)
+		}
+
+		Convey("It should round-trip the history slice", func() {
+			artifact.Poke(history, "history")
+			So(len(Peek[[]float64](artifact, "history")), ShouldEqual, 60)
+			So(Peek[[]float64](artifact, "history")[0], ShouldEqual, 1)
+		})
+	})
 }
 
 func TestWithAttribute(t *testing.T) {

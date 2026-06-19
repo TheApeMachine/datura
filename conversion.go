@@ -65,19 +65,45 @@ func (artifact *Artifact) Pack() []byte {
 }
 
 func (artifact *Artifact) Unpack(data []byte) error {
-	msg := errnie.Does(func() (*capnp.Message, error) {
-		return capnp.UnmarshalPacked(data)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-	}).Value()
+	return artifact.UnpackWire(data, true)
+}
 
-	buf := errnie.Does(func() (Artifact, error) {
-		return ReadRootArtifact(msg)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-	}).Value()
+/*
+UnpackWire decodes either packed or unpacked capnp artifact wire into artifact.
+When logErrors is false, decode failures are returned without logging.
+*/
+func (artifact *Artifact) UnpackWire(data []byte, logErrors bool) error {
+	if len(data) == 0 {
+		if logErrors {
+			return errnie.Error(errnie.Err(
+				errnie.Validation,
+				"payload unmarshalling failed",
+				errnie.Err(errnie.Validation, "artifact wire is empty", nil),
+			))
+		}
 
-	*artifact = buf
+		return errnie.Err(errnie.Validation, "artifact wire is empty", nil)
+	}
 
-	return nil
+	if msg, err := capnp.UnmarshalPacked(data); err == nil {
+		if buf, readErr := ReadRootArtifact(msg); readErr == nil {
+			*artifact = buf
+
+			return nil
+		}
+	}
+
+	if _, err := artifact.Write(data); err == nil {
+		return nil
+	}
+
+	if logErrors {
+		return errnie.Error(errnie.Err(
+			errnie.Validation,
+			"payload unmarshalling failed",
+			errnie.Err(errnie.Validation, "artifact wire is not capnp", nil),
+		))
+	}
+
+	return errnie.Err(errnie.Validation, "artifact wire is not capnp", nil)
 }
