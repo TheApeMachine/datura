@@ -164,8 +164,7 @@ func TestMPMCRingReadWrite(t *testing.T) {
 			_, writeErr := decoded.Write(buffer[:readCount])
 			So(writeErr, ShouldBeNil)
 
-			out, payloadErr := decoded.DecryptPayload()
-			So(payloadErr, ShouldBeNil)
+			out := decoded.DecryptPayload()
 			So(string(out), ShouldEqual, "7")
 		})
 	})

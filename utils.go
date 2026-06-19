@@ -1,64 +1,31 @@
 package datura
 
-import "errors"
+import "github.com/theapemachine/errnie"
 
-/*
-PayloadQuiet decrypts when crypto metadata is present.
-It returns false without logging for missing or invalid crypto fields.
-*/
-func (artifact *Artifact) PayloadQuiet() ([]byte, bool) {
-	if artifact == nil {
-		return nil, false
-	}
+func (artifact *Artifact) DecryptPayload() []byte {
+	encryptedKey := errnie.Does(func() ([]byte, error) {
+		return artifact.EncryptedKey()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "encryptedKey unavailable", err))
+	}).Value()
 
-	encryptedKey, err := artifact.EncryptedKey()
+	ephemeralPubKey := errnie.Does(func() ([]byte, error) {
+		return artifact.EphemeralPublicKey()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "ephemeralPubKey unavailable", err))
+	}).Value()
 
-	if err != nil || len(encryptedKey) < aesKeyBytes {
-		return nil, false
-	}
+	encryptedPayload := errnie.Does(func() ([]byte, error) {
+		return artifact.EncryptedPayload()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "encryptedPayload unavailable", err))
+	}).Value()
 
-	encryptedPayload, err := artifact.EncryptedPayload()
-
-	if err != nil || len(encryptedPayload) == 0 {
-		return nil, false
-	}
-
-	cryptoSuite := NewCryptoSuite()
-	payload, err := cryptoSuite.decryptPayloadDirect(nil, encryptedPayload, encryptedKey)
-
-	if err != nil || len(payload) == 0 {
-		return nil, false
-	}
-
-	return payload, true
-}
-
-/*
-DecryptPayload decrypts the artifact encrypted payload into a newly allocated slice.
-*/
-func (artifact *Artifact) DecryptPayload() (payload []byte, err error) {
-	payload, payloadOK := artifact.PayloadQuiet()
-
-	if !payloadOK {
-		return nil, errors.New("datura: payload unavailable")
-	}
-
-	return payload, nil
-}
-
-/*
-DecryptPayloadInto decrypts directly into dst when capacity allows.
-*/
-func (artifact *Artifact) DecryptPayloadInto(dst []byte) ([]byte, error) {
-	payload, payloadOK := artifact.PayloadQuiet()
-
-	if !payloadOK {
-		return nil, errors.New("datura: payload unavailable")
-	}
-
-	if cap(dst) >= len(payload) {
-		return append(dst[:0], payload...), nil
-	}
-
-	return append([]byte(nil), payload...), nil
+	crypto := NewCryptoSuite()
+	
+	return errnie.Does(func() ([]byte, error) {
+		return crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload decryption failed", err))
+	}).Value()
 }

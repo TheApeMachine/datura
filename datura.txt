@@ -7236,10 +7236,10 @@ import (
 )
 
 /*
-PeekPayloadOK returns a typed value from the decrypted JSON payload at path.
+PeekOK returns a typed value from the decrypted JSON payload at path.
 Path segments use dot notation with numeric indices for arrays, e.g. "0.price".
 */
-func PeekPayloadOK[T any](artifact *Artifact, path string) (T, bool) {
+func PeekOK[T any](artifact *Artifact, path string) (T, bool) {
 	var zero T
 
 	if artifact == nil || path == "" {
@@ -7256,10 +7256,10 @@ func PeekPayloadOK[T any](artifact *Artifact, path string) (T, bool) {
 }
 
 /*
-PeekPayload returns a typed payload value or the type zero when absent.
+Peek returns a typed payload value or the type zero when absent.
 */
-func PeekPayload[T any](artifact *Artifact, path string) T {
-	value, _ := PeekPayloadOK[T](artifact, path)
+func Peek[T any](artifact *Artifact, path string) T {
+	value, _ := PeekOK[T](artifact, path)
 
 	return value
 }

@@ -96,8 +96,7 @@ func TestForestOperations(t *testing.T) {
 				for result := range forest.Seek([]byte("key")) {
 					found = true
 
-					payload, decryptErr := result.DecryptPayload()
-					So(decryptErr, ShouldBeNil)
+					payload := result.DecryptPayload()
 					So(payload, ShouldResemble, []byte("value1"))
 				}
 

@@ -62,11 +62,7 @@ func (coupler *Coupler) routeWriteToDestination(frame []byte) bool {
 		return true
 	}
 
-	payload, err := inbound.DecryptPayload()
-
-	if err != nil {
-		return false
-	}
+	payload := inbound.DecryptPayload()
 
 	return len(payload) == 8
 }

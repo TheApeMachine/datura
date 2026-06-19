@@ -28,72 +28,25 @@ var artifactPool = sync.Pool{
 			return nil
 		}
 
-		return &pooledArtifact{
-			Artifact: artifact,
-		}
+		artifact.SetUuid([]byte(uuid.NewString()))
+		artifact.SetTimestamp(time.Now().UnixNano())
+
+		return &artifact
 	},
 }
 
-var artifactPoolIndex sync.Map
-
 var Empty = Artifact{}
-
-/*
-pooledArtifact groups a Cap'n Proto artifact with pool bookkeeping.
-The exported surface remains *Artifact pointers into the embedded struct.
-*/
-type pooledArtifact struct {
-	Artifact
-}
-
-func (pooled *pooledArtifact) resetForPool() {
-	resetArtifactStreamState(&pooled.Artifact)
-
-	segment, err := pooled.Artifact.Message().Reset(capnp.SingleSegment(nil))
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	fresh, err := NewRootArtifact(segment)
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	pooled.Artifact = fresh
-}
 
 func Acquire(
 	origin string,
 	artifactType Artifact_Type,
 ) *Artifact {
-	pooled := artifactPool.Get()
+	artifact := artifactPool.Get().(*Artifact)
 
-	if pooled == nil {
-		return nil
-	}
+	artifact.SetOrigin(origin)
+	artifact.SetType(artifactType)
 
-	pa, ok := pooled.(*pooledArtifact)
-
-	if !ok {
-		return nil
-	}
-
-	if errnie.Error(pa.SetUuid([]byte(uuid.NewString()))) != nil {
-		return nil
-	}
-
-	pa.SetTimestamp(time.Now().UnixNano())
-
-	if errnie.Error(pa.SetOrigin(origin)) != nil {
-		return nil
-	}
-
-	pa.SetType(artifactType)
-	artifactPoolIndex.Store(&pa.Artifact, pa)
-
-	return &pa.Artifact
+	return artifact
 }
 
 func (artifact *Artifact) Prefix(schemas ...string) []byte {
@@ -172,16 +125,7 @@ func (artifact *Artifact) Release() {
 		return
 	}
 
-	pooled, ok := artifactPoolIndex.LoadAndDelete(artifact)
-
-	if !ok {
-		resetArtifactStreamState(artifact)
-		return
-	}
-
-	pa := pooled.(*pooledArtifact)
-	pa.resetForPool()
-	artifactPool.Put(pa)
+	artifactPool.Put(artifact)
 }
 
 func (artifact *Artifact) WithDestination(destination string) *Artifact {

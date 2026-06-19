@@ -1,9 +1,7 @@
 package datura
 
 import (
-	"errors"
-
-	capnp "capnproto.org/go/capnp/v3"
+	"capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
 )
@@ -23,16 +21,10 @@ To is a convenience function to convert the artifact's payload into some
 other type by unmarshalling it into the provided type.
 */
 func (artifact *Artifact) To(v any) (err error) {
-	var payload []byte
+	errnie.Debug("datura.To")
 
-	payload, payloadOK := artifact.PayloadQuiet()
-
-	if !payloadOK {
-		return errors.New("datura: payload unavailable")
-	}
-
-	if err = sonic.Unmarshal(payload, v); err != nil {
-		return errnie.Error(err, "payload", payload)
+	if errnie.Error(sonic.Unmarshal(artifact.DecryptPayload(), v)) != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}
 
 	return nil
@@ -43,40 +35,41 @@ From is a convenience function to set the artifact's payload from some
 other type by marshalling it into the artifact's payload.
 */
 func (artifact *Artifact) From(v any) (err error) {
-	var payload []byte
+	errnie.Debug("datura.From")
 
-	if payload, err = sonic.Marshal(v); err != nil {
-		return errnie.Error(err, "payload", string(payload))
-	}
+	payload := errnie.Does(func() ([]byte, error) {
+		return sonic.Marshal(v)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
+	}).Value()
 
 	artifact.WithPayload(payload)
+
 	return nil
 }
 
-/*
-Pack the artifact's payload into a byte slice.
-*/
-func (artifact *Artifact) Pack() (payload []byte, err error) {
-	return artifact.Message().MarshalPacked()
+func (artifact *Artifact) Pack() []byte {
+	return errnie.Does(func() ([]byte, error) {
+		return artifact.Message().MarshalPacked()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
+	}).Value()
 }
 
-/*
-Unpack the artifact from a packed byte slice.
-*/
-func (artifact *Artifact) Unpack(payload []byte) (err error) {
-	var (
-		msg *capnp.Message
-		buf Artifact
-	)
+func (artifact *Artifact) Unpack(data []byte) error {
+	msg := errnie.Does(func() (*capnp.Message, error) {
+		return capnp.UnmarshalPacked(data)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	}).Value()
 
-	if msg, err = capnp.UnmarshalPacked(payload); err != nil {
-		return errnie.Error(err)
-	}
-
-	if buf, err = ReadRootArtifact(msg); err != nil {
-		return errnie.Error(err)
-	}
+	buf := errnie.Does(func() (Artifact, error) {
+		return ReadRootArtifact(msg)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	}).Value()
 
 	*artifact = buf
+
 	return nil
 }

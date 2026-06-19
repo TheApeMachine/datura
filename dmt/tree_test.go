@@ -42,9 +42,7 @@ func TestSeek(t *testing.T) {
 			for inbound := range tree.Seek([]byte("test")) {
 				found = true
 
-				payload, err := inbound.DecryptPayload()
-
-				So(err, ShouldBeNil)
+				payload := inbound.DecryptPayload()
 				So(payload, ShouldResemble, []byte("test"))
 			}
 
