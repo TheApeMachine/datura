@@ -1,6 +1,8 @@
 package datura
 
-import "errors"
+import (
+	"github.com/theapemachine/errnie"
+)
 
 /*
 decryptPayload returns decrypted payload bytes when the artifact holds valid ciphertext.
@@ -8,23 +10,27 @@ Absence of encrypted material is an ordinary outcome and returns an error withou
 */
 func (artifact *Artifact) decryptPayload() ([]byte, error) {
 	if artifact == nil || !artifact.HasEncryptedPayload() {
-		return nil, errors.New("no encrypted payload")
+		return nil, errnie.Err(
+			errnie.Validation,
+			"artifact is nil or has no encrypted payload",
+			nil,
+		)
 	}
 
 	encryptedKey, err := artifact.EncryptedKey()
 
 	if err != nil {
-		return nil, err
+		return nil, errnie.Err(errnie.Validation, "encrypted key unavailable", err)
 	}
 
 	if len(encryptedKey) < aesKeyBytes {
-		return nil, errors.New("encrypted key too short")
+		return nil, errnie.Err(errnie.Validation, "encrypted key too short", nil)
 	}
 
 	encryptedPayload, err := artifact.EncryptedPayload()
 
 	if err != nil {
-		return nil, err
+		return nil, errnie.Err(errnie.Validation, "encrypted payload unavailable", err)
 	}
 
 	cryptoSuite := NewCryptoSuite()
@@ -33,15 +39,19 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 }
 
 /*
+DecryptPayloadError decrypts the artifact encrypted payload and returns an error
+when ciphertext is absent or invalid. It does not log.
+*/
+func (artifact *Artifact) DecryptPayloadError() ([]byte, error) {
+	return artifact.decryptPayload()
+}
+
+/*
 DecryptPayload decrypts the artifact encrypted payload.
-When the artifact has no ciphertext, it returns nil.
+When the artifact has no ciphertext, it returns nil without logging.
 */
 func (artifact *Artifact) DecryptPayload() []byte {
-	payload, err := artifact.decryptPayload()
-
-	if err != nil {
-		return nil
-	}
+	payload, _ := artifact.decryptPayload()
 
 	return payload
 }

@@ -22,11 +22,11 @@ var artifactPool = sync.Pool{
 			return nil
 		}
 
-		artifact, err := NewRootArtifact(seg)
-
-		if errnie.Error(err) != nil {
-			return nil
-		}
+		artifact := errnie.Does(func() (Artifact, error) {
+			return NewRootArtifact(seg)
+		}).Or(func(err error) {
+			errnie.Error(errnie.Err(errnie.Validation, "artifact acquire failed", err))
+		}).Value()
 
 		artifact.SetUuid([]byte(uuid.NewString()))
 		artifact.SetTimestamp(time.Now().UnixNano())

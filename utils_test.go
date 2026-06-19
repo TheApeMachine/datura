@@ -6,6 +6,19 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestDecryptPayloadError(t *testing.T) {
+	Convey("Given a freshly acquired artifact", t, func() {
+		artifact := Acquire("decrypt-test", Artifact_Type_json)
+
+		Convey("It should not decrypt without ciphertext", func() {
+			payload, err := artifact.DecryptPayloadError()
+			So(err, ShouldNotBeNil)
+			So(payload, ShouldBeNil)
+			So(artifact.DecryptPayload(), ShouldBeNil)
+		})
+	})
+}
+
 func TestDecryptPayload(t *testing.T) {
 	Convey("Given a freshly acquired artifact", t, func() {
 		artifact := Acquire("decrypt-test", Artifact_Type_json)

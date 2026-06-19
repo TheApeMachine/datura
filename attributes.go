@@ -104,7 +104,7 @@ func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
 	root := mutableAttributeRoot(artifact)
 
 	errnie.Does(func() (bool, error) {
-		return root.SetAnyByPath(value, path...)
+		return (&root).SetAnyByPath(value, path...)
 	}).Or(func(err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "attribute poke failed", err))
 	}).Value()

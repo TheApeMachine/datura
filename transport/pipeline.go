@@ -13,7 +13,7 @@ It connects components together so data flows through all components in sequence
 Each component can produce data independently.
 */
 type Pipeline struct {
-	components []io.ReadWriter
+	components []io.ReadWriteCloser
 	processed  bool
 }
 
@@ -34,7 +34,7 @@ Example:
 	p2 := workflow.NewPipeline(message, agent, provider, p1)
 	io.Copy(os.Stdout, p2)
 */
-func NewPipeline(components ...io.ReadWriter) io.ReadWriter {
+func NewPipeline(components ...io.ReadWriteCloser) io.ReadWriteCloser {
 	return &Pipeline{components: components}
 }
 
