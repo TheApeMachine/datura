@@ -53,49 +53,6 @@ func PeekPayload[T any](artifact *Artifact, path ...any) T {
 	return typed
 }
 
-/*
-PeekPayloadOK returns a typed payload value and reports whether the path existed.
-*/
-func PeekPayloadOK[T any](artifact *Artifact, path ...any) (T, bool) {
-	var zero T
-
-	node, found := payloadNodeAt(artifact, path...)
-
-	if !found {
-		return zero, false
-	}
-
-	value, ok := payloadNodeAs[T](*node)
-
-	if ok {
-		return value, true
-	}
-
-	raw := errnie.Does(func() (any, error) {
-		return node.Interface()
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.NotFound, "payload value unavailable", err))
-	}).Value()
-
-	if typed, match := raw.(T); match {
-		return typed, true
-	}
-
-	blob := errnie.Does(func() ([]byte, error) {
-		return sonic.Marshal(raw)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload coercion marshal failed", err))
-	}).Value()
-
-	var typed T
-
-	if err := sonic.Unmarshal(blob, &typed); err != nil {
-		return zero, false
-	}
-
-	return typed, true
-}
-
 func ensurePayloadRoot(artifact *Artifact) (ast.Node, bool) {
 	payload := errnie.Does(func() ([]byte, error) {
 		return artifact.DecryptPayload()
