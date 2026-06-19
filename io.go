@@ -37,19 +37,35 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 	errnie.Debug("artifact.Write")
 
 	var (
-		msg *capnp.Message
-		buf Artifact
+		msg     *capnp.Message
+		inbound Artifact
+		segment *capnp.Segment
 	)
 
 	if msg, err = capnp.Unmarshal(p); err != nil {
 		return 0, errnie.Error(err, "p", string(p))
 	}
 
-	if buf, err = ReadRootArtifact(msg); err != nil {
+	if inbound, err = ReadRootArtifact(msg); err != nil {
 		return 0, errnie.Error(err)
 	}
 
-	*artifact = buf
+	if segment, err = artifact.Message().Reset(capnp.SingleSegment(nil)); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	writable, err := NewRootArtifact(segment)
+
+	if err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(inbound)); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	*artifact = writable
+
 	return len(p), nil
 }
 

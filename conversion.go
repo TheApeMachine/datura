@@ -23,7 +23,15 @@ other type by unmarshalling it into the provided type.
 func (artifact *Artifact) To(v any) (err error) {
 	errnie.Debug("datura.To")
 
-	if errnie.Error(sonic.Unmarshal(artifact.DecryptPayload(), v)) != nil {
+	payload, err := artifact.decryptPayload()
+
+	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+
+		return err
+	}
+
+	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}
 

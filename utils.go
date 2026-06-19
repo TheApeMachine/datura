@@ -1,31 +1,47 @@
 package datura
 
-import "github.com/theapemachine/errnie"
+import "errors"
 
+/*
+decryptPayload returns decrypted payload bytes when the artifact holds valid ciphertext.
+Absence of encrypted material is an ordinary outcome and returns an error without logging.
+*/
+func (artifact *Artifact) decryptPayload() ([]byte, error) {
+	if artifact == nil || !artifact.HasEncryptedPayload() {
+		return nil, errors.New("no encrypted payload")
+	}
+
+	encryptedKey, err := artifact.EncryptedKey()
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(encryptedKey) < aesKeyBytes {
+		return nil, errors.New("encrypted key too short")
+	}
+
+	encryptedPayload, err := artifact.EncryptedPayload()
+
+	if err != nil {
+		return nil, err
+	}
+
+	cryptoSuite := NewCryptoSuite()
+
+	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+}
+
+/*
+DecryptPayload decrypts the artifact encrypted payload.
+When the artifact has no ciphertext, it returns nil.
+*/
 func (artifact *Artifact) DecryptPayload() []byte {
-	encryptedKey := errnie.Does(func() ([]byte, error) {
-		return artifact.EncryptedKey()
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "encryptedKey unavailable", err))
-	}).Value()
+	payload, err := artifact.decryptPayload()
 
-	ephemeralPubKey := errnie.Does(func() ([]byte, error) {
-		return artifact.EphemeralPublicKey()
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "ephemeralPubKey unavailable", err))
-	}).Value()
+	if err != nil {
+		return nil
+	}
 
-	encryptedPayload := errnie.Does(func() ([]byte, error) {
-		return artifact.EncryptedPayload()
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "encryptedPayload unavailable", err))
-	}).Value()
-
-	crypto := NewCryptoSuite()
-	
-	return errnie.Does(func() ([]byte, error) {
-		return crypto.DecryptPayload(encryptedPayload, encryptedKey, ephemeralPubKey)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload decryption failed", err))
-	}).Value()
+	return payload
 }

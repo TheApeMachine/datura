@@ -58,11 +58,5 @@ func (coupler *Coupler) routeWriteToDestination(frame []byte) bool {
 	inbound := datura.Acquire("coupler", datura.Artifact_Type_json)
 	_, _ = inbound.Write(frame)
 
-	if datura.Peek[string](inbound, "destination") == "median" {
-		return true
-	}
-
-	payload := inbound.DecryptPayload()
-
-	return len(payload) == 8
+	return datura.Peek[string](inbound, "destination") == "median"
 }

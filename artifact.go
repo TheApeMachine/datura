@@ -43,6 +43,8 @@ func Acquire(
 ) *Artifact {
 	artifact := artifactPool.Get().(*Artifact)
 
+	errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
+	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetOrigin(origin)
 	artifact.SetType(artifactType)
 
@@ -120,11 +122,28 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	return []byte(out)
 }
 
+func (artifact *Artifact) resetForPool() {
+	segment, err := artifact.Message().Reset(capnp.SingleSegment(nil))
+
+	if errnie.Error(err) != nil {
+		return
+	}
+
+	fresh, err := NewRootArtifact(segment)
+
+	if errnie.Error(err) != nil {
+		return
+	}
+
+	*artifact = fresh
+}
+
 func (artifact *Artifact) Release() {
 	if artifact == nil {
 		return
 	}
 
+	artifact.resetForPool()
 	artifactPool.Put(artifact)
 }
 
