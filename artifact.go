@@ -1,9 +1,8 @@
 package datura
 
 import (
-	"errors"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	capnp "capnproto.org/go/capnp/v3"
@@ -12,43 +11,33 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
-var artifactPool = sync.Pool{
-	New: func() any {
-		arena := capnp.SingleSegment(nil)
-
-		_, seg, err := capnp.NewMessage(arena)
-
-		if errnie.Error(err) != nil {
-			return nil
-		}
-
-		artifact := errnie.Does(func() (Artifact, error) {
-			return NewRootArtifact(seg)
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, "artifact acquire failed", err))
-		}).Value()
-
-		artifact.SetUuid([]byte(uuid.NewString()))
-		artifact.SetTimestamp(time.Now().UnixNano())
-
-		return &artifact
-	},
-}
-
 var Empty = Artifact{}
 
 func Acquire(
 	origin string,
 	artifactType Artifact_Type,
 ) *Artifact {
-	artifact := artifactPool.Get().(*Artifact)
+	_, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
+
+	if errnie.Error(err) != nil {
+		return nil
+	}
+
+	artifact := errnie.Does(func() (Artifact, error) {
+		return NewRootArtifact(seg)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "artifact acquire failed", err))
+	}).Value()
 
 	errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
+	artifact.SetUuid([]byte(uuid.NewString()))
+	artifact.SetTimestamp(time.Now().UnixNano())
+	artifact.SetAttributes([]byte("{}"))
 	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetOrigin(origin)
 	artifact.SetType(artifactType)
 
-	return artifact
+	return &artifact
 }
 
 func (artifact *Artifact) Prefix(schemas ...string) []byte {
@@ -58,42 +47,80 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 
 	for _, schema := range schemas {
 		switch schema {
+		case "role":
+			if role, err := artifact.Role(); err == nil && role != "" {
+				builder.WriteString(role)
+				builder.WriteByte('/')
+			}
+		case "scope":
+			if scope, err := artifact.Scope(); err == nil && scope != "" {
+				builder.WriteString(scope)
+				builder.WriteByte('/')
+			}
+		case "origin":
+			if origin, err := artifact.Origin(); err == nil && origin != "" {
+				builder.WriteString(origin)
+				builder.WriteByte('/')
+			}
+		case "destination":
+			if destination, err := artifact.Destination(); err == nil && destination != "" {
+				builder.WriteString(destination)
+				builder.WriteByte('/')
+			}
 		case "timestamp":
 			if timestamp := artifact.Timestamp(); timestamp > 0 {
 				observed := time.Unix(0, timestamp).UTC()
 				builder.WriteString(observed.Format("2006/01/02"))
 				builder.WriteByte('/')
 			}
+		case "uuid":
+			if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+				builder.Write(uuidBytes)
+				builder.WriteByte('/')
+			}
+		default:
+			builder.WriteString(schema)
+			builder.WriteByte('/')
 		}
 	}
 
-	if role, err := artifact.Role(); err == nil && role != "" {
+	if len(schemas) > 0 {
+		out := builder.String()
+
+		if len(out) > 0 && out[len(out)-1] == '/' {
+			out = out[:len(out)-1]
+		}
+
+		return []byte(out)
+	}
+
+	if role, err := artifact.Role(); err == nil && role != "" && !slices.Contains(schemas, "role") {
 		builder.WriteString(role)
 		builder.WriteByte('/')
 	}
 
-	if scope, err := artifact.Scope(); err == nil && scope != "" {
+	if scope, err := artifact.Scope(); err == nil && scope != "" && !slices.Contains(schemas, "scope") {
 		builder.WriteString(scope)
 		builder.WriteByte('/')
 	}
 
-	if origin, err := artifact.Origin(); err == nil && origin != "" {
+	if origin, err := artifact.Origin(); err == nil && origin != "" && !slices.Contains(schemas, "origin") {
 		builder.WriteString(origin)
 		builder.WriteByte('/')
 	}
 
-	if destination, err := artifact.Destination(); err == nil && destination != "" {
+	if destination, err := artifact.Destination(); err == nil && destination != "" && !slices.Contains(schemas, "destination") {
 		builder.WriteString(destination)
 		builder.WriteByte('/')
 	}
 
-	if timestamp := artifact.Timestamp(); timestamp > 0 {
+	if timestamp := artifact.Timestamp(); timestamp > 0 && !slices.Contains(schemas, "timestamp") {
 		observed := time.Unix(0, timestamp).UTC()
 		builder.WriteString(observed.Format("2006/01/02"))
 		builder.WriteByte('/')
 	}
 
-	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 && !slices.Contains(schemas, "uuid") {
 		builder.Write(uuidBytes)
 	}
 
@@ -103,48 +130,61 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 		out = out[:len(out)-1]
 	}
 
-	out += "."
+	if !slices.Contains(schemas, "type") {
+		out += "."
 
-	artifactType := artifact.Type()
+		artifactType := artifact.Type()
 
-	if artifactType != 0 {
-		out += artifactType.String()
+		if artifactType != 0 {
+			out += artifactType.String()
 
-		return []byte(out)
+			return []byte(out)
+		}
 	}
 
-	uuidBytes, uuidErr := artifact.Uuid()
+	if !slices.Contains(schemas, "uuid") {
+		uuidBytes, uuidErr := artifact.Uuid()
 
-	if uuidErr == nil && len(uuidBytes) > 0 {
-		out += "json"
+		if uuidErr == nil && len(uuidBytes) > 0 {
+			out += "json"
+		}
 	}
 
 	return []byte(out)
 }
 
-func (artifact *Artifact) resetForPool() {
-	segment, err := artifact.Message().Reset(capnp.SingleSegment(nil))
+func (artifact *Artifact) Release() {}
 
-	if errnie.Error(err) != nil {
-		return
-	}
+func (artifact *Artifact) Inspect() *Artifact {
+	origin, _ := artifact.Origin()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+	destination, _ := artifact.Destination()
+	attributes, _ := artifact.Attributes()
+	payload := artifact.DecryptPayload()
 
-	fresh, err := NewRootArtifact(segment)
+	errnie.Debug("origin: " + origin)
+	errnie.Debug("role: " + role)
+	errnie.Debug("scope: " + scope)
+	errnie.Debug("destination: " + destination)
+	errnie.Debug("attributes: " + string(attributes))
+	errnie.Debug("payload: " + string(payload))
 
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	*artifact = fresh
+	return artifact
 }
 
-func (artifact *Artifact) Release() {
-	if artifact == nil {
-		return
-	}
+func (artifact *Artifact) Log() []any {
+	origin, _ := artifact.Origin()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+	destination, _ := artifact.Destination()
 
-	artifact.resetForPool()
-	artifactPool.Put(artifact)
+	return []any{
+		"origin", origin,
+		"role", role,
+		"scope", scope,
+		"destination", destination,
+	}
 }
 
 func (artifact *Artifact) WithDestination(destination string) *Artifact {
@@ -154,7 +194,20 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	if len(payload) == 0 {
-		errnie.Error(errors.New("payload is empty"))
+		origin, _ := artifact.Origin()
+		role, _ := artifact.Role()
+		scope, _ := artifact.Scope()
+		destination, _ := artifact.Destination()
+
+		errnie.Error(errnie.Err(
+			errnie.Validation, "payload is empty", nil,
+		).With(
+			"origin", origin,
+			"role", role,
+			"scope", scope,
+			"destination", destination,
+		))
+
 		return nil
 	}
 
@@ -232,6 +285,19 @@ func (artifact *Artifact) WithRole(role string) *Artifact {
 func (artifact *Artifact) WithScope(scope string) *Artifact {
 	errnie.Error(artifact.SetScope(scope))
 	return artifact
+}
+
+/*
+WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
+*/
+func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
+	encoded, err := artifact.Attributes()
+
+	if err != nil || len(encoded) == 0 {
+		return artifact
+	}
+
+	return artifact.WithPayload(encoded)
 }
 
 /*

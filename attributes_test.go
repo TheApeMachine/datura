@@ -1,6 +1,7 @@
 package datura
 
 import (
+	"math"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -27,6 +28,16 @@ func TestPeek(t *testing.T) {
 		Convey("It should read nested payload paths", func() {
 			So(Peek[string](envelope, "method"), ShouldEqual, "add_order")
 			So(Peek[string](envelope, "params", "symbol"), ShouldEqual, "BTC/USD")
+		})
+	})
+
+	Convey("Given a Kraken heartbeat frame without a type field", t, func() {
+		envelope := Acquire("kraken:public", Artifact_Type_json).
+			WithPayload([]byte(`{"channel":"heartbeat"}`))
+
+		Convey("It should read channel and return zero for missing type", func() {
+			So(Peek[string](envelope, "channel"), ShouldEqual, "heartbeat")
+			So(Peek[string](envelope, "type"), ShouldEqual, "")
 		})
 	})
 
@@ -78,6 +89,33 @@ func TestPoke(t *testing.T) {
 			So(Peek[[]float64](artifact, "history")[0], ShouldEqual, 1)
 		})
 	})
+
+	Convey("Given non-finite float values", t, func() {
+		artifact := Acquire("poke-nonfinite", Artifact_Type_json)
+
+		Convey("It should store non-finite floats as zero", func() {
+			artifact.Poke(math.NaN(), "output", "score")
+			So(Peek[float64](artifact, "output", "score"), ShouldEqual, 0)
+		})
+
+		Convey("It should round-trip a Map with finite values", func() {
+			artifact.Poke(Map[float64]{
+				"alpha": 1.5,
+				"value": 0.25,
+			}, "output")
+			So(Peek[float64](artifact, "output", "alpha"), ShouldEqual, 1.5)
+		})
+
+		Convey("It should sanitize non-finite float slices", func() {
+			artifact.Poke([]float64{1, math.NaN(), 3, math.Inf(1)}, "history")
+			history := Peek[[]float64](artifact, "history")
+			So(len(history), ShouldEqual, 4)
+			So(history[0], ShouldEqual, 1)
+			So(history[1], ShouldEqual, 0)
+			So(history[2], ShouldEqual, 3)
+			So(history[3], ShouldEqual, 0)
+		})
+	})
 }
 
 func TestWithAttribute(t *testing.T) {
@@ -87,6 +125,18 @@ func TestWithAttribute(t *testing.T) {
 
 		Convey("It should store the nested value", func() {
 			So(Peek[string](artifact, "transforms", "cancelBid"), ShouldEqual, "ema")
+		})
+	})
+}
+
+func TestWithAttributesAsPayload(t *testing.T) {
+	Convey("Given an artifact with attributes staged for payload publish", t, func() {
+		artifact := Acquire("payload-publish", Artifact_Type_json)
+		artifact.Poke(0.71, "output", "confidence")
+		artifact.WithAttributesAsPayload()
+
+		Convey("It should copy attributes into the decrypted payload", func() {
+			So(Peek[float64](artifact, "output", "confidence"), ShouldEqual, 0.71)
 		})
 	})
 }

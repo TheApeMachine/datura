@@ -43,6 +43,20 @@ func TestDecryptPayload(t *testing.T) {
 	})
 }
 
+func TestWithPayload(testingTB *testing.T) {
+	Convey("Given an artifact with ingest metadata", testingTB, func() {
+		artifact := Acquire("kraken:public", Artifact_Type_json)
+		artifact.WithRole("trade")
+		artifact.WithScope("update")
+
+		Convey("It should reject an empty payload", func() {
+			result := artifact.WithPayload(nil)
+
+			So(result, ShouldBeNil)
+		})
+	})
+}
+
 func TestRelease(t *testing.T) {
 	Convey("Given a used artifact returned to the pool", t, func() {
 		artifact := Acquire("release-test", Artifact_Type_json).

@@ -231,7 +231,7 @@ func (idx *ForestServer) Lookup(
 
 		element := out.Value().At(index)
 
-		if err := populateArtifactElement(element, value); err != nil {
+		if _, err := element.Write(value); err != nil {
 			return errnie.Error(err, "rpc_output_population_failed")
 		}
 	}
@@ -239,21 +239,6 @@ func (idx *ForestServer) Lookup(
 	return nil
 }
 
-func populateArtifactElement(element datura.Artifact, packedValue []byte) error {
-	message, err := capnp.UnmarshalPacked(packedValue)
-
-	if err != nil {
-		return err
-	}
-
-	inbound, err := datura.ReadRootArtifact(message)
-
-	if err != nil {
-		return err
-	}
-
-	return capnp.Struct(element).CopyFrom(capnp.Struct(inbound))
-}
 
 /*
 Forest returns the underlying dmt.Forest for direct access by
