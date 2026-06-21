@@ -67,14 +67,46 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}).Value()
 
-	buf := errnie.Does(func() (Artifact, error) {
+	readOnly := errnie.Does(func() (Artifact, error) {
 		return ReadRootArtifact(msg)
 	}).Or(func(err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}).Value()
 
-	*artifact = buf
+	writable, err := restoreWritable(readOnly)
+
+	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+
+		return 0, err
+	}
+
+	*artifact = writable
 
 	return len(p), nil
+}
 
+/*
+restoreWritable copies a deserialized artifact into a writable message arena.
+Wire deserialization binds segments into a read-only arena; attribute mutation
+requires an allocator-backed arena.
+*/
+func restoreWritable(readOnly Artifact) (Artifact, error) {
+	_, seg, err := capnp.NewMessage(capnp.MultiSegment(nil))
+
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	writable, err := NewRootArtifact(seg)
+
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(readOnly)); err != nil {
+		return Artifact{}, err
+	}
+
+	return writable, nil
 }

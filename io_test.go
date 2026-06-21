@@ -101,10 +101,25 @@ func TestWrite(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(n, ShouldEqual, len(p))
 
-			// Verify the empty artifact now matches the original
-			emptyMarshaled, err := empty.Message().MarshalPacked()
+			origin, err := empty.Origin()
 			So(err, ShouldBeNil)
-			So(emptyMarshaled, ShouldResemble, p)
+			So(origin, ShouldEqual, "test")
+			So(string(empty.DecryptPayload()), ShouldEqual, "test payload")
+		})
+
+		Convey("When poking attributes after write", func() {
+			source := Acquire("write-poke", APPJSON).
+				WithAttributes(Map[any]{"count": 1})
+
+			packed, err := source.Message().MarshalPacked()
+			So(err, ShouldBeNil)
+
+			restored := &Artifact{}
+			_, err = restored.Write(packed)
+			So(err, ShouldBeNil)
+
+			restored.Poke(42, "count")
+			So(Peek[float64](restored, "count"), ShouldEqual, 42)
 		})
 	})
 }

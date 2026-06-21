@@ -116,6 +116,23 @@ func TestPoke(t *testing.T) {
 			So(history[3], ShouldEqual, 0)
 		})
 	})
+
+	Convey("Given a packed artifact restored through Unpack", t, func() {
+		source := Acquire("poke-unpack", Artifact_Type_json).
+			WithAttributes(Map[any]{"count": 1})
+
+		packed, err := source.Message().MarshalPacked()
+		So(err, ShouldBeNil)
+
+		restored := Acquire("poke-unpack-target", Artifact_Type_json)
+		_, err = restored.Unpack(packed)
+		So(err, ShouldBeNil)
+
+		Convey("It should allow attribute mutation after unpack", func() {
+			restored.Poke(42, "count")
+			So(Peek[float64](restored, "count"), ShouldEqual, 42)
+		})
+	})
 }
 
 func TestWithAttribute(t *testing.T) {

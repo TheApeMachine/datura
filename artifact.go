@@ -1,7 +1,9 @@
 package datura
 
 import (
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,8 +117,7 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	}
 
 	if timestamp := artifact.Timestamp(); timestamp > 0 && !slices.Contains(schemas, "timestamp") {
-		observed := time.Unix(0, timestamp).UTC()
-		builder.WriteString(observed.Format("2006/01/02"))
+		builder.WriteString(strconv.FormatInt(timestamp, 10))
 		builder.WriteByte('/')
 	}
 
@@ -155,7 +156,7 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 
 func (artifact *Artifact) Release() {}
 
-func (artifact *Artifact) Inspect() *Artifact {
+func (artifact *Artifact) Inspect(ctxts ...string) *Artifact {
 	origin, _ := artifact.Origin()
 	role, _ := artifact.Role()
 	scope, _ := artifact.Scope()
@@ -163,12 +164,22 @@ func (artifact *Artifact) Inspect() *Artifact {
 	attributes, _ := artifact.Attributes()
 	payload := artifact.DecryptPayload()
 
-	errnie.Debug("origin: " + origin)
-	errnie.Debug("role: " + role)
-	errnie.Debug("scope: " + scope)
-	errnie.Debug("destination: " + destination)
-	errnie.Debug("attributes: " + string(attributes))
-	errnie.Debug("payload: " + string(payload))
+	if len(ctxts) > 0 {
+		fmt.Println()
+		fmt.Println("[" + strings.Join(ctxts, "/") + "]")
+	}
+
+	fmt.Println("prefix      : " + string(artifact.Prefix()))
+	fmt.Println("origin      : " + origin)
+	fmt.Println("role        : " + role)
+	fmt.Println("scope       : " + scope)
+	fmt.Println("destination : " + destination)
+	fmt.Println("attributes  : " + string(attributes))
+	fmt.Println("payload     : " + string(payload))
+
+	if len(ctxts) > 0 {
+		fmt.Println()
+	}
 
 	return artifact
 }

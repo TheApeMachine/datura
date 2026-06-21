@@ -45,7 +45,14 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 		return 0, errnie.Error(err)
 	}
 
-	*artifact = buf
+	writable, err := restoreWritable(buf)
+
+	if err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	*artifact = writable
+
 	return len(p), nil
 }
 
