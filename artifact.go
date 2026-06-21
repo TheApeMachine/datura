@@ -1,134 +1,201 @@
 package datura
 
 import (
-	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	capnp "capnproto.org/go/capnp/v3"
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/theapemachine/errnie"
 )
 
-var artifactPool = sync.Pool{
-	New: func() any {
-		arena := capnp.SingleSegment(nil)
-
-		_, seg, err := capnp.NewMessage(arena)
-
-		if errnie.Error(err) != nil {
-			return nil
-		}
-
-		artifact, err := NewRootArtifact(seg)
-
-		if errnie.Error(err) != nil {
-			return nil
-		}
-
-		errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
-
-		return artifact
-	},
-}
-
 var Empty = Artifact{}
 
 func Acquire(
-	origin string, artifactType Artifact_Type,
+	origin string,
+	artifactType Artifact_Type,
 ) *Artifact {
-	artifact := artifactPool.Get().(*Artifact)
+	_, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
 
-	if artifact == nil {
+	if errnie.Error(err) != nil {
 		return nil
 	}
 
-	errnie.Error(artifact.SetOrigin(origin))
-	artifact.SetType(artifactType)
-	artifact.SetTimestamp(time.Now().UnixNano())
+	artifact := errnie.Does(func() (Artifact, error) {
+		return NewRootArtifact(seg)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "artifact acquire failed", err))
+	}).Value()
 
-	return artifact
+	errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
+	artifact.SetUuid([]byte(uuid.NewString()))
+	artifact.SetTimestamp(time.Now().UnixNano())
+	artifact.SetAttributes([]byte("{}"))
+	artifact.SetTimestamp(time.Now().UnixNano())
+	artifact.SetOrigin(origin)
+	artifact.SetType(artifactType)
+
+	return &artifact
 }
 
-func (artifact *Artifact) Prefix(schemes ...string) []byte {
-	var (
-		builder   strings.Builder
-		out       string
-		timestamp int64
-	)
+func (artifact *Artifact) Prefix(schemas ...string) []byte {
+	var builder strings.Builder
 
 	builder.Grow(256)
-	var numBuf [32]byte
 
-	if len(schemes) > 0 {
-		switch schemes[0] {
-		case "timestamp":
-			if timestamp = artifact.Timestamp(); timestamp > 0 {
-				base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
-				builder.Write(base36)
-				builder.WriteByte('/')
-			}
-
-			t := time.Unix(0, timestamp).UTC()
-			builder.WriteString(t.Format("2006/01/02"))
-			builder.WriteByte('/')
-		default:
+	for _, schema := range schemas {
+		switch schema {
+		case "role":
 			if role, err := artifact.Role(); err == nil && role != "" {
 				builder.WriteString(role)
 				builder.WriteByte('/')
 			}
-
+		case "scope":
 			if scope, err := artifact.Scope(); err == nil && scope != "" {
 				builder.WriteString(scope)
 				builder.WriteByte('/')
 			}
-
+		case "origin":
 			if origin, err := artifact.Origin(); err == nil && origin != "" {
 				builder.WriteString(origin)
 				builder.WriteByte('/')
 			}
-
+		case "destination":
 			if destination, err := artifact.Destination(); err == nil && destination != "" {
 				builder.WriteString(destination)
 				builder.WriteByte('/')
 			}
-
-			if timestamp = artifact.Timestamp(); timestamp > 0 {
-				base36 := strconv.AppendInt(numBuf[:0], timestamp, 36)
-				builder.Write(base36)
+		case "timestamp":
+			if timestamp := artifact.Timestamp(); timestamp > 0 {
+				observed := time.Unix(0, timestamp).UTC()
+				builder.WriteString(observed.Format("2006/01/02"))
 				builder.WriteByte('/')
 			}
-
+		case "uuid":
 			if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
 				builder.Write(uuidBytes)
+				builder.WriteByte('/')
 			}
+		default:
+			builder.WriteString(schema)
+			builder.WriteByte('/')
+		}
+	}
 
-			out = builder.String()
+	if len(schemas) > 0 {
+		out := builder.String()
 
-			if len(out) > 0 && out[len(out)-1] == '/' {
-				out = out[:len(out)-1]
-			}
+		if len(out) > 0 && out[len(out)-1] == '/' {
+			out = out[:len(out)-1]
+		}
 
-			out += "."
+		return []byte(out)
+	}
 
-			if artifactType := artifact.Type(); artifactType != 0 {
-				out += artifactType.String()
-			}
+	if role, err := artifact.Role(); err == nil && role != "" && !slices.Contains(schemas, "role") {
+		builder.WriteString(role)
+		builder.WriteByte('/')
+	}
+
+	if scope, err := artifact.Scope(); err == nil && scope != "" && !slices.Contains(schemas, "scope") {
+		builder.WriteString(scope)
+		builder.WriteByte('/')
+	}
+
+	if origin, err := artifact.Origin(); err == nil && origin != "" && !slices.Contains(schemas, "origin") {
+		builder.WriteString(origin)
+		builder.WriteByte('/')
+	}
+
+	if destination, err := artifact.Destination(); err == nil && destination != "" && !slices.Contains(schemas, "destination") {
+		builder.WriteString(destination)
+		builder.WriteByte('/')
+	}
+
+	if timestamp := artifact.Timestamp(); timestamp > 0 && !slices.Contains(schemas, "timestamp") {
+		builder.WriteString(strconv.FormatInt(timestamp, 10))
+		builder.WriteByte('/')
+	}
+
+	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 && !slices.Contains(schemas, "uuid") {
+		builder.Write(uuidBytes)
+	}
+
+	out := builder.String()
+
+	if len(out) > 0 && out[len(out)-1] == '/' {
+		out = out[:len(out)-1]
+	}
+
+	if !slices.Contains(schemas, "type") {
+		out += "."
+
+		artifactType := artifact.Type()
+
+		if artifactType != 0 {
+			out += artifactType.String()
+
+			return []byte(out)
+		}
+	}
+
+	if !slices.Contains(schemas, "uuid") {
+		uuidBytes, uuidErr := artifact.Uuid()
+
+		if uuidErr == nil && len(uuidBytes) > 0 {
+			out += "json"
 		}
 	}
 
 	return []byte(out)
 }
 
-func (artifact *Artifact) Release() {
-	if artifact == nil {
-		return
+func (artifact *Artifact) Release() {}
+
+func (artifact *Artifact) Inspect(ctxts ...string) *Artifact {
+	origin, _ := artifact.Origin()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+	destination, _ := artifact.Destination()
+	attributes, _ := artifact.Attributes()
+	payload := artifact.DecryptPayload()
+
+	if len(ctxts) > 0 {
+		fmt.Println()
+		fmt.Println("[" + strings.Join(ctxts, "/") + "]")
 	}
 
-	artifactPool.Put(artifact)
+	fmt.Println("prefix      : " + string(artifact.Prefix()))
+	fmt.Println("origin      : " + origin)
+	fmt.Println("role        : " + role)
+	fmt.Println("scope       : " + scope)
+	fmt.Println("destination : " + destination)
+	fmt.Println("attributes  : " + string(attributes))
+	fmt.Println("payload     : " + string(payload))
+
+	if len(ctxts) > 0 {
+		fmt.Println()
+	}
+
+	return artifact
+}
+
+func (artifact *Artifact) Log() []any {
+	origin, _ := artifact.Origin()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+	destination, _ := artifact.Destination()
+
+	return []any{
+		"origin", origin,
+		"role", role,
+		"scope", scope,
+		"destination", destination,
+	}
 }
 
 func (artifact *Artifact) WithDestination(destination string) *Artifact {
@@ -138,7 +205,20 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	if len(payload) == 0 {
-		errnie.Error(errors.New("payload is empty"))
+		origin, _ := artifact.Origin()
+		role, _ := artifact.Role()
+		scope, _ := artifact.Scope()
+		destination, _ := artifact.Destination()
+
+		errnie.Error(errnie.Err(
+			errnie.Validation, "payload is empty", nil,
+		).With(
+			"origin", origin,
+			"role", role,
+			"scope", scope,
+			"destination", destination,
+		))
+
 		return nil
 	}
 
@@ -187,58 +267,18 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	return artifact
 }
 
-func (artifact *Artifact) WithAttributes(attributes Map) *Artifact {
-	var (
-		mdList    Artifact_Attribute_List
-		newMdList Artifact_Attribute_List
-		err       error
-	)
+func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
+	encoded := errnie.Does(func() ([]byte, error) {
+		return sonic.Marshal(attributes)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "attributes marshal failed", err))
+	}).Value()
 
-	if mdList, err = artifact.Attributes(); errnie.Error(err) != nil {
-		return nil
+	if len(encoded) == 0 {
+		return artifact
 	}
 
-	if newMdList, err = (*artifact).NewAttributes(
-		int32(mdList.Len() + len(attributes)),
-	); errnie.Error(err) != nil {
-		return nil
-	}
-
-	for idx := range mdList.Len() {
-		if errnie.Error(newMdList.Set(idx, mdList.At(idx))) != nil {
-			return nil
-		}
-	}
-
-	nextIdx := mdList.Len()
-
-	for key, value := range attributes {
-		item := newMdList.At(nextIdx)
-		nextIdx++
-
-		if errnie.Error(item.SetKey(key)) != nil {
-			return nil
-		}
-
-		switch v := value.(type) {
-		case string:
-			if errnie.Error(item.Value().SetTextValue(v)) != nil {
-				return nil
-			}
-		case int:
-			item.Value().SetIntValue(int64(v))
-		case int64:
-			item.Value().SetIntValue(v)
-		case float64:
-			item.Value().SetFloatValue(v)
-		case bool:
-			item.Value().SetBoolValue(v)
-		case []byte:
-			item.Value().SetBinaryValue(v)
-		default:
-			item.Value().SetTextValue(fmt.Sprintf("%v", v))
-		}
-	}
+	errnie.Error(artifact.SetAttributes(encoded))
 
 	return artifact
 }
@@ -258,13 +298,56 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 	return artifact
 }
 
-func (artifact *Artifact) Metadata() (Artifact_Attribute_List, error) {
-	return artifact.Attributes()
+/*
+WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
+*/
+func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
+	encoded, err := artifact.Attributes()
+
+	if err != nil || len(encoded) == 0 {
+		return artifact
+	}
+
+	return artifact.WithPayload(encoded)
 }
 
+/*
+WithAttribute stores one attribute value using dotted key paths.
+*/
 func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
-	errnie.Error(artifact.Poke(key, value))
+	if key == "" {
+		return artifact
+	}
+
+	if strings.Contains(key, ".") {
+		segments := strings.Split(key, ".")
+		path := make([]any, len(segments))
+
+		for index, segment := range segments {
+			path[index] = segment
+		}
+
+		artifact.Poke(value, path...)
+
+		return artifact
+	}
+
+	artifact.Poke(value, key)
+
 	return artifact
+}
+
+/*
+Marshal serializes the artifact capnp wire frame.
+*/
+func (artifact *Artifact) Marshal() []byte {
+	wire, err := artifact.Message().Marshal()
+
+	if err != nil {
+		return nil
+	}
+
+	return wire
 }
 
 func (artifact *Artifact) WithError(err error) *Artifact {

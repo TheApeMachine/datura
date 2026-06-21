@@ -26,27 +26,16 @@ struct Artifact {
 
     enum Type {
         json      @0;
-        artifact  @1;
-        artifacts @2;
+        jsonl     @1;
+        artifact  @2;
+        artifacts @3;
     }
 
     origin      @7  :Text;
     destination @8  :Text;
     role        @9  :Text;
     scope       @10 :Text;
-    attributes  @11 :List(Attribute);
-
-    struct Attribute {
-        key @0 :Text;
-        value :union {
-            textValue   @1 :Text;
-            intValue    @2 :Int64;
-            floatValue  @3 :Float64;
-            floatValues @4 :List(Float64);
-            boolValue   @5 :Bool;
-            binaryValue @6 :Data;
-        }
-    }
+    attributes  @11 :Data;
 
     encryptedPayload   @12 :Data;
     encryptedKey       @13 :Data;

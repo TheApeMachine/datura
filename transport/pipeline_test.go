@@ -10,8 +10,8 @@ import (
 
 func TestPipeline(t *testing.T) {
 	Convey("Given a pipeline with components that produce data", t, func() {
-		c1 := bytes.NewBuffer([]byte("data from first"))
-		c2 := bytes.NewBuffer([]byte{})
+		c1 := newTestBuffer([]byte("data from first"))
+		c2 := newTestBuffer(nil)
 		c3 := bytes.NewBuffer([]byte{})
 
 		pipeline := NewPipeline(c1, c2)
@@ -26,8 +26,8 @@ func TestPipeline(t *testing.T) {
 
 	Convey("Given two pipelines with components that produce data", t, func() {
 		in1 := bytes.NewBuffer([]byte("data from first"))
-		p1 := NewPipeline(bytes.NewBuffer([]byte{}))
-		p2 := NewPipeline(bytes.NewBuffer([]byte{}))
+		p1 := NewPipeline(newTestBuffer(nil))
+		p2 := NewPipeline(newTestBuffer(nil))
 		buf := bytes.NewBuffer([]byte{})
 
 		pipeline := NewPipeline(p1, p2)
@@ -46,8 +46,8 @@ func TestPipeline(t *testing.T) {
 
 func TestRead(t *testing.T) {
 	Convey("Given a pipeline with components that produce data", t, func() {
-		c1 := bytes.NewBuffer([]byte("data from first"))
-		c2 := bytes.NewBuffer([]byte{})
+		c1 := newTestBuffer([]byte("data from first"))
+		c2 := newTestBuffer(nil)
 		c3 := make([]byte, c1.Len())
 
 		pipeline := NewPipeline(c1, c2)
@@ -61,8 +61,8 @@ func TestRead(t *testing.T) {
 func TestWrite(t *testing.T) {
 	Convey("Given a pipeline with components that produce data", t, func() {
 		c1 := bytes.NewBuffer([]byte("data from first"))
-		c2 := bytes.NewBuffer([]byte{})
-		c3 := bytes.NewBuffer([]byte{})
+		c2 := newTestBuffer(nil)
+		c3 := newTestBuffer(nil)
 		c4 := bytes.NewBuffer([]byte{})
 
 		pipeline := NewPipeline(c2, c3)
@@ -105,7 +105,7 @@ func TestLargeDataPipeline(t *testing.T) {
 		}
 
 		src := bytes.NewBuffer(largeData)
-		intermediate := bytes.NewBuffer([]byte{})
+		intermediate := newTestBuffer(nil)
 		dest := bytes.NewBuffer([]byte{})
 
 		pipeline := NewPipeline(intermediate)
@@ -125,8 +125,8 @@ func TestLargeDataPipeline(t *testing.T) {
 
 func TestMultipleWriteReadCycles(t *testing.T) {
 	Convey("Given a pipeline with multiple write-read cycles", t, func() {
-		buf1 := bytes.NewBuffer([]byte{})
-		buf2 := bytes.NewBuffer([]byte{})
+		buf1 := newTestBuffer(nil)
+		buf2 := newTestBuffer(nil)
 		pipeline := NewPipeline(buf1, buf2)
 
 		Convey("When performing multiple write-read cycles", func() {
@@ -153,8 +153,8 @@ func TestMultipleWriteReadCycles(t *testing.T) {
 
 func TestEdgeCases(t *testing.T) {
 	Convey("Given a pipeline testing edge cases", t, func() {
-		buf1 := bytes.NewBuffer([]byte{})
-		buf2 := bytes.NewBuffer([]byte{})
+		buf1 := newTestBuffer(nil)
+		buf2 := newTestBuffer(nil)
 		pipeline := NewPipeline(buf1, buf2)
 
 		Convey("When writing empty data", func() {
@@ -189,8 +189,8 @@ func BenchmarkPipelineRead(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		c1 := bytes.NewBuffer(payload)
-		c2 := bytes.NewBuffer(nil)
+		c1 := newTestBuffer(payload)
+		c2 := newTestBuffer(nil)
 		c3 := bytes.NewBuffer(nil)
 		pipeline := NewPipeline(c1, c2)
 
@@ -206,8 +206,8 @@ func BenchmarkPipelineWrite(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		c1 := bytes.NewBuffer(nil)
-		c2 := bytes.NewBuffer(nil)
+		c1 := newTestBuffer(nil)
+		c2 := newTestBuffer(nil)
 		pipeline := NewPipeline(c1, c2)
 
 		if _, err := pipeline.Write(payload); err != nil {

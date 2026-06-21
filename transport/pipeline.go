@@ -13,7 +13,7 @@ It connects components together so data flows through all components in sequence
 Each component can produce data independently.
 */
 type Pipeline struct {
-	components []io.ReadWriter
+	components []io.ReadWriteCloser
 	processed  bool
 }
 
@@ -34,7 +34,7 @@ Example:
 	p2 := workflow.NewPipeline(message, agent, provider, p1)
 	io.Copy(os.Stdout, p2)
 */
-func NewPipeline(components ...io.ReadWriter) io.ReadWriter {
+func NewPipeline(components ...io.ReadWriteCloser) io.ReadWriteCloser {
 	return &Pipeline{components: components}
 }
 
@@ -45,7 +45,6 @@ It reads from the first component and passes data through the pipeline.
 Returns EOF when no more data is available.
 */
 func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
-
 	if len(pipeline.components) == 0 {
 		return 0, io.EOF
 	}
@@ -54,7 +53,7 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 
 	if !pipeline.processed {
 		for i := range len(pipeline.components) - 1 {
-			nn, err = io.Copy(pipeline.components[i+1], pipeline.components[i])
+			nn, err = Copy(pipeline.components[i+1], pipeline.components[i])
 			n += int(nn)
 
 			if err != nil {
@@ -95,7 +94,6 @@ It writes data to the first component in the pipeline.
 Note that writing is optional - components can produce data independently.
 */
 func (pipeline *Pipeline) Write(p []byte) (n int, err error) {
-
 	if len(pipeline.components) == 0 {
 		return len(p), nil
 	}

@@ -4,7 +4,11 @@ go 1.26.1
 
 // replace github.com/theapemachine/errnie => ../errnie
 
-// replace github.com/theapemachine/qpool => ../qpool
+replace (
+	github.com/bytedance/sonic => ../sonic
+	github.com/theapemachine/errnie => ../errnie
+	github.com/theapemachine/qpool => ../qpool
+)
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
@@ -87,7 +91,6 @@ require (
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.4
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/qdrant/go-client v1.18.1
-	github.com/smallnest/ringbuffer v0.1.1
 	github.com/smartystreets/goconvey v1.8.1
 	github.com/theapemachine/qpool v1.2.5
 	github.com/tinylib/msgp v1.6.4 // indirect

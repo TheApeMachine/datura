@@ -1,9 +1,7 @@
 package datura
 
 import (
-	"errors"
-
-	capnp "capnproto.org/go/capnp/v3"
+	"capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
 )
@@ -23,16 +21,16 @@ To is a convenience function to convert the artifact's payload into some
 other type by unmarshalling it into the provided type.
 */
 func (artifact *Artifact) To(v any) (err error) {
-	var payload []byte
+	payload, err := artifact.decryptPayload()
 
-	payload, payloadOK := artifact.PayloadQuiet()
+	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 
-	if !payloadOK {
-		return errors.New("datura: payload unavailable")
+		return err
 	}
 
-	if err = sonic.Unmarshal(payload, v); err != nil {
-		return errnie.Error(err, "payload", payload)
+	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}
 
 	return nil
@@ -43,40 +41,72 @@ From is a convenience function to set the artifact's payload from some
 other type by marshalling it into the artifact's payload.
 */
 func (artifact *Artifact) From(v any) (err error) {
-	var payload []byte
-
-	if payload, err = sonic.Marshal(v); err != nil {
-		return errnie.Error(err, "payload", string(payload))
-	}
+	payload := errnie.Does(func() ([]byte, error) {
+		return sonic.Marshal(v)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
+	}).Value()
 
 	artifact.WithPayload(payload)
+
 	return nil
 }
 
-/*
-Pack the artifact's payload into a byte slice.
-*/
-func (artifact *Artifact) Pack() (payload []byte, err error) {
-	return artifact.Message().MarshalPacked()
+func (artifact *Artifact) Pack() []byte {
+	return errnie.Does(func() ([]byte, error) {
+		return artifact.Message().MarshalPacked()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
+	}).Value()
+}
+
+func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
+	msg := errnie.Does(func() (*capnp.Message, error) {
+		return capnp.UnmarshalPacked(p)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	}).Value()
+
+	readOnly := errnie.Does(func() (Artifact, error) {
+		return ReadRootArtifact(msg)
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	}).Value()
+
+	writable, err := restoreWritable(readOnly)
+
+	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+
+		return 0, err
+	}
+
+	*artifact = writable
+
+	return len(p), nil
 }
 
 /*
-Unpack the artifact from a packed byte slice.
+restoreWritable copies a deserialized artifact into a writable message arena.
+Wire deserialization binds segments into a read-only arena; attribute mutation
+requires an allocator-backed arena.
 */
-func (artifact *Artifact) Unpack(payload []byte) (err error) {
-	var (
-		msg *capnp.Message
-		buf Artifact
-	)
+func restoreWritable(readOnly Artifact) (Artifact, error) {
+	_, seg, err := capnp.NewMessage(capnp.MultiSegment(nil))
 
-	if msg, err = capnp.UnmarshalPacked(payload); err != nil {
-		return errnie.Error(err)
+	if err != nil {
+		return Artifact{}, err
 	}
 
-	if buf, err = ReadRootArtifact(msg); err != nil {
-		return errnie.Error(err)
+	writable, err := NewRootArtifact(seg)
+
+	if err != nil {
+		return Artifact{}, err
 	}
 
-	*artifact = buf
-	return nil
+	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(readOnly)); err != nil {
+		return Artifact{}, err
+	}
+
+	return writable, nil
 }

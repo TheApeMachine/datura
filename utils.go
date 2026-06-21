@@ -1,64 +1,57 @@
 package datura
 
-import "errors"
+import (
+	"github.com/theapemachine/errnie"
+)
 
 /*
-PayloadQuiet decrypts when crypto metadata is present.
-It returns false without logging for missing or invalid crypto fields.
+decryptPayload returns decrypted payload bytes when the artifact holds valid ciphertext.
+Absence of encrypted material is an ordinary outcome and returns an error without logging.
 */
-func (artifact *Artifact) PayloadQuiet() ([]byte, bool) {
-	if artifact == nil {
-		return nil, false
+func (artifact *Artifact) decryptPayload() ([]byte, error) {
+	if artifact == nil || !artifact.HasEncryptedPayload() {
+		return nil, errnie.Err(
+			errnie.Validation,
+			"artifact is nil or has no encrypted payload",
+			nil,
+		)
 	}
 
 	encryptedKey, err := artifact.EncryptedKey()
 
-	if err != nil || len(encryptedKey) < aesKeyBytes {
-		return nil, false
+	if err != nil {
+		return nil, errnie.Err(errnie.Validation, "encrypted key unavailable", err)
+	}
+
+	if len(encryptedKey) < aesKeyBytes {
+		return nil, errnie.Err(errnie.Validation, "encrypted key too short", nil)
 	}
 
 	encryptedPayload, err := artifact.EncryptedPayload()
 
-	if err != nil || len(encryptedPayload) == 0 {
-		return nil, false
+	if err != nil {
+		return nil, errnie.Err(errnie.Validation, "encrypted payload unavailable", err)
 	}
 
 	cryptoSuite := NewCryptoSuite()
-	payload, err := cryptoSuite.decryptPayloadDirect(nil, encryptedPayload, encryptedKey)
 
-	if err != nil || len(payload) == 0 {
-		return nil, false
-	}
-
-	return payload, true
+	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
 }
 
 /*
-DecryptPayload decrypts the artifact encrypted payload into a newly allocated slice.
+DecryptPayloadError decrypts the artifact encrypted payload and returns an error
+when ciphertext is absent or invalid. It does not log.
 */
-func (artifact *Artifact) DecryptPayload() (payload []byte, err error) {
-	payload, payloadOK := artifact.PayloadQuiet()
-
-	if !payloadOK {
-		return nil, errors.New("datura: payload unavailable")
-	}
-
-	return payload, nil
+func (artifact *Artifact) DecryptPayloadError() ([]byte, error) {
+	return artifact.decryptPayload()
 }
 
 /*
-DecryptPayloadInto decrypts directly into dst when capacity allows.
+DecryptPayload decrypts the artifact encrypted payload.
+When the artifact has no ciphertext, it returns nil without logging.
 */
-func (artifact *Artifact) DecryptPayloadInto(dst []byte) ([]byte, error) {
-	payload, payloadOK := artifact.PayloadQuiet()
+func (artifact *Artifact) DecryptPayload() []byte {
+	payload, _ := artifact.decryptPayload()
 
-	if !payloadOK {
-		return nil, errors.New("datura: payload unavailable")
-	}
-
-	if cap(dst) >= len(payload) {
-		return append(dst[:0], payload...), nil
-	}
-
-	return append([]byte(nil), payload...), nil
+	return payload
 }

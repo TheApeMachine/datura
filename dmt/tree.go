@@ -7,7 +7,6 @@ common prefixes to save space and enables fast lookups, insertions, and prefix-b
 package dmt
 
 import (
-	"bytes"
 	"iter"
 	"sync"
 	"sync/atomic"
@@ -136,43 +135,21 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 	it.SeekPrefix(key)
 
 	return iter.Seq[*datura.Artifact](func(yield func(*datura.Artifact) bool) {
-		for seekKey, value, ok := it.Next(); ok; seekKey, value, ok = it.Next() {
-			if bytes.Compare(seekKey, key) < 0 {
+		for _, value, ok := it.Next(); ok; _, value, ok = it.Next() {
+			inbound := datura.Acquire("dmt/tree", datura.APPJSON)
+
+			errnie.Does(func() (int, error) {
+				return inbound.Unpack(value)
+			}).Or(func(err error) {
 				errnie.Error(errnie.Err(
-					errnie.NotFound, "seek key not found", nil,
+					errnie.Validation, "failed to unpack artifact", err,
 				))
-				continue
-			}
-
-			if len(value) == 0 {
-				continue
-			}
-
-			inbound := datura.Acquire("dmt-seek", datura.Artifact_Type_json)
-
-			if inbound == nil {
-				errnie.Error(errnie.Err(
-					errnie.Validation, "artifact pool exhausted", nil,
-				))
-				continue
-			}
-
-			if inbound.Unmarshal(value) == nil {
-				errnie.Error(errnie.Err(
-					errnie.Validation, "failed to unmarshal artifact", nil,
-				))
-				inbound.Release()
-				continue
-			}
+			}).Value()
 
 			if !yield(inbound) {
-				inbound.Release()
 				tree.endOp(started, track)
-
 				return
 			}
-
-			inbound.Release()
 		}
 
 		tree.endOp(started, track)
@@ -210,10 +187,6 @@ of the tree rather than modifying the existing one.
 Returns the updated tree and a boolean indicating if the tree was modified.
 */
 func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
-	if tree == nil {
-		return nil, false
-	}
-
 	started, track := tree.beginOp()
 
 	for {

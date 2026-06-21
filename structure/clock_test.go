@@ -42,8 +42,7 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 			_, writeErr := decoded.Write(buffer[:readCount])
 			So(writeErr, ShouldBeNil)
 
-			out, payloadErr := decoded.DecryptPayload()
-			So(payloadErr, ShouldBeNil)
+			out := decoded.DecryptPayload()
 			So(string(out), ShouldContainSubstring, "1.5")
 		})
 	})
