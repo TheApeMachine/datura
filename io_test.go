@@ -14,12 +14,9 @@ type TestTypeOne struct {
 
 func (t TestTypeOne) Read(p []byte) (int, error) {
 	state := Acquire("test-state1", APPJSON)
-	state.Write(p)
-
-	state.WithPayload([]byte("test"))
+	state.Write(t.artifact.DecryptPayload())
 
 	ttTwo := TestTypeTwo{artifact: t.artifact}
-
 	transport.NewFlipFlop(state, ttTwo)
 
 	return state.Read(p)
@@ -40,8 +37,7 @@ type TestTypeTwo struct {
 
 func (t TestTypeTwo) Read(p []byte) (int, error) {
 	state := Acquire("test-state2", APPJSON)
-	state.Write(p)
-
+	state.Write(t.artifact.DecryptPayload())
 	state.WithPayload([]byte("toast"))
 
 	return state.Read(p)
@@ -127,10 +123,36 @@ func TestWrite(t *testing.T) {
 func TestArtifactWithFlipFlop(t *testing.T) {
 	Convey("Given a io.ReadWriteCloser with a FlipFlop instance", t, func() {
 		atOne := TestTypeOne{artifact: Acquire("test-one", APPJSON)}
-		input := Acquire("test-input", APPJSON).WithPayload([]byte("test"))
+		input := Acquire(
+			"test-artifact", APPJSON,
+		).WithRole(
+			"test-role",
+		).WithScope(
+			"test-scope",
+		).WithPayload(
+			[]byte("test"),
+		).WithAttributes(
+			Map[any]{"test": "test"},
+		)
 
 		Convey("And a FlipFlop instance", func() {
 			transport.NewFlipFlop(input, atOne)
+
+			origin, err := input.Origin()
+			So(err, ShouldBeNil)
+			So(origin, ShouldEqual, "test-artifact")
+
+			role, err := input.Role()
+			So(err, ShouldBeNil)
+			So(role, ShouldEqual, "test-role")
+
+			scope, err := input.Scope()
+			So(err, ShouldBeNil)
+			So(scope, ShouldEqual, "test-scope")
+
+			attributes, err := input.Attributes()
+			So(err, ShouldBeNil)
+			So(string(attributes), ShouldEqual, `{"test":"test"}`)
 
 			So(string(input.DecryptPayload()), ShouldEqual, "toast")
 		})
