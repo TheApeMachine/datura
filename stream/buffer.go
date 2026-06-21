@@ -96,7 +96,7 @@ func (buffer *Buffer) Write(p []byte) (n int, err error) {
 
 	buffer.pendingWrite = append(buffer.pendingWrite, p...)
 
-	if _, err = capnp.Unmarshal(buffer.pendingWrite); err != nil {
+	if _, err = capnp.UnmarshalPacked(buffer.pendingWrite); err != nil {
 		return len(p), nil
 	}
 

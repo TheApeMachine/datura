@@ -89,11 +89,13 @@ func TestForestOperations(t *testing.T) {
 				defer artifact.Release()
 
 				artifact.WithPayload([]byte("value1"))
-				forest.Insert(artifact.Prefix(), artifact.Segment().Data())
+				packed, packErr := artifact.MarshalPacked()
+				So(packErr, ShouldBeNil)
+				forest.Insert(artifact.Prefix(), packed)
 
 				var found bool
 
-				for result := range forest.Seek([]byte("key")) {
+				for result := range forest.Seek(artifact.Prefix()) {
 					found = true
 
 					payload := result.DecryptPayload()

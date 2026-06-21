@@ -8,7 +8,6 @@ package dmt
 
 import (
 	"iter"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -77,48 +76,41 @@ func (tree *Tree) endOp(started time.Time, track bool) {
 	tree.opTotalNanos.Add(time.Since(started).Nanoseconds())
 }
 
-var (
-	tree     *Tree
-	treeOnce sync.Once
-)
-
 /*
 NewTree creates and returns a new empty Tree instance.
 The underlying radix tree is initialized with no entries.
 */
 func NewTree(persistDir string) *Tree {
-	treeOnce.Do(func() {
-		tree = &Tree{
-			state: newBatch("dmt/tree"),
-		}
+	tree := &Tree{
+		state: newBatch("dmt/tree"),
+	}
 
-		emptyRoot := iradix.New[[]byte]()
-		tree.root.Store(emptyRoot)
+	emptyRoot := iradix.New[[]byte]()
+	tree.root.Store(emptyRoot)
 
-		if persistDir != "" {
-			tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
-				return NewPersistentStore(persistDir)
-			})
+	if persistDir != "" {
+		tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
+			return NewPersistentStore(persistDir)
+		})
 
-			entries := guardValue(tree.state, tree.persist.Replay)
-			root := tree.loadRoot()
+		entries := guardValue(tree.state, tree.persist.Replay)
+		root := tree.loadRoot()
 
-			for _, entry := range entries {
-				if entry.Op == opDelete {
-					root, _, _ = root.Delete(entry.Key)
-					continue
-				}
-
-				root, _, _ = root.Insert(entry.Key, entry.Value)
+		for _, entry := range entries {
+			if entry.Op == opDelete {
+				root, _, _ = root.Delete(entry.Key)
+				continue
 			}
 
-			tree.root.Store(root)
-
-			term, index := tree.persist.GetLastState()
-			tree.term.Store(term)
-			tree.logIndex.Store(index)
+			root, _, _ = root.Insert(entry.Key, entry.Value)
 		}
-	})
+
+		tree.root.Store(root)
+
+		term, index := tree.persist.GetLastState()
+		tree.term.Store(term)
+		tree.logIndex.Store(index)
+	}
 
 	return tree
 }

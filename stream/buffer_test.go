@@ -12,7 +12,7 @@ func TestBufferWriteRead(t *testing.T) {
 		source := datura.Acquire("buffer-test", datura.Artifact_Type_json).
 			WithAttributes(datura.Map[any]{"input": "seed"})
 
-		wire, err := source.Message().Marshal()
+		wire, err := source.MarshalPacked()
 		So(err, ShouldBeNil)
 
 		buffer := NewBuffer(func(processed *datura.Artifact) error {

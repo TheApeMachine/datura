@@ -66,7 +66,7 @@ func TestRead(t *testing.T) {
 
 		Convey("When the artifact is read", func() {
 			// First get the expected marshaled data
-			expected, err := artifact.Message().MarshalPacked()
+			expected, err := artifact.MarshalPacked()
 			So(err, ShouldBeNil)
 
 			// Create a buffer of the right size
@@ -88,7 +88,7 @@ func TestWrite(t *testing.T) {
 			artifact := testArtifact()
 
 			// Get the marshaled data to write
-			p, err := artifact.Message().MarshalPacked()
+			p, err := artifact.MarshalPacked()
 			So(err, ShouldBeNil)
 
 			// Write the marshaled data to the empty artifact
@@ -107,7 +107,7 @@ func TestWrite(t *testing.T) {
 			source := Acquire("write-poke", APPJSON).
 				WithAttributes(Map[any]{"count": 1})
 
-			packed, err := source.Message().MarshalPacked()
+			packed, err := source.MarshalPacked()
 			So(err, ShouldBeNil)
 
 			restored := &Artifact{}
@@ -150,7 +150,7 @@ func TestArtifactWithFlipFlop(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(scope, ShouldEqual, "test-scope")
 
-			attributes, err := input.Attributes()
+			attributes, err := AttributesBytes(input)
 			So(err, ShouldBeNil)
 			So(string(attributes), ShouldEqual, `{"test":"test"}`)
 

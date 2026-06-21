@@ -48,6 +48,25 @@ func TestPeek(t *testing.T) {
 			So(Peek[string](artifact, "destination"), ShouldEqual, "")
 		})
 	})
+
+	Convey("Given a config artifact carrying capnp bus bytes in payload", t, func() {
+		market := Acquire("kraken:public", Artifact_Type_json).
+			WithPayload([]byte(`{"channel":"ticker","type":"update","data":[{"last":1.0}]}`))
+
+		packed, err := market.MarshalPacked()
+		So(err, ShouldBeNil)
+
+		config := Acquire("pumpdump", Artifact_Type_json).
+			WithAttributes(Map[any]{
+				"ticker": Map[any]{"root": "data", "inputs": []string{"last"}},
+			})
+		config.WithPayload(packed)
+
+		Convey("It should read attributes without parsing bus bytes as JSON", func() {
+			So(Peek[string](config, "ticker", "root"), ShouldEqual, "data")
+			So(Peek[string](config, "missing"), ShouldEqual, "")
+		})
+	})
 }
 
 func TestPoke(t *testing.T) {
@@ -121,7 +140,7 @@ func TestPoke(t *testing.T) {
 		source := Acquire("poke-unpack", Artifact_Type_json).
 			WithAttributes(Map[any]{"count": 1})
 
-		packed, err := source.Message().MarshalPacked()
+		packed, err := source.MarshalPacked()
 		So(err, ShouldBeNil)
 
 		restored := Acquire("poke-unpack-target", Artifact_Type_json)
@@ -154,6 +173,74 @@ func TestWithAttributesAsPayload(t *testing.T) {
 
 		Convey("It should copy attributes into the decrypted payload", func() {
 			So(Peek[float64](artifact, "output", "confidence"), ShouldEqual, 0.71)
+		})
+	})
+}
+
+func TestAttributesCacheMultiplePokes(t *testing.T) {
+	Convey("Given an artifact receiving many pokes", t, func() {
+		artifact := Acquire("cache-multi", Artifact_Type_json)
+
+		for index := range 100 {
+			artifact.Poke(float64(index), "values", index)
+		}
+
+		Convey("It should read staged values before marshal", func() {
+			So(Peek[float64](artifact, "values", 50), ShouldEqual, 50)
+		})
+
+		Convey("It should round-trip through packed wire", func() {
+			packed, err := artifact.MarshalPacked()
+			So(err, ShouldBeNil)
+
+			restored := Acquire("cache-multi-restored", Artifact_Type_json)
+			_, err = restored.Unpack(packed)
+			So(err, ShouldBeNil)
+			So(Peek[float64](restored, "values", 50), ShouldEqual, 50)
+		})
+	})
+}
+
+func TestAttributesCacheStaleBytesUntilFlush(t *testing.T) {
+	Convey("Given a poked artifact before persistence", t, func() {
+		artifact := Acquire("cache-stale", Artifact_Type_json)
+		artifact.Poke(42, "count")
+
+		Convey("It should keep capnp bytes stale until flush", func() {
+			stale, err := capnpArtifact(artifact).Attributes()
+			So(err, ShouldBeNil)
+			So(string(stale), ShouldEqual, "{}")
+			So(Peek[float64](artifact, "count"), ShouldEqual, 42)
+		})
+
+		Convey("It should persist bytes after Attributes is called", func() {
+			flushed, err := AttributesBytes(artifact)
+			So(err, ShouldBeNil)
+			So(string(flushed), ShouldContainSubstring, `"count":42`)
+			So(Peek[float64](artifact, "count"), ShouldEqual, 42)
+		})
+	})
+}
+
+func TestAttributesCacheWriteReload(t *testing.T) {
+	Convey("Given a written artifact with staged attributes", t, func() {
+		source := Acquire("cache-write", Artifact_Type_json)
+		source.Poke("ema", "transforms", "cancelBid")
+
+		packed, err := source.MarshalPacked()
+		So(err, ShouldBeNil)
+
+		restored := &Artifact{}
+		_, err = restored.Write(packed)
+		So(err, ShouldBeNil)
+
+		Convey("It should reload attributes from wire", func() {
+			So(Peek[string](restored, "transforms", "cancelBid"), ShouldEqual, "ema")
+		})
+
+		Convey("It should allow further mutation after reload", func() {
+			restored.Poke("raw", "transforms", "fillBid")
+			So(Peek[string](restored, "transforms", "fillBid"), ShouldEqual, "raw")
 		})
 	})
 }

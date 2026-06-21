@@ -93,7 +93,7 @@ func TestSPSCRingReadWrite(t *testing.T) {
 		So(marshalErr, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.Message().Marshal()
+		wire, marshalErr := source.MarshalPacked()
 		So(marshalErr, ShouldBeNil)
 
 		written, writeErr := ring.Write(wire)
@@ -214,7 +214,7 @@ func BenchmarkSPSCRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.Message().Marshal()
+	wire, err := source.MarshalPacked()
 
 	if err != nil {
 		b.Fatal(err)

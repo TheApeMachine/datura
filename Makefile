@@ -1,5 +1,7 @@
 .PHONY: build test cover bench dump
 
+export GOFLAGS := -ldflags=-checklinkname=0
+
 build:
 	capnp compile -I ../../capnproto/go-capnp/std -ogo artifact.capnp dmt/server/server.capnp
 

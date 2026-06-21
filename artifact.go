@@ -2,6 +2,7 @@ package datura
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ func Acquire(
 	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetOrigin(origin)
 	artifact.SetType(artifactType)
+	initAttributesCache(&artifact)
 
 	return &artifact
 }
@@ -157,11 +159,15 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 func (artifact *Artifact) Release() {}
 
 func (artifact *Artifact) Inspect(ctxts ...string) *Artifact {
+	if os.Getenv("DATURA_INSPECT") != "1" {
+		return artifact
+	}
+
 	origin, _ := artifact.Origin()
 	role, _ := artifact.Role()
 	scope, _ := artifact.Scope()
 	destination, _ := artifact.Destination()
-	attributes, _ := artifact.Attributes()
+	attributes, _ := AttributesBytes(artifact)
 	payload := artifact.DecryptPayload()
 
 	if len(ctxts) > 0 {
@@ -278,9 +284,37 @@ func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
 		return artifact
 	}
 
-	errnie.Error(artifact.SetAttributes(encoded))
+	errnie.Error(capnpArtifact(artifact).SetAttributes(encoded))
+	replaceAttributesCache(artifact, encoded)
 
 	return artifact
+}
+
+/*
+AttributesBytes returns serialized attributes, flushing any resident AST first.
+*/
+func AttributesBytes(artifact *Artifact) ([]byte, error) {
+	artifact.flushAttributes()
+
+	return capnpArtifact(artifact).Attributes()
+}
+
+/*
+WireMessage returns the capnp message after flushing staged attributes.
+*/
+func WireMessage(artifact *Artifact) *capnp.Message {
+	artifact.flushAttributes()
+
+	return capnpArtifact(artifact).Message()
+}
+
+/*
+MarshalPacked serializes the artifact capnp frame with staged attributes flushed.
+*/
+func (artifact *Artifact) MarshalPacked() ([]byte, error) {
+	artifact.flushAttributes()
+
+	return capnpArtifact(artifact).Message().MarshalPacked()
 }
 
 func (artifact *Artifact) WithSignature(signature []byte) *Artifact {
@@ -302,7 +336,7 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
 */
 func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
-	encoded, err := artifact.Attributes()
+	encoded, err := AttributesBytes(artifact)
 
 	if err != nil || len(encoded) == 0 {
 		return artifact
@@ -341,7 +375,7 @@ func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
 Marshal serializes the artifact capnp wire frame.
 */
 func (artifact *Artifact) Marshal() []byte {
-	wire, err := artifact.Message().Marshal()
+	wire, err := WireMessage(artifact).Marshal()
 
 	if err != nil {
 		return nil

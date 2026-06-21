@@ -22,7 +22,7 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.Message().Marshal()
+		wire, marshalErr := source.MarshalPacked()
 		So(marshalErr, ShouldBeNil)
 		written, writeErr := clock.Write(wire)
 
@@ -180,7 +180,7 @@ func BenchmarkClockRing_ReadWrite(testingTB *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.Message().Marshal()
+	wire, err := source.MarshalPacked()
 
 	if err != nil {
 		testingTB.Fatal(err)

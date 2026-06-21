@@ -54,7 +54,7 @@ func (artifact *Artifact) From(v any) (err error) {
 
 func (artifact *Artifact) Pack() []byte {
 	return errnie.Does(func() ([]byte, error) {
-		return artifact.Message().MarshalPacked()
+		return artifact.MarshalPacked()
 	}).Or(func(err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
 	}).Value()
@@ -82,6 +82,7 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 	}
 
 	*artifact = writable
+	invalidateAttributesCache(artifact)
 
 	return len(p), nil
 }

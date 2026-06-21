@@ -33,7 +33,7 @@ func TestSeek(t *testing.T) {
 			defer artifact.Release()
 
 			artifact.WithPayload([]byte("test"))
-			wire, err := artifact.Message().Marshal()
+			wire, err := artifact.MarshalPacked()
 			So(err, ShouldBeNil)
 			tree.Insert([]byte("test"), wire)
 
@@ -297,7 +297,7 @@ func BenchmarkTreeSeek(b *testing.B) {
 	defer artifact.Release()
 
 	artifact.WithPayload([]byte("bench-value"))
-	wire, err := artifact.Message().Marshal()
+	wire, err := artifact.MarshalPacked()
 	So(err, ShouldBeNil)
 	tree.Insert([]byte("bench-key"), wire)
 

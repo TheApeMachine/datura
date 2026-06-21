@@ -12,7 +12,7 @@ Read implements the io.Reader interface for the Artifact.
 It marshals the entire artifact into the provided byte slice.
 */
 func (artifact *Artifact) Read(p []byte) (n int, err error) {
-	buf, err := artifact.Message().MarshalPacked()
+	buf, err := WireMessage(artifact).MarshalPacked()
 
 	if err != nil {
 		return n, errnie.Error(err, "p", string(p))
@@ -52,6 +52,7 @@ func (artifact *Artifact) Write(p []byte) (n int, err error) {
 	}
 
 	*artifact = writable
+	invalidateAttributesCache(artifact)
 
 	return len(p), nil
 }

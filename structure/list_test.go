@@ -142,7 +142,7 @@ func TestListRingReadWrite(t *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.Message().Marshal()
+		wire, marshalErr := source.MarshalPacked()
 		So(marshalErr, ShouldBeNil)
 
 		written, writeErr := ring.Write(wire)
@@ -184,7 +184,7 @@ func BenchmarkListRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.Message().Marshal()
+	wire, err := source.MarshalPacked()
 
 	if err != nil {
 		b.Fatal(err)

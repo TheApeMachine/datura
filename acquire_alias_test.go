@@ -6,7 +6,7 @@ func TestWithPayloadAfterWrite(t *testing.T) {
 	inbound := Acquire("inbound", APPJSON)
 	inbound.Merge("features", []float64{1.0})
 
-	packed, err := inbound.Message().MarshalPacked()
+	packed, err := inbound.MarshalPacked()
 
 	if err != nil {
 		t.Fatal(err)

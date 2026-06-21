@@ -91,6 +91,7 @@ require (
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.4
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/qdrant/go-client v1.18.1
+	github.com/smallnest/ringbuffer v0.1.1
 	github.com/smartystreets/goconvey v1.8.1
 	github.com/theapemachine/qpool v1.2.5
 	github.com/tinylib/msgp v1.6.4 // indirect

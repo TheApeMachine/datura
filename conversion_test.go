@@ -11,7 +11,7 @@ func TestRestoreWritable(t *testing.T) {
 		source := Acquire("restore-writable", Artifact_Type_json).
 			WithPayload([]byte("payload-bytes"))
 
-		packed, err := source.Message().MarshalPacked()
+		packed, err := source.MarshalPacked()
 		So(err, ShouldBeNil)
 
 		restored := &Artifact{}
