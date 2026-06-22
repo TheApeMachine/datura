@@ -43,6 +43,37 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 	return peekNodeValue[T](&payloadNode)
 }
 
+/*
+KeyPresent reports whether a path exists in artifact attributes or payload.
+*/
+func KeyPresent(artifact *Artifact, path ...any) bool {
+	attributeNode := artifact.attributesRoot().GetByPath(path...)
+
+	if attributeNode != nil && attributeNode.Exists() {
+		return true
+	}
+
+	payload, err := artifact.decryptPayload()
+
+	if err != nil || len(payload) == 0 || !payloadLooksJSON(payload) {
+		return false
+	}
+
+	payloadNode := errnie.Does(func() (ast.Node, error) {
+		return sonic.Get(payload, path...)
+	}).Or(func(err error) {
+		if strings.Contains(err.Error(), "value not exists") {
+			return
+		}
+
+		errnie.Error(errnie.Err(
+			errnie.Validation, err.Error(), err,
+		).With(artifact.Log()...))
+	}).Value()
+
+	return payloadNode.Exists()
+}
+
 func payloadLooksJSON(payload []byte) bool {
 	for len(payload) > 0 {
 		switch payload[0] {
