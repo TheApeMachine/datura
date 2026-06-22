@@ -40,3 +40,24 @@ func TestHistoryPeekRoundTrip(t *testing.T) {
 		t.Fatalf("history = %v", history)
 	}
 }
+
+func TestMergeOnFreshArtifact(t *testing.T) {
+	artifact := Acquire("merge-fresh", APPJSON)
+	artifact.Merge("features", []float64{1, 2, 3})
+
+	features := Peek[[]float64](artifact, "features")
+
+	if len(features) != 3 {
+		t.Fatalf("features = %v", features)
+	}
+}
+
+func TestToWithoutPayload(t *testing.T) {
+	artifact := Acquire("to-fresh", APPJSON)
+
+	err := artifact.To(&Map[any]{})
+
+	if err == nil {
+		t.Fatal("expected error unmarshalling artifact without payload")
+	}
+}

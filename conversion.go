@@ -7,13 +7,23 @@ import (
 )
 
 func As[T any](artifact *Artifact) T {
-	var v T
+	var value T
 
-	if err := artifact.To(&v); err != nil {
-		return v
+	if artifact == nil || !artifact.HasEncryptedPayload() {
+		return value
 	}
 
-	return v
+	payload, err := artifact.decryptPayload()
+
+	if err != nil || len(payload) == 0 || !payloadLooksJSON(payload) {
+		return value
+	}
+
+	if err = sonic.Unmarshal(payload, &value); err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	}
+
+	return value
 }
 
 /*
@@ -21,6 +31,10 @@ To is a convenience function to convert the artifact's payload into some
 other type by unmarshalling it into the provided type.
 */
 func (artifact *Artifact) To(v any) (err error) {
+	if artifact == nil || !artifact.HasEncryptedPayload() {
+		return errnie.Err(errnie.Validation, "artifact has no encrypted payload", nil)
+	}
+
 	payload, err := artifact.decryptPayload()
 
 	if err != nil {
@@ -29,8 +43,14 @@ func (artifact *Artifact) To(v any) (err error) {
 		return err
 	}
 
-	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
+	if len(payload) == 0 || !payloadLooksJSON(payload) {
+		return errnie.Err(errnie.Validation, "payload is not JSON", nil)
+	}
+
+	if err = sonic.Unmarshal(payload, v); err != nil {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+
+		return err
 	}
 
 	return nil

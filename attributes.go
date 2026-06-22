@@ -50,7 +50,11 @@ func payloadLooksJSON(payload []byte) bool {
 			payload = payload[1:]
 		default:
 			switch payload[0] {
-			case '{', '[', '"':
+			case '{', '[', '"', '-':
+				return true
+			case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				return true
+			case 't', 'f', 'n':
 				return true
 			default:
 				return false
