@@ -4,11 +4,40 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
+const capnpTraverseLimitBytes = 64 << 20
+
+/*
+ensureReadBudget restores the capnp read traversal budget on reused artifact messages.
+Repeated getter calls on the same message accumulate against a fixed limit and eventually
+fail with "read pointer: read traversal limit reached".
+*/
+func (artifact *Artifact) ensureReadBudget() {
+	if artifact == nil {
+		return
+	}
+
+	message := capnpArtifact(artifact).Message()
+
+	if message == nil {
+		return
+	}
+
+	limit := message.TraverseLimit
+
+	if limit == 0 {
+		limit = capnpTraverseLimitBytes
+	}
+
+	message.ResetReadLimit(limit)
+}
+
 /*
 decryptPayload returns decrypted payload bytes when the artifact holds valid ciphertext.
 Absence of encrypted material is an ordinary outcome and returns an error without logging.
 */
 func (artifact *Artifact) decryptPayload() ([]byte, error) {
+	artifact.ensureReadBudget()
+
 	if artifact == nil || !artifact.HasEncryptedPayload() {
 		return nil, errnie.Err(
 			errnie.Validation,

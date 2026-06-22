@@ -210,6 +210,8 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 }
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
+	artifact.ensureReadBudget()
+
 	if len(payload) == 0 {
 		origin, _ := artifact.Origin()
 		role, _ := artifact.Role()
