@@ -1,9 +1,6 @@
 package datura
 
-import (
-	"github.com/bytedance/sonic"
-	"github.com/theapemachine/errnie"
-)
+import "github.com/bytedance/sonic"
 
 type Map[T any] map[string]T
 
@@ -30,19 +27,8 @@ func (artifact *Artifact) Merge(key string, value any) {
 		body = Map[any]{}
 	}
 
-	body[key] = sanitizePokeValue(value)
-
-	encoded := body.Marshal()
-
-	if len(encoded) == 0 {
-		errnie.Error(errnie.Err(
-			errnie.Validation, "payload merge marshal failed", nil,
-		).With(artifact.Log()...))
-
-		return
-	}
-
-	artifact.WithPayload(encoded)
+	body[key] = value
+	artifact.WithPayload(body.Marshal())
 }
 
 /*
@@ -68,18 +54,7 @@ func (artifact *Artifact) MergeOutput(key string, value any) {
 		}
 	}
 
-	output[key] = sanitizePokeValue(value)
+	output[key] = value
 	body["output"] = output
-
-	encoded := body.Marshal()
-
-	if len(encoded) == 0 {
-		errnie.Error(errnie.Err(
-			errnie.Validation, "payload merge output marshal failed", nil,
-		).With(artifact.Log()...))
-
-		return
-	}
-
-	artifact.WithPayload(encoded)
+	artifact.WithPayload(body.Marshal())
 }

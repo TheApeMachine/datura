@@ -9,13 +9,12 @@ import (
 
 /*
 Read implements the io.Reader interface for the Artifact.
-It marshals the entire artifact into the provided byte slice.
 */
 func (artifact *Artifact) Read(p []byte) (n int, err error) {
-	buf, err := WireMessage(artifact).MarshalPacked()
+	buf, err := artifact.Message().MarshalPacked()
 
 	if err != nil {
-		return n, errnie.Error(err, "p", string(p))
+		return 0, errnie.Error(err)
 	}
 
 	n = copy(p, buf)
@@ -29,31 +28,37 @@ func (artifact *Artifact) Read(p []byte) (n int, err error) {
 
 /*
 Write implements the io.Writer interface for the Artifact.
-It unmarshals the provided bytes into the current artifact.
 */
 func (artifact *Artifact) Write(p []byte) (n int, err error) {
-	var (
-		msg *capnp.Message
-		buf Artifact
-	)
+	msg, err := capnp.UnmarshalPacked(p)
 
-	if msg, err = capnp.UnmarshalPacked(p); err != nil {
+	if err != nil {
 		return 0, errnie.Error(err, "p", string(p))
 	}
 
-	if buf, err = ReadRootArtifact(msg); err != nil {
-		return 0, errnie.Error(err)
-	}
-
-	writable, err := restoreWritable(buf)
+	readOnly, err := ReadRootArtifact(msg)
 
 	if err != nil {
 		return 0, errnie.Error(err)
 	}
 
-	*artifact = writable
-	invalidateAttributesCache(artifact)
+	_, seg, err := capnp.NewMessage(capnp.MultiSegment(nil))
 
+	if err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	writable, err := NewRootArtifact(seg)
+
+	if err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(readOnly)); err != nil {
+		return 0, errnie.Error(err)
+	}
+
+	*artifact = writable
 	return len(p), nil
 }
 
@@ -62,6 +67,6 @@ Close implements the io.Closer interface for the Artifact.
 */
 func (artifact *Artifact) Close() error {
 	errnie.Debug("artifact.Close")
-	artifact.Release()
+	artifact = nil
 	return nil
 }

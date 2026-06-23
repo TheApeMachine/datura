@@ -10,8 +10,8 @@ import (
 	"github.com/theapemachine/datura"
 )
 
-func TestClockRing_ReadWrite(testingTB *testing.T) {
-	Convey("Given a click clock with a bound artifact", testingTB, func() {
+func TestClockRing_ReadWrite(t *testing.T) {
+	Convey("Given a click clock with a bound artifact", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
 		source := datura.Acquire("clock", datura.Artifact_Type_json)
@@ -22,25 +22,24 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.MarshalPacked()
-		So(marshalErr, ShouldBeNil)
-		written, writeErr := clock.Write(wire)
+		wire := source.Pack()
+		written, err := clock.Write(wire)
 
 		Convey("Write should store through the second hand", func() {
-			So(writeErr, ShouldBeNil)
+			So(err, ShouldBeNil)
 			So(written, ShouldEqual, len(wire))
 		})
 
 		buffer := make([]byte, 4096)
-		readCount, readErr := clock.Read(buffer)
+		readCount, err := clock.Read(buffer)
 
 		Convey("Read should marshal through the second hand", func() {
-			So(readErr, ShouldEqual, io.EOF)
+			So(err, ShouldEqual, io.EOF)
 			So(readCount, ShouldBeGreaterThan, 0)
 
 			decoded := datura.Acquire("clock", datura.Artifact_Type_json)
-			_, writeErr := decoded.Write(buffer[:readCount])
-			So(writeErr, ShouldBeNil)
+			_, err := decoded.Write(buffer[:readCount])
+			So(err, ShouldBeNil)
 
 			out := decoded.DecryptPayload()
 			So(string(out), ShouldContainSubstring, "1.5")
@@ -48,8 +47,8 @@ func TestClockRing_ReadWrite(testingTB *testing.T) {
 	})
 }
 
-func TestClockRing_ObserveSecond(testingTB *testing.T) {
-	Convey("Given a default click clock", testingTB, func() {
+func TestClockRing_ObserveSecond(t *testing.T) {
+	Convey("Given a default click clock", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
@@ -70,8 +69,8 @@ func TestClockRing_ObserveSecond(testingTB *testing.T) {
 	})
 }
 
-func TestClockRing_AdvanceVirtual(testingTB *testing.T) {
-	Convey("Given one fresh second-hand observation", testingTB, func() {
+func TestClockRing_AdvanceVirtual(t *testing.T) {
+	Convey("Given one fresh second-hand observation", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
@@ -92,8 +91,8 @@ func TestClockRing_AdvanceVirtual(testingTB *testing.T) {
 	})
 }
 
-func TestClockTrack_AdvanceVirtual(testingTB *testing.T) {
-	Convey("Given a thin stream with one compression reading", testingTB, func() {
+func TestClockTrack_AdvanceVirtual(t *testing.T) {
+	Convey("Given a thin stream with one compression reading", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
 		track, err := NewClockTrack(clock)
@@ -129,8 +128,8 @@ func TestClockTrack_AdvanceVirtual(testingTB *testing.T) {
 	})
 }
 
-func TestClockRing_Ring(testingTB *testing.T) {
-	Convey("Given a click clock as Ring[ClockSlot]", testingTB, func() {
+func TestClockRing_Ring(t *testing.T) {
+	Convey("Given a click clock as Ring[ClockSlot]", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 		ring := NewRing(clock)
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
@@ -147,8 +146,8 @@ func TestClockRing_Ring(testingTB *testing.T) {
 	})
 }
 
-func TestClockRing_Freshness(testingTB *testing.T) {
-	Convey("Given a fresh little-hand observation", testingTB, func() {
+func TestClockRing_Freshness(t *testing.T) {
+	Convey("Given a fresh little-hand observation", t, func() {
 		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
@@ -164,45 +163,40 @@ func TestClockRing_Freshness(testingTB *testing.T) {
 	})
 }
 
-func BenchmarkClockRing_ReadWrite(testingTB *testing.B) {
+func BenchmarkClockRing_ReadWrite(t *testing.B) {
 	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
 	source := datura.Acquire("clock", datura.Artifact_Type_json)
 
 	if source == nil {
-		testingTB.Fatal("Acquire returned nil")
+		t.Fatal("Acquire returned nil")
 	}
 
 	payload, err := sonic.Marshal(1.5)
 
 	if err != nil {
-		testingTB.Fatal(err)
+		t.Fatal(err)
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.MarshalPacked()
-
-	if err != nil {
-		testingTB.Fatal(err)
-	}
-
+	wire := source.Pack()
 	buffer := make([]byte, 4096)
 
-	testingTB.ReportAllocs()
-	testingTB.ResetTimer()
+	t.ReportAllocs()
+	t.ResetTimer()
 
-	for testingTB.Loop() {
+	for t.Loop() {
 		if _, err := clock.Write(wire); err != nil {
-			testingTB.Fatal(err)
+			t.Fatal(err)
 		}
 
 		if _, err := clock.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
-			testingTB.Fatal(err)
+			t.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkClockRing_AdvanceVirtual(testingTB *testing.B) {
+func BenchmarkClockRing_AdvanceVirtual(t *testing.B) {
 	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
 	start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
@@ -210,34 +204,34 @@ func BenchmarkClockRing_AdvanceVirtual(testingTB *testing.B) {
 	_, err := clock.ObserveSecond(start, 0)
 
 	if err != nil {
-		testingTB.Fatal(err)
+		t.Fatal(err)
 	}
 
-	for testingTB.Loop() {
+	for t.Loop() {
 		_, err = clock.AdvanceVirtual(9)
 
 		if err != nil {
-			testingTB.Fatal(err)
+			t.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkClockTrack_ObserveSecond(testingTB *testing.B) {
+func BenchmarkClockTrack_ObserveSecond(t *testing.B) {
 	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
 
 	track, err := NewClockTrack(clock)
 
 	if err != nil {
-		testingTB.Fatal(err)
+		t.Fatal(err)
 	}
 
 	start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
-	for testingTB.Loop() {
+	for t.Loop() {
 		_, err = track.ObserveSecond(start, 1.5)
 
 		if err != nil {
-			testingTB.Fatal(err)
+			t.Fatal(err)
 		}
 	}
 }

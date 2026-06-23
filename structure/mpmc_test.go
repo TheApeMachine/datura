@@ -141,13 +141,11 @@ func TestMPMCRingReadWrite(t *testing.T) {
 		source.WithPayload(payload)
 
 		ring.WithArtifact(datura.Acquire("mpmc", datura.Artifact_Type_json))
-		wire, marshalErr := source.MarshalPacked()
-		So(marshalErr, ShouldBeNil)
-
-		written, writeErr := ring.Write(wire)
+		wire := source.Pack()
+		written, err := ring.Write(wire)
 
 		Convey("Write should enqueue the decoded value", func() {
-			So(writeErr, ShouldBeNil)
+			So(err, ShouldBeNil)
 			So(written, ShouldEqual, len(wire))
 			So(ring.Len(), ShouldEqual, 1)
 		})
@@ -254,12 +252,7 @@ func BenchmarkMPMCRingReadWrite(b *testing.B) {
 
 	source.WithPayload(payload)
 	ring.WithArtifact(datura.Acquire("mpmc", datura.Artifact_Type_json))
-	wire, err := source.MarshalPacked()
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	wire := source.Pack()
 	buffer := make([]byte, 4096)
 
 	b.ReportAllocs()

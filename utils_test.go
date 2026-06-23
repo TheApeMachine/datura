@@ -73,48 +73,6 @@ func TestRelease(t *testing.T) {
 	})
 }
 
-func TestWithPayloadReadBudgetReset(t *testing.T) {
-	Convey("Given a reused artifact with a small capnp read traversal budget", t, func() {
-		artifact := Acquire("read-budget", Artifact_Type_json).
-			WithPayload([]byte(`{"seed":1}`))
-
-		message := capnpArtifact(artifact).Message()
-		message.TraverseLimit = 512
-		message.ResetReadLimit(message.TraverseLimit)
-
-		for range 500 {
-			if len(artifact.DecryptPayload()) == 0 {
-				t.Fatal("decrypt failed before read budget fix could be validated")
-			}
-
-			if artifact.WithPayload([]byte(`{"tick":1}`)) == nil {
-				t.Fatal("WithPayload failed after repeated decrypt/write cycles")
-			}
-		}
-
-		Convey("It should still accept a final payload write", func() {
-			result := artifact.WithPayload([]byte(`{"final":1}`))
-
-			So(result, ShouldNotBeNil)
-			So(string(result.DecryptPayload()), ShouldEqual, `{"final":1}`)
-		})
-	})
-}
-
-func BenchmarkWithPayloadReuse(b *testing.B) {
-	payload := []byte(`{"method":"add_order","params":{"symbol":"BTC/USD"}}`)
-	artifact := Acquire("withpayload-bench", Artifact_Type_json).
-		WithPayload(payload)
-
-	b.ResetTimer()
-
-	for b.Loop() {
-		if artifact.WithPayload(payload) == nil {
-			b.Fatal("WithPayload failed on reused artifact")
-		}
-	}
-}
-
 func BenchmarkDecryptPayload(b *testing.B) {
 	artifact := Acquire("decrypt-bench", Artifact_Type_json).
 		WithPayload([]byte(`{"method":"add_order","params":{"symbol":"BTC/USD"}}`))

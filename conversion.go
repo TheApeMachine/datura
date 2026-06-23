@@ -1,29 +1,21 @@
 package datura
 
 import (
+	"fmt"
+
 	"capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
 )
 
 func As[T any](artifact *Artifact) T {
-	var value T
+	var v T
 
-	if artifact == nil || !artifact.HasEncryptedPayload() {
-		return value
+	if err := artifact.To(&v); err != nil {
+		return v
 	}
 
-	payload, err := artifact.decryptPayload()
-
-	if err != nil || len(payload) == 0 || !payloadLooksJSON(payload) {
-		return value
-	}
-
-	if err = sonic.Unmarshal(payload, &value); err != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-	}
-
-	return value
+	return v
 }
 
 /*
@@ -31,10 +23,6 @@ To is a convenience function to convert the artifact's payload into some
 other type by unmarshalling it into the provided type.
 */
 func (artifact *Artifact) To(v any) (err error) {
-	if artifact == nil || !artifact.HasEncryptedPayload() {
-		return errnie.Err(errnie.Validation, "artifact has no encrypted payload", nil)
-	}
-
 	payload, err := artifact.decryptPayload()
 
 	if err != nil {
@@ -43,14 +31,8 @@ func (artifact *Artifact) To(v any) (err error) {
 		return err
 	}
 
-	if len(payload) == 0 || !payloadLooksJSON(payload) {
-		return errnie.Err(errnie.Validation, "payload is not JSON", nil)
-	}
-
-	if err = sonic.Unmarshal(payload, v); err != nil {
+	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-
-		return err
 	}
 
 	return nil
@@ -74,60 +56,29 @@ func (artifact *Artifact) From(v any) (err error) {
 
 func (artifact *Artifact) Pack() []byte {
 	return errnie.Does(func() ([]byte, error) {
-		return artifact.MarshalPacked()
+		return artifact.Message().MarshalPacked()
 	}).Or(func(err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "payload marshalling failed", err))
 	}).Value()
 }
 
 func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
+	fmt.Println("artifact.Unpack()", "p", string(p))
+
 	msg := errnie.Does(func() (*capnp.Message, error) {
 		return capnp.UnmarshalPacked(p)
 	}).Or(func(err error) {
 		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
 	}).Value()
 
-	readOnly := errnie.Does(func() (Artifact, error) {
+	buf := errnie.Does(func() (Artifact, error) {
 		return ReadRootArtifact(msg)
 	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+		errnie.Error(errnie.Err(errnie.Validation, "reading root artifact failed", err))
 	}).Value()
 
-	writable, err := restoreWritable(readOnly)
-
-	if err != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-
-		return 0, err
-	}
-
-	*artifact = writable
-	invalidateAttributesCache(artifact)
+	*artifact = buf
 
 	return len(p), nil
-}
 
-/*
-restoreWritable copies a deserialized artifact into a writable message arena.
-Wire deserialization binds segments into a read-only arena; attribute mutation
-requires an allocator-backed arena.
-*/
-func restoreWritable(readOnly Artifact) (Artifact, error) {
-	_, seg, err := capnp.NewMessage(capnp.MultiSegment(nil))
-
-	if err != nil {
-		return Artifact{}, err
-	}
-
-	writable, err := NewRootArtifact(seg)
-
-	if err != nil {
-		return Artifact{}, err
-	}
-
-	if err = capnp.Struct(writable).CopyFrom(capnp.Struct(readOnly)); err != nil {
-		return Artifact{}, err
-	}
-
-	return writable, nil
 }

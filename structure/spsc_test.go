@@ -93,13 +93,12 @@ func TestSPSCRingReadWrite(t *testing.T) {
 		So(marshalErr, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.MarshalPacked()
-		So(marshalErr, ShouldBeNil)
+		wire := source.Pack()
 
-		written, writeErr := ring.Write(wire)
+		written, err := ring.Write(wire)
 
 		Convey("Write should enqueue the decoded value", func() {
-			So(writeErr, ShouldBeNil)
+			So(err, ShouldBeNil)
 			So(written, ShouldEqual, len(wire))
 			So(ring.Len(), ShouldEqual, 1)
 		})
@@ -214,12 +213,7 @@ func BenchmarkSPSCRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.MarshalPacked()
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	wire := source.Pack()
 	buffer := make([]byte, 4096)
 
 	b.ReportAllocs()

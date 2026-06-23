@@ -142,13 +142,11 @@ func TestListRingReadWrite(t *testing.T) {
 		So(err, ShouldBeNil)
 		source.WithPayload(payload)
 
-		wire, marshalErr := source.MarshalPacked()
-		So(marshalErr, ShouldBeNil)
-
-		written, writeErr := ring.Write(wire)
+		wire := source.Pack()
+		written, err := ring.Write(wire)
 
 		Convey("Write should unmarshal into the ring", func() {
-			So(writeErr, ShouldBeNil)
+			So(err, ShouldBeNil)
 			So(written, ShouldEqual, len(wire))
 		})
 
@@ -184,12 +182,7 @@ func BenchmarkListRingReadWrite(b *testing.B) {
 	}
 
 	source.WithPayload(payload)
-	wire, err := source.MarshalPacked()
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
+	wire := source.Pack()
 	buffer := make([]byte, 4096)
 
 	b.ReportAllocs()

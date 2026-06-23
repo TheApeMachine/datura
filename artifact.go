@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,7 +38,6 @@ func Acquire(
 	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetOrigin(origin)
 	artifact.SetType(artifactType)
-	initAttributesCache(&artifact)
 
 	return &artifact
 }
@@ -119,7 +117,8 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	}
 
 	if timestamp := artifact.Timestamp(); timestamp > 0 && !slices.Contains(schemas, "timestamp") {
-		builder.WriteString(strconv.FormatInt(timestamp, 10))
+		observed := time.Unix(0, timestamp).UTC()
+		builder.WriteString(observed.Format("2006/01/02"))
 		builder.WriteByte('/')
 	}
 
@@ -158,7 +157,7 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 
 func (artifact *Artifact) Release() {}
 
-func (artifact *Artifact) Inspect(ctxts ...string) *Artifact {
+func (artifact *Artifact) Inspect(headers ...string) *Artifact {
 	if os.Getenv("DATURA_INSPECT") != "1" {
 		return artifact
 	}
@@ -167,25 +166,19 @@ func (artifact *Artifact) Inspect(ctxts ...string) *Artifact {
 	role, _ := artifact.Role()
 	scope, _ := artifact.Scope()
 	destination, _ := artifact.Destination()
-	attributes, _ := AttributesBytes(artifact)
+	attributes, _ := artifact.Attributes()
 	payload := artifact.DecryptPayload()
 
-	if len(ctxts) > 0 {
-		fmt.Println()
-		fmt.Println("[" + strings.Join(ctxts, "/") + "]")
-	}
-
-	fmt.Println("prefix      : " + string(artifact.Prefix()))
+	fmt.Println()
+	fmt.Println("[" + strings.Join(headers, "/") + "]")
+	fmt.Println("prefix      : " + string(artifact.Prefix(headers...)))
 	fmt.Println("origin      : " + origin)
 	fmt.Println("role        : " + role)
 	fmt.Println("scope       : " + scope)
 	fmt.Println("destination : " + destination)
 	fmt.Println("attributes  : " + string(attributes))
 	fmt.Println("payload     : " + string(payload))
-
-	if len(ctxts) > 0 {
-		fmt.Println()
-	}
+	fmt.Println()
 
 	return artifact
 }
@@ -210,8 +203,6 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 }
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
-	artifact.ensureReadBudget()
-
 	if len(payload) == 0 {
 		origin, _ := artifact.Origin()
 		role, _ := artifact.Role()
@@ -286,37 +277,9 @@ func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
 		return artifact
 	}
 
-	errnie.Error(capnpArtifact(artifact).SetAttributes(encoded))
-	replaceAttributesCache(artifact, encoded)
+	errnie.Error(artifact.SetAttributes(encoded))
 
 	return artifact
-}
-
-/*
-AttributesBytes returns serialized attributes, flushing any resident AST first.
-*/
-func AttributesBytes(artifact *Artifact) ([]byte, error) {
-	artifact.flushAttributes()
-
-	return capnpArtifact(artifact).Attributes()
-}
-
-/*
-WireMessage returns the capnp message after flushing staged attributes.
-*/
-func WireMessage(artifact *Artifact) *capnp.Message {
-	artifact.flushAttributes()
-
-	return capnpArtifact(artifact).Message()
-}
-
-/*
-MarshalPacked serializes the artifact capnp frame with staged attributes flushed.
-*/
-func (artifact *Artifact) MarshalPacked() ([]byte, error) {
-	artifact.flushAttributes()
-
-	return capnpArtifact(artifact).Message().MarshalPacked()
 }
 
 func (artifact *Artifact) WithSignature(signature []byte) *Artifact {
@@ -338,7 +301,7 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
 */
 func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
-	encoded, err := AttributesBytes(artifact)
+	encoded, err := artifact.Attributes()
 
 	if err != nil || len(encoded) == 0 {
 		return artifact
@@ -377,7 +340,7 @@ func (artifact *Artifact) WithAttribute(key string, value any) *Artifact {
 Marshal serializes the artifact capnp wire frame.
 */
 func (artifact *Artifact) Marshal() []byte {
-	wire, err := WireMessage(artifact).Marshal()
+	wire, err := artifact.Message().Marshal()
 
 	if err != nil {
 		return nil

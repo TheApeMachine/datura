@@ -9,7 +9,7 @@ import (
 
 var copierPool = sync.Pool{
 	New: func() any {
-		rb := ringbuffer.New(256 * 1024)
+		rb := ringbuffer.New(32 * 1024)
 		rb.Reset()
 		return rb
 	},
@@ -19,6 +19,5 @@ func Copy(destination io.Writer, origin io.Reader) (int64, error) {
 	rb := copierPool.Get().(*ringbuffer.RingBuffer)
 	rb.Reset()
 	defer copierPool.Put(rb)
-
 	return rb.Copy(destination, origin)
 }
