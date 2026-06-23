@@ -1,8 +1,6 @@
 package datura
 
 import (
-	"fmt"
-
 	"capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
@@ -63,22 +61,23 @@ func (artifact *Artifact) Pack() []byte {
 }
 
 func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
-	fmt.Println("artifact.Unpack()", "p", string(p))
+	msg, err := capnp.UnmarshalPacked(p)
 
-	msg := errnie.Does(func() (*capnp.Message, error) {
-		return capnp.UnmarshalPacked(p)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-	}).Value()
+	if err != nil {
+		return 0, errnie.Error(errnie.Err(
+			errnie.Validation, "payload unmarshalling failed", err,
+		))
+	}
 
-	buf := errnie.Does(func() (Artifact, error) {
-		return ReadRootArtifact(msg)
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "reading root artifact failed", err))
-	}).Value()
+	buf, err := ReadRootArtifact(msg)
+
+	if err != nil {
+		return 0, errnie.Error(errnie.Err(
+			errnie.Validation, "reading root artifact failed", err,
+		))
+	}
 
 	*artifact = buf
 
 	return len(p), nil
-
 }

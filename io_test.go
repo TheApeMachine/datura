@@ -110,6 +110,19 @@ func TestWrite(t *testing.T) {
 	})
 }
 
+func TestUnpackRejectsInvalidWire(testingTB *testing.T) {
+	Convey("Given an artifact and invalid packed data", testingTB, func() {
+		artifact := Acquire("unpack-invalid", Artifact_Type_json)
+
+		Convey("When unpacking the invalid data", func() {
+			written, err := artifact.Unpack(nil)
+
+			So(written, ShouldEqual, 0)
+			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
 func TestArtifactWithFlipFlop(t *testing.T) {
 	Convey("Given a io.ReadWriteCloser with a FlipFlop instance", t, func() {
 		atOne := TestTypeOne{artifact: Acquire("test-one", APPJSON)}

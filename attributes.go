@@ -1,6 +1,9 @@
 package datura
 
 import (
+	"bytes"
+	"encoding/json"
+	"math"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -15,23 +18,55 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		ok   bool
 	)
 
+	if artifact == nil {
+		return zero
+	}
+
+	missing := func(err error) bool {
+		message := err.Error()
+
+		return strings.Contains(message, "value not exists") ||
+			strings.Contains(message, "Syntax error") ||
+			strings.Contains(message, "no encrypted payload") ||
+			strings.Contains(message, "encrypted payload unavailable") ||
+			strings.Contains(message, "encrypted key unavailable") ||
+			strings.Contains(message, "read traversal limit reached")
+	}
+
 	for _, region := range []func() ([]byte, error){
 		artifact.Attributes, artifact.decryptPayload,
 	} {
-		root = errnie.Does(func() (ast.Node, error) {
-			return sonic.Get(errnie.Does(func() ([]byte, error) {
-				return region()
-			}).Or(func(err error) {
-				if strings.Contains(err.Error(), "value not exists") {
-					return
-				}
+		content, err := region()
 
-				errnie.Error(errnie.Err(
-					errnie.Validation, err.Error(), err,
-				).With(artifact.Log()...))
-			}).Value(), path...)
+		if err != nil {
+			if missing(err) {
+				continue
+			}
+
+			errnie.Error(errnie.Err(
+				errnie.Validation, err.Error(), err,
+			).With(artifact.Log()...))
+			continue
+		}
+
+		content = bytes.TrimSpace(content)
+
+		if len(content) == 0 {
+			continue
+		}
+
+		if len(path) > 0 && content[0] != '{' && content[0] != '[' {
+			continue
+		}
+
+		if !json.Valid(content) {
+			continue
+		}
+
+		root = errnie.Does(func() (ast.Node, error) {
+			return sonic.Get(content, path...)
 		}).Or(func(err error) {
-			if strings.Contains(err.Error(), "value not exists") {
+			if missing(err) {
 				return
 			}
 
@@ -52,7 +87,7 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 	if zero, ok = errnie.Does(func() (any, error) {
 		return root.Interface()
 	}).Or(func(err error) {
-		if strings.Contains(err.Error(), "value not exists") {
+		if missing(err) {
 			return
 		}
 
@@ -79,7 +114,7 @@ func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
 		root = ast.NewObject(nil)
 	}
 
-	root.SetAnyByPath(value, path...)
+	root.SetAnyByPath(finite(value), path...)
 
 	errnie.Error(artifact.SetAttributes(errnie.Does(func() ([]byte, error) {
 		return root.MarshalJSON()
@@ -88,4 +123,33 @@ func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
 	}).Value()))
 
 	return artifact
+}
+
+func finite(value any) any {
+	switch typed := value.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0.0
+		}
+
+		return typed
+	case []float64:
+		values := make([]float64, len(typed))
+
+		for index, sample := range typed {
+			values[index] = finite(sample).(float64)
+		}
+
+		return values
+	case Map[float64]:
+		values := Map[float64]{}
+
+		for key, sample := range typed {
+			values[key] = finite(sample).(float64)
+		}
+
+		return values
+	}
+
+	return value
 }

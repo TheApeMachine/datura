@@ -33,7 +33,7 @@ func TestSeek(t *testing.T) {
 			defer artifact.Release()
 
 			artifact.WithPayload([]byte("test"))
-			wire, err := artifact.MarshalPacked()
+			wire, err := artifact.Message().MarshalPacked()
 			So(err, ShouldBeNil)
 			tree.Insert([]byte("test"), wire)
 
@@ -47,6 +47,24 @@ func TestSeek(t *testing.T) {
 			}
 
 			So(found, ShouldBeTrue)
+		})
+	})
+}
+
+func TestSeekSkipsInvalidArtifactValue(testingTB *testing.T) {
+	Convey("Given a tree with an invalid artifact value", testingTB, func() {
+		tree := NewTree("")
+
+		Convey("When seeking that prefix", func() {
+			tree.Insert([]byte("instrument/snapshot"), nil)
+
+			var found bool
+
+			for range tree.Seek([]byte("instrument/snapshot")) {
+				found = true
+			}
+
+			So(found, ShouldBeFalse)
 		})
 	})
 }
@@ -297,8 +315,12 @@ func BenchmarkTreeSeek(b *testing.B) {
 	defer artifact.Release()
 
 	artifact.WithPayload([]byte("bench-value"))
-	wire, err := artifact.MarshalPacked()
-	So(err, ShouldBeNil)
+	wire, err := artifact.Message().MarshalPacked()
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
 	tree.Insert([]byte("bench-key"), wire)
 
 	b.ReportAllocs()

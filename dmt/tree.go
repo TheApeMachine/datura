@@ -130,13 +130,12 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 		for _, value, ok := it.Next(); ok; _, value, ok = it.Next() {
 			inbound := datura.Acquire("dmt/tree", datura.APPJSON)
 
-			errnie.Does(func() (int, error) {
-				return inbound.Unpack(value)
-			}).Or(func(err error) {
+			if _, err := inbound.Unpack(value); err != nil {
 				errnie.Error(errnie.Err(
 					errnie.Validation, "failed to unpack artifact", err,
 				))
-			}).Value()
+				continue
+			}
 
 			if !yield(inbound) {
 				tree.endOp(started, track)

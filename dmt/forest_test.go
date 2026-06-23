@@ -89,8 +89,7 @@ func TestForestOperations(t *testing.T) {
 				defer artifact.Release()
 
 				artifact.WithPayload([]byte("value1"))
-				packed, packErr := artifact.MarshalPacked()
-				So(packErr, ShouldBeNil)
+				packed := artifact.Pack()
 				forest.Insert(artifact.Prefix(), packed)
 
 				var found bool
