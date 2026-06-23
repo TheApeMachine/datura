@@ -51,6 +51,35 @@ func TestSeek(t *testing.T) {
 	})
 }
 
+func TestSeekReturnsMutableArtifacts(testingTB *testing.T) {
+	Convey("Given an artifact stored in a tree", testingTB, func() {
+		tree := NewTree("")
+		artifact := datura.Acquire("test", datura.Artifact_Type_json)
+		So(artifact, ShouldNotBeNil)
+		defer artifact.Release()
+
+		artifact.WithRole("book")
+		artifact.WithScope("update")
+		artifact.WithPayload([]byte(`{"channel":"book"}`))
+		tree.Insert(artifact.Prefix(), artifact.Pack())
+
+		Convey("When seeking and mutating the returned artifact", func() {
+			var found bool
+
+			for inbound := range tree.Seek([]byte("book/update")) {
+				found = true
+				inbound.WithRole("measurement")
+
+				role, err := inbound.Role()
+				So(err, ShouldBeNil)
+				So(role, ShouldEqual, "measurement")
+			}
+
+			So(found, ShouldBeTrue)
+		})
+	})
+}
+
 func TestSeekSkipsInvalidArtifactValue(testingTB *testing.T) {
 	Convey("Given a tree with an invalid artifact value", testingTB, func() {
 		tree := NewTree("")
