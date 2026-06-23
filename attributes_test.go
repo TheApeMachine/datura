@@ -31,6 +31,16 @@ func TestPeek(t *testing.T) {
 		})
 	})
 
+	Convey("Given an integral JSON number", t, func() {
+		envelope := Acquire("peek-int", Artifact_Type_json).
+			WithPayload([]byte(`{"classifier.category":3,"fraction":3.5}`))
+
+		Convey("It should read the integer without truncating fractional values", func() {
+			So(Peek[int](envelope, "classifier.category"), ShouldEqual, 3)
+			So(Peek[int](envelope, "fraction"), ShouldEqual, 0)
+		})
+	})
+
 	Convey("Given a Kraken heartbeat frame without a type field", t, func() {
 		envelope := Acquire("kraken:public", Artifact_Type_json).
 			WithPayload([]byte(`{"channel":"heartbeat"}`))

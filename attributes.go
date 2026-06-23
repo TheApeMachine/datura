@@ -84,7 +84,7 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		return zero
 	}
 
-	if zero, ok = errnie.Does(func() (any, error) {
+	value := errnie.Does(func() (any, error) {
 		return root.Interface()
 	}).Or(func(err error) {
 		if missing(err) {
@@ -92,11 +92,48 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		}
 
 		errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-	}).Value().(T); !ok {
+	}).Value()
+
+	if zero, ok = value.(T); ok {
+		return zero
+	}
+
+	if zero, ok = numericPeek[T](value); ok {
 		return zero
 	}
 
 	return zero
+}
+
+func numericPeek[T any](value any) (T, bool) {
+	var zero T
+
+	source, ok := value.(float64)
+
+	if !ok || math.IsNaN(source) || math.IsInf(source, 0) {
+		return zero, false
+	}
+
+	if math.Trunc(source) != source {
+		return zero, false
+	}
+
+	switch any(zero).(type) {
+	case int:
+		converted := int(source)
+
+		if float64(converted) == source {
+			return any(converted).(T), true
+		}
+	case int64:
+		converted := int64(source)
+
+		if float64(converted) == source {
+			return any(converted).(T), true
+		}
+	}
+
+	return zero, false
 }
 
 func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
