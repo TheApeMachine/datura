@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"errors"
 	"io"
 
 	"github.com/theapemachine/errnie"
@@ -54,14 +55,24 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 	if !pipeline.processed {
 		for i := range len(pipeline.components) - 1 {
 			nn, err = Copy(pipeline.components[i+1], pipeline.components[i])
-			n += int(nn)
 
 			if err != nil {
 				if err == io.EOF {
-					continue
+					pipeline.processed = false
+					return 0, io.EOF
 				}
 
-				return n, errnie.Error(err)
+				if errors.Is(err, io.ErrNoProgress) && nn == 0 {
+					pipeline.processed = false
+					return 0, io.EOF
+				}
+
+				return 0, errnie.Error(err)
+			}
+
+			if nn == 0 {
+				pipeline.processed = false
+				return 0, io.EOF
 			}
 		}
 

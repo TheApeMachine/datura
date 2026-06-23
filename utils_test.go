@@ -12,9 +12,6 @@ func TestDecryptPayloadError(t *testing.T) {
 		artifact := Acquire("decrypt-test", Artifact_Type_json)
 
 		Convey("It should not decrypt without ciphertext", func() {
-			payload, err := artifact.DecryptPayloadError()
-			So(err, ShouldNotBeNil)
-			So(payload, ShouldBeNil)
 			So(artifact.DecryptPayload(), ShouldBeNil)
 		})
 	})

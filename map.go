@@ -1,6 +1,10 @@
 package datura
 
-import "github.com/bytedance/sonic"
+import (
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+)
 
 type Map[T any] map[string]T
 
@@ -21,12 +25,7 @@ payload data (e.g. a per-stage "sample"), and MergeOutput for results under the
 nested "output" object.
 */
 func (artifact *Artifact) Merge(key string, value any) {
-	body := As[Map[any]](artifact)
-
-	if body == nil {
-		body = Map[any]{}
-	}
-
+	body := artifact.payloadMap()
 	body[key] = value
 	artifact.WithPayload(body.Marshal())
 }
@@ -38,12 +37,7 @@ data channel: input data and computation results both live here. Descriptors
 (root, inputs, transforms) live on the attributes via Poke.
 */
 func (artifact *Artifact) MergeOutput(key string, value any) {
-	body := As[Map[any]](artifact)
-
-	if body == nil {
-		body = Map[any]{}
-	}
-
+	body := artifact.payloadMap()
 	output, ok := body["output"].(map[string]any)
 
 	if !ok {
@@ -57,4 +51,20 @@ func (artifact *Artifact) MergeOutput(key string, value any) {
 	output[key] = value
 	body["output"] = output
 	artifact.WithPayload(body.Marshal())
+}
+
+func (artifact *Artifact) payloadMap() Map[any] {
+	payload := artifact.DecryptPayload()
+
+	if !json.Valid(payload) {
+		return Map[any]{}
+	}
+
+	body := Map[any]{}
+
+	if sonic.Unmarshal(payload, &body) != nil {
+		return Map[any]{}
+	}
+
+	return body
 }

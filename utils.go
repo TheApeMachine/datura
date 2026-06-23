@@ -39,19 +39,17 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 }
 
 /*
-DecryptPayloadError decrypts the artifact encrypted payload and returns an error
-when ciphertext is absent or invalid. It does not log.
-*/
-func (artifact *Artifact) DecryptPayloadError() ([]byte, error) {
-	return artifact.decryptPayload()
-}
-
-/*
 DecryptPayload decrypts the artifact encrypted payload.
 When the artifact has no ciphertext, it returns nil without logging.
 */
 func (artifact *Artifact) DecryptPayload() []byte {
-	payload, _ := artifact.decryptPayload()
-
-	return payload
+	return errnie.Does(func() ([]byte, error) {
+		return artifact.decryptPayload()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"artifact is nil or has no encrypted payload",
+			err,
+		))
+	}).Value()
 }

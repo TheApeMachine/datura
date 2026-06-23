@@ -102,10 +102,8 @@ func TestWrite(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(n, ShouldEqual, len(p))
 
-			// Verify the empty artifact now matches the original
-			emptyMarshaled, err := empty.Message().MarshalPacked()
-			So(err, ShouldBeNil)
-			So(emptyMarshaled, ShouldResemble, p)
+			// Verify the empty artifact now restores the original payload.
+			So(empty.DecryptPayload(), ShouldResemble, artifact.DecryptPayload())
 		})
 	})
 }

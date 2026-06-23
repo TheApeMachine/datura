@@ -3,13 +3,19 @@ using Go = import "/go.capnp";
 $Go.package("datura");
 $Go.import("github.com/theapemachine/datura");
 
+struct Node {
+    id      @0 :Data;
+    address @1 :Text;
+    latency @2 :UInt32;
+}
+
 struct Artifact {
-    uuid          @0 :Data;
-    checksum      @1 :Data;
-    timestamp     @2 :Int64;
-    error         @3 :Error;
-    pseudonymHash @4 :Data;  # zk-SNARK identity hash
-    merkleRoot    @5 :Data;  # Root of the Merkle Tree
+    uuid       @0 :Data;
+    checksum   @1 :Data;
+    timestamp  @2 :Int64;
+    error      @3 :Error;
+    pseudonym  @4 :Data;  # zk-SNARK identity hash
+    merkleRoot @5 :Data;  # Root of the Merkle Tree
 
     struct Error {
         type      @0 :Type;
@@ -37,15 +43,21 @@ struct Artifact {
     scope       @10 :Text;
     attributes  @11 :Data;
 
-    encryptedPayload   @12 :Data;
-    encryptedKey       @13 :Data;
-    ephemeralPublicKey @14 :Data;
+    payload       @12 :List(Data);
+    encryptedKey  @13 :Data;
+    publicKey     @14 :Data;
 
     struct Approval {
-        zkProof                @0 :Data;  # Users's zero-knowledge proof
-        operatorBlindSignature @1 :Data;  # Operator's blind signature approval
+        zkProof   @0 :Data;  # Users's zero-knowledge proof
+        signature @1 :Data;  # Operator's blind signature approval
     }
 
     approvals @15 :List(Approval);
     signature @16 :Data;
+}
+
+interface Compute {
+    ping  @0 (challenger :Node) -> (responder :Node);
+    write @1 (artifact :Artifact) -> stream;
+    done  @2 ();
 }

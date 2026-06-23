@@ -69,10 +69,24 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 				builder.WriteString(destination)
 				builder.WriteByte('/')
 			}
-		case "timestamp":
+		case "date":
 			if timestamp := artifact.Timestamp(); timestamp > 0 {
 				observed := time.Unix(0, timestamp).UTC()
 				builder.WriteString(observed.Format("2006/01/02"))
+				builder.WriteByte('/')
+			}
+		case "timestamp":
+			if timestamp := artifact.Timestamp(); timestamp > 0 {
+				observed := time.Unix(0, timestamp).UTC()
+				builder.WriteString(
+					strings.ReplaceAll(strings.ReplaceAll(
+						observed.Format("2006/01/02 15:04:05"),
+						" ",
+						"/",
+					),
+						":",
+						"/",
+					))
 				builder.WriteByte('/')
 			}
 		case "uuid":
@@ -221,10 +235,6 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
-	if artifact.HasEncryptedPayload() {
-		artifact.compactPayloadTarget()
-	}
-
 	cryptoSuite := NewCryptoSuite()
 	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
 
@@ -270,56 +280,6 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	return artifact
 }
 
-func (artifact *Artifact) compactPayloadTarget() {
-	_, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	next, err := NewRootArtifact(seg)
-
-	if errnie.Error(err) != nil {
-		return
-	}
-
-	next.SetTimestamp(artifact.Timestamp())
-	next.SetType(artifact.Type())
-
-	copyData := func(read func() ([]byte, error), write func([]byte) error) {
-		value, readErr := read()
-
-		if readErr != nil || len(value) == 0 {
-			return
-		}
-
-		errnie.Error(write(append([]byte(nil), value...)))
-	}
-
-	copyText := func(read func() (string, error), write func(string) error) {
-		value, readErr := read()
-
-		if readErr != nil || value == "" {
-			return
-		}
-
-		errnie.Error(write(value))
-	}
-
-	copyData(artifact.Uuid, next.SetUuid)
-	copyData(artifact.Checksum, next.SetChecksum)
-	copyData(artifact.PseudonymHash, next.SetPseudonymHash)
-	copyData(artifact.MerkleRoot, next.SetMerkleRoot)
-	copyData(artifact.Attributes, next.SetAttributes)
-	copyData(artifact.Signature, next.SetSignature)
-	copyText(artifact.Origin, next.SetOrigin)
-	copyText(artifact.Destination, next.SetDestination)
-	copyText(artifact.Role, next.SetRole)
-	copyText(artifact.Scope, next.SetScope)
-
-	*artifact = next
-}
-
 func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
 	encoded := errnie.Does(func() ([]byte, error) {
 		return sonic.Marshal(attributes)
@@ -333,6 +293,11 @@ func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
 
 	errnie.Error(artifact.SetAttributes(encoded))
 
+	return artifact
+}
+
+func (artifact *Artifact) WithOrigin(origin string) *Artifact {
+	errnie.Error(artifact.SetOrigin(origin))
 	return artifact
 }
 

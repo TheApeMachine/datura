@@ -33,6 +33,62 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 			strings.Contains(message, "read traversal limit reached")
 	}
 
+	if len(path) > 0 && path[0] == "role" {
+		role := errnie.Does(func() (string, error) {
+			return artifact.Role()
+		}).Or(func(err error) {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}).Value()
+
+		if role != "" {
+			if zero, ok = any(role).(T); ok {
+				return zero
+			}
+		}
+	}
+
+	if len(path) > 0 && path[0] == "scope" {
+		scope := errnie.Does(func() (string, error) {
+			return artifact.Scope()
+		}).Or(func(err error) {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}).Value()
+
+		if scope != "" {
+			if zero, ok = any(scope).(T); ok {
+				return zero
+			}
+		}
+	}
+
+	if len(path) > 0 && path[0] == "origin" {
+		origin := errnie.Does(func() (string, error) {
+			return artifact.Origin()
+		}).Or(func(err error) {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}).Value()
+
+		if origin != "" {
+			if zero, ok = any(origin).(T); ok {
+				return zero
+			}
+		}
+	}
+
+	if len(path) > 0 && path[0] == "destination" {
+		destination := errnie.Does(func() (string, error) {
+			return artifact.Destination()
+		}).Or(func(err error) {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}).Value()
+
+		if destination != "" {
+			if zero, ok = any(destination).(T); ok {
+				return zero
+			}
+		}
+	}
+
 	for _, region := range []func() ([]byte, error){
 		artifact.Attributes, artifact.decryptPayload,
 	} {

@@ -7,7 +7,10 @@ common prefixes to save space and enables fast lookups, insertions, and prefix-b
 package dmt
 
 import (
+	"bytes"
 	"iter"
+	"math"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -209,6 +212,142 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 			return tree, true
 		}
 	}
+}
+
+/*
+InsertArtifact adds or updates a datura.Artifact in the tree.
+Due to the immutable nature of the tree, this operation creates a new version
+of the tree rather than modifying the existing one.
+Returns the updated tree and a boolean indicating if the tree was modified.
+*/
+func (tree *Tree) InsertArtifact(
+	prefix []byte,
+	artifact *datura.Artifact,
+) (*Tree, bool) {
+	if tree == nil || artifact == nil || len(prefix) == 0 {
+		return tree, false
+	}
+
+	wire := artifact.Pack()
+
+	if len(wire) == 0 {
+		return tree, false
+	}
+
+	return tree.Insert(prefix, wire)
+}
+
+/*
+WithCognition scores the artifact against tree memory, learns the observation,
+and stamps cognitive fields onto the payload.
+*/
+func (tree *Tree) WithCognition(artifact *datura.Artifact) *datura.Artifact {
+	if tree == nil || artifact == nil {
+		return artifact
+	}
+
+	sequence := []byte(strings.Join([]string{
+		datura.Peek[string](artifact, "scope"),
+		datura.Peek[string](artifact, "origin"),
+		datura.Peek[string](artifact, "role"),
+	}, "_"))
+
+	var surprise float64
+
+	for _, item := range tree.GetSurprisal(sequence) {
+		surprise += item.Surprisal
+	}
+
+	parentSequence := sequence
+
+	if underscore := bytes.LastIndex(sequence, []byte{'_'}); underscore >= 0 {
+		parentSequence = sequence[:underscore]
+	}
+
+	parentWeight := tree.GetContextWeight(parentSequence)
+	surpriseThreshold := -math.Log2(1.0 / float64(parentWeight.Count+1))
+
+	ambiguity := tree.MeasureBranchAmbiguity(sequence)
+
+	var classifyScratch ClassificationScratch
+
+	classification := tree.Classify(sequence, &classifyScratch)
+
+	contrastEvidence := 0.0
+
+	if len(classification.Scores) >= 2 {
+		evidence := tree.ComputeBasinContrastiveEvidence(
+			classification.Scores[0].ClassName,
+			classification.Scores[1].ClassName,
+			sequence,
+		)
+		contrastEvidence = evidence.Divergence
+	}
+
+	var lookaheadBuffer [32]LookaheadPrediction
+
+	lookahead := tree.PredictNextSensoryTokens(sequence, lookaheadBuffer[:0])
+	lookaheadScore := 0.0
+
+	for _, prediction := range lookahead {
+		lookaheadScore += prediction.Probability
+	}
+
+	tokenStart := 0
+
+	for index := 0; index <= len(sequence); index++ {
+		if index < len(sequence) && sequence[index] != '_' {
+			continue
+		}
+
+		if index == tokenStart {
+			tokenStart = index + 1
+
+			continue
+		}
+
+		currentPath := sequence[:index]
+		parentPath := parentContextPath(currentPath)
+		current := tree.GetContextWeight(currentPath)
+		parent := tree.GetContextWeight(parentPath)
+		nextCount := current.Count + 1
+		probability := 1.0
+
+		if len(parentPath) > 0 {
+			denominator := float64(parent.Count + 1)
+
+			if denominator <= 0 {
+				denominator = float64(nextCount)
+			}
+
+			probability = float64(nextCount) / denominator
+		}
+
+		tree.InsertContextWeight(currentPath, PackedWeight{
+			Count:       nextCount,
+			Probability: probability,
+		})
+
+		tokenStart = index + 1
+	}
+
+	tree.TrainSensorySequence(sequence)
+
+	artifact.Poke(surprise, "cognition", "surprise", "value")
+	artifact.Poke(surpriseThreshold, "cognition", "surprise", "threshold")
+	artifact.Poke(ambiguity.EntropyBits, "cognition", "ambiguity", "bits")
+	artifact.Poke(ambiguity.Threshold, "cognition", "ambiguity", "threshold")
+	artifact.Poke(ambiguity.Ambiguous, "cognition", "ambiguity", "ambiguous")
+	artifact.Poke(classification.Highest, "cognition", "classification", "highest")
+	artifact.Poke(contrastEvidence, "cognition", "classification", "divergence")
+	artifact.Poke(string(classification.Winner), "cognition", "classification", "winner")
+	artifact.Poke(lookaheadScore, "cognition", "lookahead", "score")
+	artifact.Poke(len(lookahead), "cognition", "lookahead", "paths")
+	artifact.Poke(string(sequence), "cognition", "sequence", "value")
+	artifact.Poke(string(parentSequence), "cognition", "sequence", "regime", "prefix")
+	artifact.Poke(parentWeight.Count, "cognition", "sequence", "regime", "cohort")
+
+	return artifact
 }
 
 /*

@@ -30,8 +30,8 @@ func TestCopy(t *testing.T) {
 
 		written, err := Copy(destination, source)
 
-		Convey("Then copy should succeed with zero bytes", func() {
-			So(err, ShouldBeNil)
+		Convey("Then copy should report no output", func() {
+			So(err, ShouldEqual, io.EOF)
 			So(written, ShouldEqual, 0)
 		})
 	})

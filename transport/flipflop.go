@@ -74,10 +74,18 @@ Example:
 */
 func NewFlipFlop(from io.ReadWriter, to io.ReadWriter) (err error) {
 	if _, err = Copy(to, from); err != nil {
+		if err == io.EOF {
+			return err
+		}
+
 		return errnie.Error(err)
 	}
 
 	if _, err = Copy(from, to); err != nil {
+		if err == io.EOF {
+			return err
+		}
+
 		return errnie.Error(err)
 	}
 

@@ -383,3 +383,68 @@ func BenchmarkTreeGet(b *testing.B) {
 		index++
 	}
 }
+
+func TestInsertArtifact(testingTB *testing.T) {
+	Convey("Given a tree and artifact", testingTB, func() {
+		tree := NewTree("")
+		artifact := datura.Acquire("test", datura.APPJSON)
+		So(artifact, ShouldNotBeNil)
+
+		defer artifact.Release()
+
+		artifact.WithRole("ticker")
+		artifact.WithScope("update")
+		artifact.WithOrigin("kraken:public")
+		artifact.WithPayload([]byte(`{"channel":"ticker"}`))
+
+		Convey("When inserting with an explicit prefix", func() {
+			_, ok := tree.InsertArtifact(
+				[]byte("ticker/update/kraken:public"),
+				tree.WithCognition(artifact),
+			)
+
+			So(ok, ShouldBeTrue)
+
+			var found bool
+
+			for inbound := range tree.Seek([]byte("ticker/update/kraken:public")) {
+				found = true
+				So(datura.Peek[string](inbound, "cognition", "sequence", "value"), ShouldEqual, "update_kraken:public_ticker")
+			}
+
+			So(found, ShouldBeTrue)
+		})
+	})
+}
+
+func TestWithCognition(testingTB *testing.T) {
+	Convey("Given a trained context path", testingTB, func() {
+		tree := NewTree("")
+
+		_, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
+			Count:       10,
+			Probability: 1.0,
+		})
+		_, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
+			Count:       4,
+			Probability: 0.5,
+		})
+
+		artifact := datura.Acquire("test", datura.APPJSON)
+		So(artifact, ShouldNotBeNil)
+
+		defer artifact.Release()
+
+		artifact.WithRole("ticker")
+		artifact.WithScope("update")
+		artifact.WithOrigin("kraken:public")
+		artifact.WithPayload([]byte(`{}`))
+
+		Convey("When cognizing a known suffix", func() {
+			stamped := tree.WithCognition(artifact)
+
+			So(datura.Peek[float64](stamped, "cognition", "surprise", "value"), ShouldBeGreaterThan, 0)
+			So(datura.Peek[string](stamped, "cognition", "sequence", "value"), ShouldEqual, "update_kraken:public_ticker")
+		})
+	})
+}
