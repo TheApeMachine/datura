@@ -2,7 +2,6 @@ package transport
 
 import (
 	"io"
-	"sync"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -11,8 +10,6 @@ import (
 func newTestPump(pipeline io.ReadWriteCloser) *Pump {
 	return &Pump{
 		pipeline: pipeline,
-		done:     make(chan struct{}),
-		wg:       &sync.WaitGroup{},
 	}
 }
 
@@ -52,7 +49,6 @@ func TestPumpClose(t *testing.T) {
 	Convey("Given a pump over a pipeline", t, func() {
 		pipeline := newTestBuffer(nil)
 		pump := newTestPump(pipeline)
-		pump.wg.Add(1)
 
 		Convey("When closing", func() {
 			So(pump.Close(), ShouldBeNil)

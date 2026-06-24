@@ -1,11 +1,8 @@
 package transport
 
 import (
-	"bytes"
+	"context"
 	"io"
-	"sync"
-
-	"github.com/theapemachine/errnie"
 )
 
 /*
@@ -14,9 +11,9 @@ It reads from the pipeline's output and feeds it back into its input, creating
 an infinite processing cycle that can be stopped via the done channel.
 */
 type Pump struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
 	pipeline io.ReadWriteCloser
-	done     chan struct{}
-	wg       *sync.WaitGroup
 }
 
 /*
@@ -30,29 +27,29 @@ Parameters:
 Returns:
   - *Pump: A new Pump instance ready to create a feedback loop
 */
-func NewPump(pipeline io.ReadWriteCloser) {
-	done := make(chan struct{})
-	passthrough := bytes.NewBuffer([]byte{})
-	wg := &sync.WaitGroup{}
+func NewPump(ctx context.Context, pipeline io.ReadWriteCloser) *Pump {
+	ctx, cancel := context.WithCancel(ctx)
 
-	var err error
+	pump := &Pump{
+		ctx:      ctx,
+		cancel:   cancel,
+		pipeline: pipeline,
+	}
 
-	for {
-		select {
-		case <-done:
-			wg.Done()
-			return
-		default:
-			// FlipFlop creates the feedback loop:
-			// 1. Reads from artifact and writes to pipeline
-			// 2. Reads the pipeline output and writes back to artifact
-			// This creates a continuous cycle of data flow
-			if err = NewFlipFlop(passthrough, pipeline); err != nil {
-				errnie.Error(err)
+	go func() {
+		defer cancel()
+
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				NewFlipFlop(pump.pipeline, pump.pipeline)
 			}
 		}
-	}
+	}()
+
+	return pump
 }
 
 /*
@@ -93,7 +90,13 @@ Returns:
   - error: Any error that occurred during closure
 */
 func (pump *Pump) Close() error {
-	close(pump.done)
-	pump.wg.Done()
-	return pump.pipeline.Close()
+	if pump.cancel != nil {
+		pump.cancel()
+	}
+
+	if pump.pipeline != nil {
+		return pump.pipeline.Close()
+	}
+
+	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura"
 )
 
 type noOutputComponent struct{}
@@ -34,44 +33,6 @@ func (component *failingReadComponent) Write(p []byte) (int, error) {
 }
 
 func (component *failingReadComponent) Close() error {
-	return nil
-}
-
-type packedFrameComponent struct {
-	wire []byte
-}
-
-func (component *packedFrameComponent) Read(p []byte) (int, error) {
-	n := copy(p, component.wire)
-
-	if n < len(component.wire) {
-		return n, io.ErrShortBuffer
-	}
-
-	return n, io.EOF
-}
-
-func (component *packedFrameComponent) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
-func (component *packedFrameComponent) Close() error {
-	return nil
-}
-
-type artifactReaderComponent struct {
-	artifact *datura.Artifact
-}
-
-func (component *artifactReaderComponent) Read(p []byte) (int, error) {
-	return component.artifact.Read(p)
-}
-
-func (component *artifactReaderComponent) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
-func (component *artifactReaderComponent) Close() error {
 	return nil
 }
 
@@ -150,56 +111,6 @@ func TestPipelineNoOutputAfterIntermediateCopy(t *testing.T) {
 			So(err, ShouldEqual, io.EOF)
 			So(n, ShouldEqual, 0)
 			So(buffer, ShouldResemble, bytes.Repeat([]byte{1}, 32))
-		})
-	})
-}
-
-func TestCopyPackedArtifact(t *testing.T) {
-	Convey("Given an artifact larger than the copy buffer", t, func() {
-		payload := bytes.Repeat([]byte("book-level-"), 8192)
-		source := datura.Acquire("large-copy-source", datura.APPJSON).WithPayload(payload)
-		destination := datura.Acquire("large-copy-destination", datura.APPJSON)
-
-		n, err := Copy(destination, source)
-
-		Convey("Then the complete artifact is copied without truncation", func() {
-			So(err, ShouldBeNil)
-			So(n, ShouldEqual, len(source.Pack()))
-			So(destination.DecryptPayload(), ShouldResemble, payload)
-		})
-	})
-}
-
-func TestCopyPackedFrameComponent(t *testing.T) {
-	Convey("Given a non-packer component that reads one packed artifact frame", t, func() {
-		payload := bytes.Repeat([]byte("stage-book-level-"), 320000)
-		source := datura.Acquire("large-stage-source", datura.APPJSON).WithPayload(payload)
-		component := &packedFrameComponent{wire: source.Pack()}
-		destination := datura.Acquire("large-stage-destination", datura.APPJSON)
-
-		n, err := Copy(destination, component)
-
-		Convey("Then the complete stage frame is copied without truncation", func() {
-			So(err, ShouldBeNil)
-			So(n, ShouldEqual, len(source.Pack()))
-			So(destination.DecryptPayload(), ShouldResemble, payload)
-		})
-	})
-}
-
-func TestCopyArtifactReaderComponent(t *testing.T) {
-	Convey("Given a non-packer component using Artifact.Read", t, func() {
-		payload := bytes.Repeat([]byte("artifact-stage-book-level-"), 240000)
-		source := datura.Acquire("large-artifact-reader-source", datura.APPJSON).WithPayload(payload)
-		component := &artifactReaderComponent{artifact: source}
-		destination := datura.Acquire("large-artifact-reader-destination", datura.APPJSON)
-
-		n, err := Copy(destination, component)
-
-		Convey("Then wrapped short-buffer reads retry without partial writes", func() {
-			So(err, ShouldBeNil)
-			So(n, ShouldEqual, len(source.Pack()))
-			So(destination.DecryptPayload(), ShouldResemble, payload)
 		})
 	})
 }

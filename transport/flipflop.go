@@ -70,22 +70,17 @@ Example:
 		// Output: hello
 	}
 
-````
+```
 */
-func NewFlipFlop(from io.ReadWriter, to io.ReadWriter) (err error) {
-	if _, err = Copy(to, from); err != nil {
-		if err == io.EOF {
-			return err
-		}
+func NewFlipFlop(from io.ReadWriteCloser, to io.ReadWriteCloser) (err error) {
+	from = NewStream(from)
+	to = NewStream(to)
 
+	if _, err = Copy(to, from); err != nil && err != io.EOF {
 		return errnie.Error(err)
 	}
 
-	if _, err = Copy(from, to); err != nil {
-		if err == io.EOF {
-			return err
-		}
-
+	if _, err = Copy(from, to); err != nil && err != io.EOF {
 		return errnie.Error(err)
 	}
 

@@ -70,11 +70,9 @@ func TestRead(t *testing.T) {
 		artifact := testArtifact()
 
 		Convey("When the artifact is read", func() {
-			// First get the expected marshaled data
 			expected, err := artifact.Message().MarshalPacked()
 			So(err, ShouldBeNil)
 
-			// Create a buffer of the right size
 			p := make([]byte, len(expected))
 			n, err := artifact.Read(p)
 
