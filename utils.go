@@ -1,6 +1,9 @@
 package datura
 
 import (
+	"strings"
+	"time"
+
 	"github.com/theapemachine/errnie"
 )
 
@@ -43,13 +46,23 @@ DecryptPayload decrypts the artifact encrypted payload.
 When the artifact has no ciphertext, it returns nil without logging.
 */
 func (artifact *Artifact) DecryptPayload() []byte {
-	return errnie.Does(func() ([]byte, error) {
-		return artifact.decryptPayload()
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(
-			errnie.Validation,
-			"artifact is nil or has no encrypted payload",
-			err,
-		))
-	}).Value()
+	payload, err := artifact.decryptPayload()
+
+	if err != nil {
+		return nil
+	}
+
+	return payload
+}
+
+func FormatTimestamp(timestamp int64) string {
+	observed := time.Unix(0, timestamp).UTC()
+	return strings.ReplaceAll(strings.ReplaceAll(
+		observed.Format("2006/01/02 15:04:05"),
+		" ",
+		"/",
+	),
+		":",
+		"/",
+	)
 }

@@ -100,16 +100,6 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 		}
 	}
 
-	if len(schemas) > 0 {
-		out := builder.String()
-
-		if len(out) > 0 && out[len(out)-1] == '/' {
-			out = out[:len(out)-1]
-		}
-
-		return []byte(out)
-	}
-
 	if role, err := artifact.Role(); err == nil && role != "" && !slices.Contains(schemas, "role") {
 		builder.WriteString(role)
 		builder.WriteByte('/')
