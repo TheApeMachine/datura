@@ -71,7 +71,7 @@ func GenerateProof(artifact *Artifact) ([]byte, error) {
 		return nil, errnie.Error(errors.New("nil artifact"))
 	}
 
-	pseudonymHash, err := artifact.PseudonymHash()
+	pseudonymHash, err := artifact.Pseudonym()
 
 	if err != nil {
 		return nil, errnie.Error(err)

@@ -112,7 +112,7 @@ func TestSPSCRingReadWrite(t *testing.T) {
 			So(ring.Len(), ShouldEqual, 0)
 
 			decoded := datura.Acquire("spsc", datura.Artifact_Type_json)
-			_, writeErr := decoded.Write(buffer[:readCount])
+			_, writeErr := decoded.Unpack(buffer[:readCount])
 			So(writeErr, ShouldBeNil)
 
 			out := decoded.DecryptPayload()

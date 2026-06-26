@@ -229,16 +229,19 @@ func (idx *ForestServer) Lookup(
 			continue
 		}
 
-		element := out.Value().At(index)
+		element := datura.Acquire("dmt/server", datura.APPJSON)
 
-		if _, err := element.Write(value); err != nil {
+		if _, err := element.Unpack(value); err != nil {
+			return errnie.Error(err, "rpc_output_population_failed")
+		}
+
+		if err := out.Value().Set(index, *element); err != nil {
 			return errnie.Error(err, "rpc_output_population_failed")
 		}
 	}
 
 	return nil
 }
-
 
 /*
 Forest returns the underlying dmt.Forest for direct access by

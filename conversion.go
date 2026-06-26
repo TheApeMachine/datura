@@ -1,6 +1,8 @@
 package datura
 
 import (
+	"io"
+
 	"capnproto.org/go/capnp/v3"
 	"github.com/bytedance/sonic"
 	"github.com/theapemachine/errnie"
@@ -60,6 +62,21 @@ func (artifact *Artifact) Pack() []byte {
 	}).Value()
 }
 
+/*
+PackInto copies the packed Cap'n Proto frame into p.
+It is a complete-frame helper, not an io.Reader implementation.
+*/
+func (artifact *Artifact) PackInto(p []byte) (n int, err error) {
+	wire := artifact.Pack()
+	n = copy(p, wire)
+
+	if n < len(wire) {
+		return n, io.ErrShortBuffer
+	}
+
+	return n, io.EOF
+}
+
 func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 	msg, err := capnp.UnmarshalPacked(p)
 
@@ -69,7 +86,7 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 		))
 	}
 
-	buf, err := ReadRootArtifact(msg)
+	decoded, err := ReadRootArtifact(msg)
 
 	if err != nil {
 		return 0, errnie.Error(errnie.Err(
@@ -77,7 +94,66 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 		))
 	}
 
-	*artifact = buf
+	writable, err := cloneDecodedArtifact(decoded)
+
+	if err != nil {
+		return 0, errnie.Error(errnie.Err(
+			errnie.Validation, "copying root artifact failed", err,
+		))
+	}
+
+	*artifact = *writable
 
 	return len(p), nil
+}
+
+/*
+Clone copies an artifact into a new Cap'n Proto message.
+*/
+func (artifact *Artifact) Clone() (*Artifact, error) {
+	if artifact == nil || !artifact.IsValid() {
+		return nil, errnie.Error(errnie.Err(
+			errnie.Validation, "artifact clone failed", nil,
+		))
+	}
+
+	cloned, err := cloneDecodedArtifact(*artifact)
+
+	if err == nil {
+		return cloned, nil
+	}
+
+	wire, err := artifact.Message().MarshalPacked()
+
+	if err != nil {
+		return nil, errnie.Error(err)
+	}
+
+	cloned = &Artifact{}
+
+	if _, err = cloned.Unpack(wire); err != nil {
+		return nil, err
+	}
+
+	return cloned, nil
+}
+
+func cloneDecodedArtifact(source Artifact) (*Artifact, error) {
+	msg, _, err := capnp.NewMessage(capnp.SingleSegment(nil))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if err = msg.SetRoot(source.ToPtr()); err != nil {
+		return nil, err
+	}
+
+	cloned, err := ReadRootArtifact(msg)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &cloned, nil
 }

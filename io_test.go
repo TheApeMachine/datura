@@ -1,61 +1,14 @@
 package datura
 
 import (
+	"context"
 	"io"
+	"net"
+	"sync"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura/transport"
 )
-
-type TestTypeOne struct {
-	artifact *Artifact
-}
-
-func (t TestTypeOne) Read(p []byte) (int, error) {
-	state := Acquire("test-state1", APPJSON)
-	state.Write(p)
-	state.Inspect("test-state1", "Read()", "p")
-
-	state.WithPayload([]byte("test"))
-
-	ttTwo := TestTypeTwo{artifact: t.artifact}
-
-	transport.NewFlipFlop(state, ttTwo)
-
-	return state.Read(p)
-}
-
-func (t TestTypeOne) Write(p []byte) (int, error) {
-	t.artifact.WithPayload(p)
-	return len(p), nil
-}
-
-func (t TestTypeOne) Close() error {
-	return t.artifact.Close()
-}
-
-type TestTypeTwo struct {
-	artifact *Artifact
-}
-
-func (t TestTypeTwo) Read(p []byte) (int, error) {
-	state := Acquire("test-state2", APPJSON)
-	state.Write(p)
-
-	state.WithPayload([]byte("toast"))
-
-	return state.Read(p)
-}
-
-func (t TestTypeTwo) Write(p []byte) (int, error) {
-	t.artifact.WithPayload(p)
-	return len(p), nil
-}
-
-func (t TestTypeTwo) Close() error {
-	return t.artifact.Close()
-}
 
 func testArtifact() *Artifact {
 	return Acquire(
@@ -65,42 +18,47 @@ func testArtifact() *Artifact {
 	)
 }
 
-func TestRead(t *testing.T) {
+func TestPackInto(t *testing.T) {
 	Convey("Given an artifact", t, func() {
 		artifact := testArtifact()
+		expected := artifact.Pack()
 
-		Convey("When the artifact is read", func() {
-			expected, err := artifact.Message().MarshalPacked()
-			So(err, ShouldBeNil)
-
-			p := make([]byte, len(expected))
-			n, err := artifact.Read(p)
+		Convey("When the artifact is packed into a buffer", func() {
+			buffer := make([]byte, len(expected))
+			n, err := artifact.PackInto(buffer)
 
 			So(err, ShouldEqual, io.EOF)
 			So(n, ShouldEqual, len(expected))
-			So(p, ShouldResemble, expected)
+			So(buffer, ShouldResemble, expected)
 		})
 	})
 }
 
-func TestWrite(t *testing.T) {
+func TestPackIntoShortBuffer(t *testing.T) {
+	Convey("Given an artifact and a short destination buffer", t, func() {
+		artifact := testArtifact()
+		buffer := make([]byte, 3)
+
+		Convey("When the artifact is packed into the buffer", func() {
+			n, err := artifact.PackInto(buffer)
+
+			So(err, ShouldEqual, io.ErrShortBuffer)
+			So(n, ShouldEqual, len(buffer))
+		})
+	})
+}
+
+func TestUnpack(t *testing.T) {
 	Convey("Given an empty artifact", t, func() {
 		empty := &Artifact{}
 
-		Convey("When writing a marshaled artifact", func() {
+		Convey("When unpacking a packed artifact frame", func() {
 			artifact := testArtifact()
-
-			// Get the marshaled data to write
-			p, err := artifact.Message().MarshalPacked()
-			So(err, ShouldBeNil)
-
-			// Write the marshaled data to the empty artifact
-			n, err := empty.Write(p)
+			wire := artifact.Pack()
+			n, err := empty.Unpack(wire)
 
 			So(err, ShouldBeNil)
-			So(n, ShouldEqual, len(p))
-
-			// Verify the empty artifact now restores the original payload.
+			So(n, ShouldEqual, len(wire))
 			So(empty.DecryptPayload(), ShouldResemble, artifact.DecryptPayload())
 		})
 	})
@@ -119,14 +77,72 @@ func TestUnpackRejectsInvalidWire(testingTB *testing.T) {
 	})
 }
 
-func TestArtifactWithFlipFlop(t *testing.T) {
-	Convey("Given a io.ReadWriteCloser with a FlipFlop instance", t, func() {
-		atOne := TestTypeOne{artifact: Acquire("test-one", APPJSON)}
-		input := Acquire("test-input", APPJSON).WithPayload([]byte("test"))
+func TestArtifactStreamRPC(t *testing.T) {
+	Convey("Given a Cap'n Proto artifact stream over a net.Pipe", t, func() {
+		ctx := context.Background()
+		serverSide, clientSide := net.Pipe()
+		var mu sync.Mutex
+		received := make([]string, 0, 2)
+		doneCalled := false
 
-		Convey("And a FlipFlop instance", func() {
-			transport.NewFlipFlop(input, atOne)
-			So(string(input.DecryptPayload()), ShouldEqual, "toast")
+		server := NewArtifactStream(
+			func(_ context.Context, artifact *Artifact) error {
+				mu.Lock()
+				defer mu.Unlock()
+
+				received = append(received, string(artifact.DecryptPayload()))
+
+				return nil
+			},
+			func(context.Context) error {
+				mu.Lock()
+				defer mu.Unlock()
+
+				doneCalled = true
+
+				return nil
+			},
+		)
+
+		serverConn := NewArtifactStreamConnection(serverSide, server)
+		defer serverConn.Close()
+
+		client, clientConn := NewArtifactStreamClient(ctx, clientSide)
+		defer clientConn.Close()
+
+		first := Acquire("stream-test", Artifact_Type_json).WithPayload([]byte("first"))
+		second := Acquire("stream-test", Artifact_Type_json).WithPayload([]byte("second"))
+
+		Convey("When two artifacts are sent and the stream is closed", func() {
+			err := client.Send(ctx, first, second)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			So(err, ShouldBeNil)
+			So(doneCalled, ShouldBeTrue)
+			So(received, ShouldResemble, []string{"first", "second"})
 		})
 	})
+}
+
+func BenchmarkPackUnpack(benchmark *testing.B) {
+	source := testArtifact()
+	wire := source.Pack()
+	buffer := make([]byte, len(wire))
+
+	benchmark.ReportAllocs()
+	benchmark.ResetTimer()
+
+	for benchmark.Loop() {
+		target := &Artifact{}
+
+		if _, err := target.Unpack(wire); err != nil {
+			benchmark.Fatal(err)
+		}
+
+		if _, err := source.PackInto(buffer); err != io.EOF {
+			benchmark.Fatal(err)
+		}
+	}
 }

@@ -130,10 +130,18 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 	it.SeekPrefix(key)
 
 	return iter.Seq[*datura.Artifact](func(yield func(*datura.Artifact) bool) {
-		for _, value, ok := it.Next(); ok; _, value, ok = it.Next() {
+		for foundKey, value, ok := it.Next(); ok; foundKey, value, ok = it.Next() {
+			if !bytes.HasPrefix(foundKey, key) {
+				break
+			}
+
+			if len(value) == 0 {
+				continue
+			}
+
 			inbound := datura.Acquire("dmt/tree", datura.APPJSON)
 
-			if _, err := inbound.Write(value); err != nil {
+			if _, err := inbound.Unpack(value); err != nil {
 				errnie.Error(errnie.Err(
 					errnie.Validation, "failed to unpack artifact", err,
 				))

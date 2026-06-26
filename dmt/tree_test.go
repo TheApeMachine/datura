@@ -51,6 +51,33 @@ func TestSeek(t *testing.T) {
 	})
 }
 
+func TestSeekStopsAtPrefixBoundary(t *testing.T) {
+	Convey("Given adjacent timestamp prefixes", t, func() {
+		tree := NewTree("")
+
+		matching := datura.Acquire("match", datura.Artifact_Type_json)
+		defer matching.Release()
+		matching.WithPayload([]byte(`{"ok":true}`))
+
+		adjacent := datura.Acquire("adjacent", datura.Artifact_Type_json)
+		defer adjacent.Release()
+		adjacent.WithPayload([]byte(`{"ok":false}`))
+
+		tree.Insert([]byte("book/2026/06/26/08/25.json"), matching.Pack())
+		tree.Insert([]byte("book/2026/06/26/08/26.json"), adjacent.Pack())
+
+		Convey("When seeking one minute", func() {
+			count := 0
+
+			for range tree.Seek([]byte("book/2026/06/26/08/25")) {
+				count++
+			}
+
+			So(count, ShouldEqual, 1)
+		})
+	})
+}
+
 func TestSeekReturnsMutableArtifacts(testingTB *testing.T) {
 	Convey("Given an artifact stored in a tree", testingTB, func() {
 		tree := NewTree("")

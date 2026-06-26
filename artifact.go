@@ -228,7 +228,7 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	cryptoSuite := NewCryptoSuite()
 	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
 
-	if errnie.Error(artifact.SetEncryptedPayload(make([]byte, cipherLen))) != nil {
+	if errnie.Error(artifact.SetPayload(make([]byte, cipherLen))) != nil {
 		return nil
 	}
 
@@ -236,11 +236,11 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
-	if errnie.Error(artifact.SetEphemeralPublicKey(make([]byte, p256PubKeyBytes))) != nil {
+	if errnie.Error(artifact.SetPublicKey(make([]byte, p256PubKeyBytes))) != nil {
 		return nil
 	}
 
-	encPayloadBuf, err := artifact.EncryptedPayload()
+	encPayloadBuf, err := artifact.Payload()
 
 	if errnie.Error(err) != nil {
 		return nil
@@ -252,7 +252,7 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 		return nil
 	}
 
-	ephemeralKeyBuf, err := artifact.EphemeralPublicKey()
+	ephemeralKeyBuf, err := artifact.PublicKey()
 
 	if errnie.Error(err) != nil {
 		return nil

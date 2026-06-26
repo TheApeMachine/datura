@@ -318,7 +318,7 @@ func (ring *SPSCRing[T]) Read(p []byte) (int, error) {
 
 	outbound.WithPayload(payload)
 
-	return outbound.Read(p)
+	return outbound.PackInto(p)
 }
 
 /*
@@ -330,7 +330,7 @@ func (ring *SPSCRing[T]) Write(p []byte) (int, error) {
 		return 0, errors.New("structure: SPSCRing has no artifact")
 	}
 
-	written, err := ring.artifact.Write(p)
+	written, err := ring.artifact.Unpack(p)
 
 	if err != nil {
 		return written, err
@@ -563,7 +563,7 @@ func (navigator *spscNavigator[T]) Read(p []byte) (int, error) {
 
 	outbound.WithPayload(payload)
 
-	return outbound.Read(p)
+	return outbound.PackInto(p)
 }
 
 /*
@@ -575,7 +575,7 @@ func (navigator *spscNavigator[T]) Write(p []byte) (int, error) {
 		return 0, errors.New("structure: spscNavigator has no artifact")
 	}
 
-	written, err := navigator.parent.artifact.Write(p)
+	written, err := navigator.parent.artifact.Unpack(p)
 
 	if err != nil {
 		return written, err

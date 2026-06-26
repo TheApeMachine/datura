@@ -3,12 +3,6 @@ using Go = import "/go.capnp";
 $Go.package("datura");
 $Go.import("github.com/theapemachine/datura");
 
-struct Node {
-    id      @0 :Data;
-    address @1 :Text;
-    latency @2 :UInt32;
-}
-
 struct Artifact {
     uuid       @0 :Data;
     checksum   @1 :Data;
@@ -23,18 +17,40 @@ struct Artifact {
         message   @2 :Text;
 
         enum Type {
-            unknown    @0;
-            validation @1;
+            unknown              @0;
+            validation           @1;
+            io                   @2;
+            eof                  @3;
+            cancelled            @4;
+            deadline             @5;
+            badRequest           @6;
+            unauthorized         @7;
+            forbidden            @8;
+            notFound             @9;
+            methodNotAllowed     @10;
+            notAcceptable        @11;
+            timeout              @12;
+            conflict             @13;
+            preconditionFailed   @14;
+            unsupportedMedia     @15;
+            expectationFailed    @16;
+            unprocessableContent @17;
+            tooManyRequests      @18;
+            internal             @19;
+            notImplemented       @20;
+            badGateway           @21;
+            serviceUnavailable   @22;
         }
     }
 
     type @6 :Type;
 
     enum Type {
-        json      @0;
-        jsonl     @1;
-        artifact  @2;
-        artifacts @3;
+        artifact  @0;
+        artifacts @1;
+        octet     @2;
+        json      @3;
+        jsonl     @4;
     }
 
     origin      @7  :Text;
@@ -43,21 +59,20 @@ struct Artifact {
     scope       @10 :Text;
     attributes  @11 :Data;
 
-    payload       @12 :List(Data);
+    payload       @12 :Data;
     encryptedKey  @13 :Data;
     publicKey     @14 :Data;
 
     struct Approval {
-        zkProof   @0 :Data;  # Users's zero-knowledge proof
-        signature @1 :Data;  # Operator's blind signature approval
+        zkProof   @0 :Data; # Users's zero-knowledge proof
+        signature @1 :Data; # Operator's blind signature approval
     }
 
     approvals @15 :List(Approval);
     signature @16 :Data;
 }
 
-interface Compute {
-    ping  @0 (challenger :Node) -> (responder :Node);
-    write @1 (artifact :Artifact) -> stream;
-    done  @2 ();
+interface Stream {
+    write @0 (artifact :Artifact) -> stream;
+    done  @1 ();
 }

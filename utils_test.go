@@ -75,7 +75,7 @@ func TestWithPayloadOverwriteDoesNotGrowTraversal(testingTB *testing.T) {
 			So(err, ShouldBeNil)
 			So(role, ShouldEqual, "measurement")
 
-			_, err = artifact.EncryptedPayload()
+			_, err = artifact.Payload()
 			So(err, ShouldBeNil)
 		})
 	})
@@ -91,7 +91,7 @@ func TestRelease(t *testing.T) {
 		reused := Acquire("release-test", Artifact_Type_json)
 
 		Convey("It should not retain encrypted payload slots", func() {
-			So(reused.HasEncryptedPayload(), ShouldBeFalse)
+			So(reused.HasPayload(), ShouldBeFalse)
 			So(reused.DecryptPayload(), ShouldBeNil)
 		})
 	})

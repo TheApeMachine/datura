@@ -260,7 +260,7 @@ func (ring *ListRing[T]) Read(p []byte) (int, error) {
 
 	outbound.WithPayload(payload)
 
-	return outbound.Read(p)
+	return outbound.PackInto(p)
 }
 
 /*
@@ -272,7 +272,7 @@ func (ring *ListRing[T]) Write(p []byte) (int, error) {
 		return 0, errors.New("structure: ListRing has no artifact")
 	}
 
-	written, err := ring.artifact.Write(p)
+	written, err := ring.artifact.Unpack(p)
 
 	if err != nil {
 		return written, err

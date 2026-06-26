@@ -5,7 +5,11 @@ package datura
 import (
 	capnp "capnproto.org/go/capnp/v3"
 	text "capnproto.org/go/capnp/v3/encoding/text"
+	fc "capnproto.org/go/capnp/v3/flowcontrol"
 	schemas "capnproto.org/go/capnp/v3/schemas"
+	server "capnproto.org/go/capnp/v3/server"
+	stream "capnproto.org/go/capnp/v3/std/capnp/stream"
+	context "context"
 )
 
 type Artifact capnp.Struct
@@ -113,16 +117,16 @@ func (s Artifact) NewError() (Artifact_Error, error) {
 	return ss, err
 }
 
-func (s Artifact) PseudonymHash() ([]byte, error) {
+func (s Artifact) Pseudonym() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(3)
 	return []byte(p.Data()), err
 }
 
-func (s Artifact) HasPseudonymHash() bool {
+func (s Artifact) HasPseudonym() bool {
 	return capnp.Struct(s).HasPtr(3)
 }
 
-func (s Artifact) SetPseudonymHash(v []byte) error {
+func (s Artifact) SetPseudonym(v []byte) error {
 	return capnp.Struct(s).SetData(3, v)
 }
 
@@ -232,16 +236,16 @@ func (s Artifact) SetAttributes(v []byte) error {
 	return capnp.Struct(s).SetData(9, v)
 }
 
-func (s Artifact) EncryptedPayload() ([]byte, error) {
+func (s Artifact) Payload() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(10)
 	return []byte(p.Data()), err
 }
 
-func (s Artifact) HasEncryptedPayload() bool {
+func (s Artifact) HasPayload() bool {
 	return capnp.Struct(s).HasPtr(10)
 }
 
-func (s Artifact) SetEncryptedPayload(v []byte) error {
+func (s Artifact) SetPayload(v []byte) error {
 	return capnp.Struct(s).SetData(10, v)
 }
 
@@ -258,16 +262,16 @@ func (s Artifact) SetEncryptedKey(v []byte) error {
 	return capnp.Struct(s).SetData(11, v)
 }
 
-func (s Artifact) EphemeralPublicKey() ([]byte, error) {
+func (s Artifact) PublicKey() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(12)
 	return []byte(p.Data()), err
 }
 
-func (s Artifact) HasEphemeralPublicKey() bool {
+func (s Artifact) HasPublicKey() bool {
 	return capnp.Struct(s).HasPtr(12)
 }
 
-func (s Artifact) SetEphemeralPublicKey(v []byte) error {
+func (s Artifact) SetPublicKey(v []byte) error {
 	return capnp.Struct(s).SetData(12, v)
 }
 
@@ -432,8 +436,29 @@ const Artifact_Error_Type_TypeID = 0xe35eff8ed54464f6
 
 // Values of Artifact_Error_Type.
 const (
-	Artifact_Error_Type_unknown    Artifact_Error_Type = 0
-	Artifact_Error_Type_validation Artifact_Error_Type = 1
+	Artifact_Error_Type_unknown              Artifact_Error_Type = 0
+	Artifact_Error_Type_validation           Artifact_Error_Type = 1
+	Artifact_Error_Type_io                   Artifact_Error_Type = 2
+	Artifact_Error_Type_eof                  Artifact_Error_Type = 3
+	Artifact_Error_Type_cancelled            Artifact_Error_Type = 4
+	Artifact_Error_Type_deadline             Artifact_Error_Type = 5
+	Artifact_Error_Type_badRequest           Artifact_Error_Type = 6
+	Artifact_Error_Type_unauthorized         Artifact_Error_Type = 7
+	Artifact_Error_Type_forbidden            Artifact_Error_Type = 8
+	Artifact_Error_Type_notFound             Artifact_Error_Type = 9
+	Artifact_Error_Type_methodNotAllowed     Artifact_Error_Type = 10
+	Artifact_Error_Type_notAcceptable        Artifact_Error_Type = 11
+	Artifact_Error_Type_timeout              Artifact_Error_Type = 12
+	Artifact_Error_Type_conflict             Artifact_Error_Type = 13
+	Artifact_Error_Type_preconditionFailed   Artifact_Error_Type = 14
+	Artifact_Error_Type_unsupportedMedia     Artifact_Error_Type = 15
+	Artifact_Error_Type_expectationFailed    Artifact_Error_Type = 16
+	Artifact_Error_Type_unprocessableContent Artifact_Error_Type = 17
+	Artifact_Error_Type_tooManyRequests      Artifact_Error_Type = 18
+	Artifact_Error_Type_internal             Artifact_Error_Type = 19
+	Artifact_Error_Type_notImplemented       Artifact_Error_Type = 20
+	Artifact_Error_Type_badGateway           Artifact_Error_Type = 21
+	Artifact_Error_Type_serviceUnavailable   Artifact_Error_Type = 22
 )
 
 // String returns the enum's constant name.
@@ -443,6 +468,48 @@ func (c Artifact_Error_Type) String() string {
 		return "unknown"
 	case Artifact_Error_Type_validation:
 		return "validation"
+	case Artifact_Error_Type_io:
+		return "io"
+	case Artifact_Error_Type_eof:
+		return "eof"
+	case Artifact_Error_Type_cancelled:
+		return "cancelled"
+	case Artifact_Error_Type_deadline:
+		return "deadline"
+	case Artifact_Error_Type_badRequest:
+		return "badRequest"
+	case Artifact_Error_Type_unauthorized:
+		return "unauthorized"
+	case Artifact_Error_Type_forbidden:
+		return "forbidden"
+	case Artifact_Error_Type_notFound:
+		return "notFound"
+	case Artifact_Error_Type_methodNotAllowed:
+		return "methodNotAllowed"
+	case Artifact_Error_Type_notAcceptable:
+		return "notAcceptable"
+	case Artifact_Error_Type_timeout:
+		return "timeout"
+	case Artifact_Error_Type_conflict:
+		return "conflict"
+	case Artifact_Error_Type_preconditionFailed:
+		return "preconditionFailed"
+	case Artifact_Error_Type_unsupportedMedia:
+		return "unsupportedMedia"
+	case Artifact_Error_Type_expectationFailed:
+		return "expectationFailed"
+	case Artifact_Error_Type_unprocessableContent:
+		return "unprocessableContent"
+	case Artifact_Error_Type_tooManyRequests:
+		return "tooManyRequests"
+	case Artifact_Error_Type_internal:
+		return "internal"
+	case Artifact_Error_Type_notImplemented:
+		return "notImplemented"
+	case Artifact_Error_Type_badGateway:
+		return "badGateway"
+	case Artifact_Error_Type_serviceUnavailable:
+		return "serviceUnavailable"
 
 	default:
 		return ""
@@ -457,6 +524,48 @@ func Artifact_Error_TypeFromString(c string) Artifact_Error_Type {
 		return Artifact_Error_Type_unknown
 	case "validation":
 		return Artifact_Error_Type_validation
+	case "io":
+		return Artifact_Error_Type_io
+	case "eof":
+		return Artifact_Error_Type_eof
+	case "cancelled":
+		return Artifact_Error_Type_cancelled
+	case "deadline":
+		return Artifact_Error_Type_deadline
+	case "badRequest":
+		return Artifact_Error_Type_badRequest
+	case "unauthorized":
+		return Artifact_Error_Type_unauthorized
+	case "forbidden":
+		return Artifact_Error_Type_forbidden
+	case "notFound":
+		return Artifact_Error_Type_notFound
+	case "methodNotAllowed":
+		return Artifact_Error_Type_methodNotAllowed
+	case "notAcceptable":
+		return Artifact_Error_Type_notAcceptable
+	case "timeout":
+		return Artifact_Error_Type_timeout
+	case "conflict":
+		return Artifact_Error_Type_conflict
+	case "preconditionFailed":
+		return Artifact_Error_Type_preconditionFailed
+	case "unsupportedMedia":
+		return Artifact_Error_Type_unsupportedMedia
+	case "expectationFailed":
+		return Artifact_Error_Type_expectationFailed
+	case "unprocessableContent":
+		return Artifact_Error_Type_unprocessableContent
+	case "tooManyRequests":
+		return Artifact_Error_Type_tooManyRequests
+	case "internal":
+		return Artifact_Error_Type_internal
+	case "notImplemented":
+		return Artifact_Error_Type_notImplemented
+	case "badGateway":
+		return Artifact_Error_Type_badGateway
+	case "serviceUnavailable":
+		return Artifact_Error_Type_serviceUnavailable
 
 	default:
 		return 0
@@ -476,23 +585,26 @@ const Artifact_Type_TypeID = 0xbbc6975bdbf2ac03
 
 // Values of Artifact_Type.
 const (
-	Artifact_Type_json      Artifact_Type = 0
-	Artifact_Type_jsonl     Artifact_Type = 1
-	Artifact_Type_artifact  Artifact_Type = 2
-	Artifact_Type_artifacts Artifact_Type = 3
+	Artifact_Type_artifact  Artifact_Type = 0
+	Artifact_Type_artifacts Artifact_Type = 1
+	Artifact_Type_octet     Artifact_Type = 2
+	Artifact_Type_json      Artifact_Type = 3
+	Artifact_Type_jsonl     Artifact_Type = 4
 )
 
 // String returns the enum's constant name.
 func (c Artifact_Type) String() string {
 	switch c {
-	case Artifact_Type_json:
-		return "json"
-	case Artifact_Type_jsonl:
-		return "jsonl"
 	case Artifact_Type_artifact:
 		return "artifact"
 	case Artifact_Type_artifacts:
 		return "artifacts"
+	case Artifact_Type_octet:
+		return "octet"
+	case Artifact_Type_json:
+		return "json"
+	case Artifact_Type_jsonl:
+		return "jsonl"
 
 	default:
 		return ""
@@ -503,14 +615,16 @@ func (c Artifact_Type) String() string {
 // or the zero value if there's no such value.
 func Artifact_TypeFromString(c string) Artifact_Type {
 	switch c {
-	case "json":
-		return Artifact_Type_json
-	case "jsonl":
-		return Artifact_Type_jsonl
 	case "artifact":
 		return Artifact_Type_artifact
 	case "artifacts":
 		return Artifact_Type_artifacts
+	case "octet":
+		return Artifact_Type_octet
+	case "json":
+		return Artifact_Type_json
+	case "jsonl":
+		return Artifact_Type_jsonl
 
 	default:
 		return 0
@@ -583,16 +697,16 @@ func (s Artifact_Approval) SetZkProof(v []byte) error {
 	return capnp.Struct(s).SetData(0, v)
 }
 
-func (s Artifact_Approval) OperatorBlindSignature() ([]byte, error) {
+func (s Artifact_Approval) Signature() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(1)
 	return []byte(p.Data()), err
 }
 
-func (s Artifact_Approval) HasOperatorBlindSignature() bool {
+func (s Artifact_Approval) HasSignature() bool {
 	return capnp.Struct(s).HasPtr(1)
 }
 
-func (s Artifact_Approval) SetOperatorBlindSignature(v []byte) error {
+func (s Artifact_Approval) SetSignature(v []byte) error {
 	return capnp.Struct(s).SetData(1, v)
 }
 
@@ -613,76 +727,543 @@ func (f Artifact_Approval_Future) Struct() (Artifact_Approval, error) {
 	return Artifact_Approval(p.Struct()), err
 }
 
-const schema_85d3acc39d94e0f8 = "x\xda\x84\x94Oh\x1ce\x18\xc6\x9f\xe7\xfbv\x93\xd9" +
-	"t7\xb3\xc3L1\xf5`Z\xa8`\xd66\xc4D\xa9" +
-	"\x14\xa1mh\xa1\xa6\x11vvr\xa8\x15\x84\xc9\xee4" +
-	"\x99fwf\x98\x99MY/9\x15A\xc4\x93 \x08" +
-	"^=H\xf1\xcf\xc5\x83\x1e\x84\x0ab\x0f\x82A\x03\x16" +
-	"{PlQD\xa1\x16\xab\x15ZF\xbe\x8d;\xbb\x88" +
-	"\xc5\xcb\xb2\xdf\xef{\xe7\xfd\x9e\xef}\xbf\xe7\x9d{Y" +
-	"\x1c/<Q\xf9q\x0c\xc2\xae\x17\xc7\xb2\x8a\xf8\xed\xfd" +
-	"\xc7\xc4\x95WaL\xf1\xcf\x9b\xddw'\x1f/}P" +
-	"\x14\xe3\xc0\xc2\xf3r\x82\xa6/\xc7\x01\xd3\x93\x17\x91\xef" +
-	"\xda:Ev\xf7\xbb\xd7\xdf\xfa\xf4\xf2W\x97P\xd4U" +
-	"\xc0Uy\xc5\xdc\x96G\x80\x85;\xf2\x13\x09f\xef\\" +
-	"\xbb\xb4\xb3\x7f\xb3\xfe!\xec)\x8a</U\xec>\xed" +
-	"\xb6\xf9\xa8\xf6\x10`\x1e\xd6\xde\x033y\xf9\xf6\xb7/" +
-	"\xbc\xf1\xd9\xc70\xa6\xf2H\xd0\xbc\xaa\xfdl\xeeh\xea" +
-	"\x83mm\x0d\xcc\xfeh\x9d\xdcy-{\xf1\x07\x18\x8f" +
-	"\x88azp\xe1\xbe\xf60\xcdJIE\x96JG\xf0" +
-	"v\xe6\xc6\xa9\x7f\xdem\xa6r\xb6\xe9FAt\xf4\xc4" +
-	"?\xeb\xd9\x13Q\x14\x87\x9bn\x1b\xa8\x93\xb6&\x0b@" +
-	"\x81\x801\xb3\x08\xd8\x07%\xed9A\x83\xb4\xa8\xe0\xe1" +
-	"\x8f\x00{N\xd2~Fp\xeb\xa5\x8dz\x1c\x86\xe7Y" +
-	"\x81`\x05\xcc\xc2\xc8\x8b\xdd4\x8c\xb9\xd8\xf6\x83\x96\xe3" +
-	"\xaf\x1d\x0b\xdc\xb4\x1b{y\xc0@\x83\xf8\x97\x06\xd8e" +
-	"\x8eT\xc70\xe6G\xee_\xa9\x8d\xb4\xa3\xb44}*" +
-	"\x8e\xc3X_\xe9E^6\x94\x0e\xfb\xe4@\xb8\xf9\x05" +
-	"k\x80\xf39%\x9d\xaf9\xd4nns\x09p\xbeT" +
-	"\xfc:\x05),\x0a\xc0\xbc\xc6\x06\xe0|\xa3\xf0\x0d\x15" +
-	".\x85E\x09\x98\xdfs\x1ep\xae+\xfe\x93\xe2\x05i" +
-	"\xb1\x00\x987\x19\x03\xce\x0d\xc5o)^,X,\x02" +
-	"\xe6\xaf<\x078\xbf(~W\xf1\xb1\x82\xc51\xc0\xbc" +
-	"\xd3\x97sK\xf1{\x8a\x8f\x17\xad~\xc7\xff\xe2Q\xc0" +
-	"\xf9\x9d\x92\x0d!hhc\x165\xc0\xbc\xcfU\xc0\xb9" +
-	"\xa7\xc25\xc5K\xe3\x16K\x80Y\x145\xa0!$\x9d" +
-	"\xb2\xc2\x13\x9a\xc5\x09\xd5\\\xa1T\x16\x14\xaf*\xbe\xa7" +
-	"dq\x0f`V\x84RSV|J\xf1\xf2\x84\xc52" +
-	"`\xee\x15\xaf\x00\xce\x94\xe2\x07\x15\xaf\xec\xb1X\x01\xcc" +
-	"\x03\xe2\x02\xe0\xecW\xfc\x90\xe2\x93e\x8b\x93\x809#" +
-	"\xde\x04\x9cC\x8a?\xad\xb8^\xb1\xa8\x03\xe6SBU" +
-	"\xedI\xc5\xeb\x8aW'-V\x01\xf3\xb9>_V\xfc" +
-	"\xac\x10\xd4\xbb]\xbf\x95\xf7\xbf\xb9\xee57\x92n\x07" +
-	"@\xceR\xbf\xe3%\xa9\xdb\x01#\x16!X\x04\xa7=" +
-	"\xd5bVG\x1f4\xab`\x16%^\xb7\x15\x06=L" +
-	"wN\xbb\xc9z\x9e\xa3\xe3\xc5\x1bm\xaf\x11B\x86\xe9" +
-	"\x00\xeai/\xf2\xa8\x0f\x1f\x12H\x1d<\x16\xc6\xfe\x9a" +
-	"\x1f\xb0\x0c\xc12\x98\xb5\xbc$\xf5\x037\xc5\xb8\x1f\xe6" +
-	"T\x8f\xc3\xb67XL'\xcd0\xcaW\x99\x9b\xa6\xb1" +
-	"\xbf\xdaM!\xbd$\x17\xe0\x05\xcd\xb8\x17\xa5\x1e[u" +
-	"\xb7\xd7\x0e\xdd\xd6\xc8\x05\x07{\xd0[g\xbc\xde\x10G" +
-	"\xeb^\xc7\x8b]\xb6\xeb\xdd\xd5\xb6\xdf<#G6\xdd" +
-	"\xc1\xc3f\xc2I\xb0.\xc9\xea\xd0\x05\xa0\x82Y\xe2\xaf" +
-	"\xf5\xfd\x05\xfe\xbf\xc3fwmc\x178:3X\xeb" +
-	"\xfb\xc8.\xe7\xa6?U\x03\xec\xe3\x92\xf6\xf2\x88\xe9\x9f" +
-	"m\x00\xf6iI{%w\x8da\xab\xe9\xb0,i\x9f" +
-	"\x15y\xa9\xf3\xc4\xbb\xa5\xfe\xaf\xd6nu\xbc$q\xd7" +
-	"F\xca\xf9 \xc1}ej\"U\xfb\xe7\xcd\xd4TV" +
-	"\xe3\xc0<@a\xec[\x02(\x8d\xbd\x0d@\xbf\x90\x84" +
-	"\xc1\xb4\xfai\xe7\xc9\x00\x0c\xff3y\xf0\xec\xeb\x17e" +
-	"v\xa5'w\x8f\xd2\xfaG\x19\x8b\xfd\xa3J\xe7\x80\xad" +
-	"n\xb0\x11\x84\x17\x83l\xd3m\xfb-7\xf5!\xc3\xe0" +
-	"\xef\x00\x00\x00\xff\xff6\xe7v\xce"
+type Stream capnp.Client
+
+// Stream_TypeID is the unique identifier for the type Stream.
+const Stream_TypeID = 0xe24395066f807185
+
+func (c Stream) Write(ctx context.Context, params func(Stream_write_Params) error) error {
+	s := capnp.Send{
+		Method: capnp.Method{
+			InterfaceID:   0xe24395066f807185,
+			MethodID:      0,
+			InterfaceName: "artifact.capnp:Stream",
+			MethodName:    "write",
+		},
+	}
+	if params != nil {
+		s.ArgsSize = capnp.ObjectSize{DataSize: 0, PointerCount: 1}
+		s.PlaceArgs = func(s capnp.Struct) error { return params(Stream_write_Params(s)) }
+	}
+
+	return capnp.Client(c).SendStreamCall(ctx, s)
+
+}
+
+func (c Stream) Done(ctx context.Context, params func(Stream_done_Params) error) (Stream_done_Results_Future, capnp.ReleaseFunc) {
+
+	s := capnp.Send{
+		Method: capnp.Method{
+			InterfaceID:   0xe24395066f807185,
+			MethodID:      1,
+			InterfaceName: "artifact.capnp:Stream",
+			MethodName:    "done",
+		},
+	}
+	if params != nil {
+		s.ArgsSize = capnp.ObjectSize{DataSize: 0, PointerCount: 0}
+		s.PlaceArgs = func(s capnp.Struct) error { return params(Stream_done_Params(s)) }
+	}
+
+	ans, release := capnp.Client(c).SendCall(ctx, s)
+	return Stream_done_Results_Future{Future: ans.Future()}, release
+
+}
+
+func (c Stream) WaitStreaming() error {
+	return capnp.Client(c).WaitStreaming()
+}
+
+// String returns a string that identifies this capability for debugging
+// purposes.  Its format should not be depended on: in particular, it
+// should not be used to compare clients.  Use IsSame to compare clients
+// for equality.
+func (c Stream) String() string {
+	return "Stream(" + capnp.Client(c).String() + ")"
+}
+
+// AddRef creates a new Client that refers to the same capability as c.
+// If c is nil or has resolved to null, then AddRef returns nil.
+func (c Stream) AddRef() Stream {
+	return Stream(capnp.Client(c).AddRef())
+}
+
+// Release releases a capability reference.  If this is the last
+// reference to the capability, then the underlying resources associated
+// with the capability will be released.
+//
+// Release will panic if c has already been released, but not if c is
+// nil or resolved to null.
+func (c Stream) Release() {
+	capnp.Client(c).Release()
+}
+
+// Resolve blocks until the capability is fully resolved or the Context
+// expires.
+func (c Stream) Resolve(ctx context.Context) error {
+	return capnp.Client(c).Resolve(ctx)
+}
+
+func (c Stream) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Client(c).EncodeAsPtr(seg)
+}
+
+func (Stream) DecodeFromPtr(p capnp.Ptr) Stream {
+	return Stream(capnp.Client{}.DecodeFromPtr(p))
+}
+
+// IsValid reports whether c is a valid reference to a capability.
+// A reference is invalid if it is nil, has resolved to null, or has
+// been released.
+func (c Stream) IsValid() bool {
+	return capnp.Client(c).IsValid()
+}
+
+// IsSame reports whether c and other refer to a capability created by the
+// same call to NewClient.  This can return false negatives if c or other
+// are not fully resolved: use Resolve if this is an issue.  If either
+// c or other are released, then IsSame panics.
+func (c Stream) IsSame(other Stream) bool {
+	return capnp.Client(c).IsSame(capnp.Client(other))
+}
+
+// Update the flowcontrol.FlowLimiter used to manage flow control for
+// this client. This affects all future calls, but not calls already
+// waiting to send. Passing nil sets the value to flowcontrol.NopLimiter,
+// which is also the default.
+func (c Stream) SetFlowLimiter(lim fc.FlowLimiter) {
+	capnp.Client(c).SetFlowLimiter(lim)
+}
+
+// Get the current flowcontrol.FlowLimiter used to manage flow control
+// for this client.
+func (c Stream) GetFlowLimiter() fc.FlowLimiter {
+	return capnp.Client(c).GetFlowLimiter()
+}
+
+// A Stream_Server is a Stream with a local implementation.
+type Stream_Server interface {
+	Write(context.Context, Stream_write) error
+
+	Done(context.Context, Stream_done) error
+}
+
+// Stream_NewServer creates a new Server from an implementation of Stream_Server.
+func Stream_NewServer(s Stream_Server) *server.Server {
+	c, _ := s.(server.Shutdowner)
+	return server.New(Stream_Methods(nil, s), s, c)
+}
+
+// Stream_ServerToClient creates a new Client from an implementation of Stream_Server.
+// The caller is responsible for calling Release on the returned Client.
+func Stream_ServerToClient(s Stream_Server) Stream {
+	return Stream(capnp.NewClient(Stream_NewServer(s)))
+}
+
+// Stream_Methods appends Methods to a slice that invoke the methods on s.
+// This can be used to create a more complicated Server.
+func Stream_Methods(methods []server.Method, s Stream_Server) []server.Method {
+	if cap(methods) == 0 {
+		methods = make([]server.Method, 0, 2)
+	}
+
+	methods = append(methods, server.Method{
+		Method: capnp.Method{
+			InterfaceID:   0xe24395066f807185,
+			MethodID:      0,
+			InterfaceName: "artifact.capnp:Stream",
+			MethodName:    "write",
+		},
+		Impl: func(ctx context.Context, call *server.Call) error {
+			return s.Write(ctx, Stream_write{call})
+		},
+	})
+
+	methods = append(methods, server.Method{
+		Method: capnp.Method{
+			InterfaceID:   0xe24395066f807185,
+			MethodID:      1,
+			InterfaceName: "artifact.capnp:Stream",
+			MethodName:    "done",
+		},
+		Impl: func(ctx context.Context, call *server.Call) error {
+			return s.Done(ctx, Stream_done{call})
+		},
+	})
+
+	return methods
+}
+
+// Stream_write holds the state for a server call to Stream.write.
+// See server.Call for documentation.
+type Stream_write struct {
+	*server.Call
+}
+
+// Args returns the call's arguments.
+func (c Stream_write) Args() Stream_write_Params {
+	return Stream_write_Params(c.Call.Args())
+}
+
+// AllocResults allocates the results struct.
+func (c Stream_write) AllocResults() (stream.StreamResult, error) {
+	r, err := c.Call.AllocResults(capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return stream.StreamResult(r), err
+}
+
+// Stream_done holds the state for a server call to Stream.done.
+// See server.Call for documentation.
+type Stream_done struct {
+	*server.Call
+}
+
+// Args returns the call's arguments.
+func (c Stream_done) Args() Stream_done_Params {
+	return Stream_done_Params(c.Call.Args())
+}
+
+// AllocResults allocates the results struct.
+func (c Stream_done) AllocResults() (Stream_done_Results, error) {
+	r, err := c.Call.AllocResults(capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return Stream_done_Results(r), err
+}
+
+// Stream_List is a list of Stream.
+type Stream_List = capnp.CapList[Stream]
+
+// NewStream_List creates a new list of Stream.
+func NewStream_List(s *capnp.Segment, sz int32) (Stream_List, error) {
+	l, err := capnp.NewPointerList(s, sz)
+	return capnp.CapList[Stream](l), err
+}
+
+type Stream_write_Params capnp.Struct
+
+// Stream_write_Params_TypeID is the unique identifier for the type Stream_write_Params.
+const Stream_write_Params_TypeID = 0x80771458f748835f
+
+func NewStream_write_Params(s *capnp.Segment) (Stream_write_Params, error) {
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 1})
+	return Stream_write_Params(st), err
+}
+
+func NewRootStream_write_Params(s *capnp.Segment) (Stream_write_Params, error) {
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 1})
+	return Stream_write_Params(st), err
+}
+
+func ReadRootStream_write_Params(msg *capnp.Message) (Stream_write_Params, error) {
+	root, err := msg.Root()
+	return Stream_write_Params(root.Struct()), err
+}
+
+func (s Stream_write_Params) String() string {
+	str, _ := text.Marshal(0x80771458f748835f, capnp.Struct(s))
+	return str
+}
+
+func (s Stream_write_Params) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Struct(s).EncodeAsPtr(seg)
+}
+
+func (Stream_write_Params) DecodeFromPtr(p capnp.Ptr) Stream_write_Params {
+	return Stream_write_Params(capnp.Struct{}.DecodeFromPtr(p))
+}
+
+func (s Stream_write_Params) ToPtr() capnp.Ptr {
+	return capnp.Struct(s).ToPtr()
+}
+func (s Stream_write_Params) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Stream_write_Params) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Stream_write_Params) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Stream_write_Params) Artifact() (Artifact, error) {
+	p, err := capnp.Struct(s).Ptr(0)
+	return Artifact(p.Struct()), err
+}
+
+func (s Stream_write_Params) HasArtifact() bool {
+	return capnp.Struct(s).HasPtr(0)
+}
+
+func (s Stream_write_Params) SetArtifact(v Artifact) error {
+	return capnp.Struct(s).SetPtr(0, capnp.Struct(v).ToPtr())
+}
+
+// NewArtifact sets the artifact field to a newly
+// allocated Artifact struct, preferring placement in s's segment.
+func (s Stream_write_Params) NewArtifact() (Artifact, error) {
+	ss, err := NewArtifact(capnp.Struct(s).Segment())
+	if err != nil {
+		return Artifact{}, err
+	}
+	err = capnp.Struct(s).SetPtr(0, capnp.Struct(ss).ToPtr())
+	return ss, err
+}
+
+// Stream_write_Params_List is a list of Stream_write_Params.
+type Stream_write_Params_List = capnp.StructList[Stream_write_Params]
+
+// NewStream_write_Params creates a new list of Stream_write_Params.
+func NewStream_write_Params_List(s *capnp.Segment, sz int32) (Stream_write_Params_List, error) {
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 0, PointerCount: 1}, sz)
+	return capnp.StructList[Stream_write_Params](l), err
+}
+
+// Stream_write_Params_Future is a wrapper for a Stream_write_Params promised by a client call.
+type Stream_write_Params_Future struct{ *capnp.Future }
+
+func (f Stream_write_Params_Future) Struct() (Stream_write_Params, error) {
+	p, err := f.Future.Ptr()
+	return Stream_write_Params(p.Struct()), err
+}
+func (p Stream_write_Params_Future) Artifact() Artifact_Future {
+	return Artifact_Future{Future: p.Future.Field(0, nil)}
+}
+
+type Stream_done_Params capnp.Struct
+
+// Stream_done_Params_TypeID is the unique identifier for the type Stream_done_Params.
+const Stream_done_Params_TypeID = 0xde41b8fef461a640
+
+func NewStream_done_Params(s *capnp.Segment) (Stream_done_Params, error) {
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return Stream_done_Params(st), err
+}
+
+func NewRootStream_done_Params(s *capnp.Segment) (Stream_done_Params, error) {
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return Stream_done_Params(st), err
+}
+
+func ReadRootStream_done_Params(msg *capnp.Message) (Stream_done_Params, error) {
+	root, err := msg.Root()
+	return Stream_done_Params(root.Struct()), err
+}
+
+func (s Stream_done_Params) String() string {
+	str, _ := text.Marshal(0xde41b8fef461a640, capnp.Struct(s))
+	return str
+}
+
+func (s Stream_done_Params) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Struct(s).EncodeAsPtr(seg)
+}
+
+func (Stream_done_Params) DecodeFromPtr(p capnp.Ptr) Stream_done_Params {
+	return Stream_done_Params(capnp.Struct{}.DecodeFromPtr(p))
+}
+
+func (s Stream_done_Params) ToPtr() capnp.Ptr {
+	return capnp.Struct(s).ToPtr()
+}
+func (s Stream_done_Params) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Stream_done_Params) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Stream_done_Params) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+
+// Stream_done_Params_List is a list of Stream_done_Params.
+type Stream_done_Params_List = capnp.StructList[Stream_done_Params]
+
+// NewStream_done_Params creates a new list of Stream_done_Params.
+func NewStream_done_Params_List(s *capnp.Segment, sz int32) (Stream_done_Params_List, error) {
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0}, sz)
+	return capnp.StructList[Stream_done_Params](l), err
+}
+
+// Stream_done_Params_Future is a wrapper for a Stream_done_Params promised by a client call.
+type Stream_done_Params_Future struct{ *capnp.Future }
+
+func (f Stream_done_Params_Future) Struct() (Stream_done_Params, error) {
+	p, err := f.Future.Ptr()
+	return Stream_done_Params(p.Struct()), err
+}
+
+type Stream_done_Results capnp.Struct
+
+// Stream_done_Results_TypeID is the unique identifier for the type Stream_done_Results.
+const Stream_done_Results_TypeID = 0xf96f1c40b685feaa
+
+func NewStream_done_Results(s *capnp.Segment) (Stream_done_Results, error) {
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return Stream_done_Results(st), err
+}
+
+func NewRootStream_done_Results(s *capnp.Segment) (Stream_done_Results, error) {
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0})
+	return Stream_done_Results(st), err
+}
+
+func ReadRootStream_done_Results(msg *capnp.Message) (Stream_done_Results, error) {
+	root, err := msg.Root()
+	return Stream_done_Results(root.Struct()), err
+}
+
+func (s Stream_done_Results) String() string {
+	str, _ := text.Marshal(0xf96f1c40b685feaa, capnp.Struct(s))
+	return str
+}
+
+func (s Stream_done_Results) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Struct(s).EncodeAsPtr(seg)
+}
+
+func (Stream_done_Results) DecodeFromPtr(p capnp.Ptr) Stream_done_Results {
+	return Stream_done_Results(capnp.Struct{}.DecodeFromPtr(p))
+}
+
+func (s Stream_done_Results) ToPtr() capnp.Ptr {
+	return capnp.Struct(s).ToPtr()
+}
+func (s Stream_done_Results) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Stream_done_Results) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Stream_done_Results) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+
+// Stream_done_Results_List is a list of Stream_done_Results.
+type Stream_done_Results_List = capnp.StructList[Stream_done_Results]
+
+// NewStream_done_Results creates a new list of Stream_done_Results.
+func NewStream_done_Results_List(s *capnp.Segment, sz int32) (Stream_done_Results_List, error) {
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 0, PointerCount: 0}, sz)
+	return capnp.StructList[Stream_done_Results](l), err
+}
+
+// Stream_done_Results_Future is a wrapper for a Stream_done_Results promised by a client call.
+type Stream_done_Results_Future struct{ *capnp.Future }
+
+func (f Stream_done_Results_Future) Struct() (Stream_done_Results, error) {
+	p, err := f.Future.Ptr()
+	return Stream_done_Results(p.Struct()), err
+}
+
+const schema_85d3acc39d94e0f8 = "x\xda\x94\x95a\x88$G\x15\xc7\xff\xafjfgv" +
+	"ofg*\xdd\x89\x9b#\xbaQ\x12H\xd6d\xcd\xed" +
+	"!J\xbe\xdc\xee\xe5\x12\x93\xcbE\xb6gN\x08\x1a\x0c" +
+	"\xbd\xdd\xb5w}\xd7\xd3\xd5\xe9\xae\xdeu\xee\xcb\x06\xe5" +
+	"\x10\xc4\x08\x8aAr\xe0G\xfd\x10\x82z~\x08\x8a\x04" +
+	"5\x12q?\x04\x14=p1QOs\xa0b \x09" +
+	"\xd1\xe4 \xa6\xe5\xcdfz\x065\x01\xbf\x0c\xd3\xbf\xfa" +
+	"\xd7{\xaf^\xbd\xf7\xea\x8e\x96\\\xad\x1dj\xff\xa1\x0e" +
+	"\xe1\x1d\xab\xcf\x94\x0f\x7f\xe1\xde7\x1et\xb7\x1f\x85\xba" +
+	"\x8e\x80:5\x80\xc3\x97\xc4A\x029/\x8a#\xa0\xb2" +
+	"-^\xfd\xde-\xe2\xd9/C-\xd0\x1bW\x8a\xef\xcc" +
+	"\x7fx\xf6b]\xb0\x8c\xe4\x1c9J6\x00\xa7-\xb7" +
+	"Q\xadz\x1d\x12\xe5\x9b\x7f\xfc\xfa7\x7f\xf6\xd4\xaf\xcf" +
+	"\xa3\xdea\xc1@>\xeb\x14\xf2c\xc0\xe1'\xe4\x8f%" +
+	"\xa8|r\xef\xfc\xa5\x1b\xb7\xd6\x9f\x86\xb7@\xa2\xb2\xcb" +
+	"\xee\x9d\x8b\x8d\xd7\x9cg\x1a\xef\x03\x9c\xe7\x1a\xdf\x05\x95" +
+	"\xf2\xa9\xd7~\xf7\x99o\xfc\xfcGP\x0b\x95\x12\xe4\xf8" +
+	"\xcd\xbf9\x83&o\x88\x9a;\xa0r\xf5\xdb\xfe\xebo" +
+	"\xff`\xed\xf7\xfb'\xa9q\x84\xdfj^C\xa8\x95\xe7" +
+	"\x1fy\xd4\xcc<~\xd7\x9f\xa0:r\x12\x18\xc8y\xac" +
+	"\xf9}\xe7\xf1\x91\x89\xaf6\xbf\xe8\\\xe6\x7f\xe5?\xc3" +
+	"c\x97\xbeR~\xf6\xcfP\x1f\x10\x93(A\x87w\x9b" +
+	"\x07\xc9\xd9k\x8e\x12\xd4\xfc\x88\xe03\xbc}\xfe\xe9\xd5" +
+	"\x1b\xcc\xd5)\x8f\x8f\xcd\x1d$<T\xfa\x99\x8d6\xfd" +
+	"\xc0\xca\xe5\xc0O\x93\xf4\xce\xbe\xcd\xb4?X\xde\xce\"" +
+	"\xaboZ\xf73_\x0er\xaf&k@\x8d\x00\xd5>" +
+	"\x0ex-I\xde\x82\xa0j/\x00\xeaN\xceK]\xd0" +
+	"\x7f\xd9]{\xe7{y-M3\xb3\xe5\xc7\xc0:\x91" +
+	"\xd7\xac,\xdfz\x14\xf0n\x92\xe4\xdd!H\x11\xb9\xc4" +
+	"\xf0\xf6\x1e\xe0\xdd&\xc9\xfb\xb8\xa0\x9dsg\xd73c" +
+	"6\xa9\x0dAmP\x99G\xa7\x12\xdf\x16\x19HWl" +
+	"\xecV\xfc\x87[x-\x9a\xbaJ\xa5V\xa6.\xab\xbd" +
+	"4U;\xb3\xc7\x17\xef\xce2\x93uN\x0eS]N" +
+	"\xa2\x85wl\x1c\xab\xf3<-\x01\xfd_\x90\xa4\xfeo" +
+	"h\x12\xae\xf3+:\x0e\xf4\x7f\xc9\xfc\x05\x12D\xc2%" +
+	"\x018{\xd4\x03\xfa\xbfe\xfc\x12\xcb\xa5pI\x02\xce" +
+	"eZ\x01\xfa/0\xff\x0b\xf3\x9at\xa9\x068WF" +
+	"\xfa\x97\x98\xbf\xc2\xbc^s\xa9\x0e8/\xd3\xa7\x81\xfe" +
+	"\xdf\x99\xbf\xc9|\xa6\xe6\xd2\x0c\xe0\xfcc\x14\xce+\xcc" +
+	"\xdfb\xde\xa8\xbb\xa3\xf2\xbcJw\x02\xfd\xd7IRO" +
+	"\x08R\xcd\x19\x97\x9a\x80\xf3/\xda\x00\xfao\xb1\xbc\xc9" +
+	"|\xb6\xe1\xd2,\xe0\xd4\xc5\x12\xd0\x13\x92\xfa-\xc6s" +
+	"M\x97\xe6\x00gVp\x945\xe6]\xe6\x07f]:" +
+	"\xc0\x9d$8\x9a\x16\xf3\x05\xe6\xad9\x97Z\x80s\xad" +
+	"8\x0a\xf4\xbb\xcco`\xde>\xe0R\x1bp\xae\x17g" +
+	"\x80\xfe\x02\xf3\x9b\x98\xcf\xb7\\\x9a\x07\x9c\x0f\x0a>\xed" +
+	"\x8d\xccoc\xdei\xbb\xd4\x01\x9c[G\xfc\x16\xe6\xc7" +
+	"\x98w\xe7]\xea\x02\xce\xda\x88\xaf2?!\x04u\x8a" +
+	"\"\x0a\xab\xfb\x0fN\xeb\xe0l^\x0c\xb8$\xc7\xccF" +
+	"\x03\x9d[\x7f\x00J\xa9\x0eAu\xd0\xa2\xe6+\xa6\xee" +
+	"t\xdb\x8c\xca6\xcdu\x11\x9ad\x08\x1aT\xfb\x07:" +
+	";\x1b\xeb\x9e\x814v\x0c;v\x98j\xeaL\x8a\x08" +
+	"D\x1d\xd0\x11\x93E\xa7\xa2\x84Z\x10\xd4\x02\x95\xa1\xce" +
+	"m\x94\xf8\x16\x8d\xc8T\xb4\x93\x99X\x8f?\x16\xf3\xc0" +
+	"\xa4\xd5W\xe9[\x9bE\x1b\x85\x85\xd4\xf9\xd8\xd7N\xea" +
+	"\x0fc\xe3O\x0e\xa9\x93 \x1b\xa6V\xa3\x13\xde\xaf\x87" +
+	"\x15N\x8b\x8d8\x0a\xee\xd7\xa0\x09\xf3\xc7\xf5K9\xcd" +
+	"\x83\xd6%QwR\xec \x86\xffW#-\xefw\x87" +
+	"W#\x9a\x1a@\xb44j\x17\xafU\xb5\xf3\xddK\x80" +
+	"\xb7*\xc9;1\xd5\xce\xf7q;\xdf+\xc9;Y5" +
+	"\x87\xf2\xb8\xefOH\xf2\x1e\x14UV+\xc3\xfbY\xfd" +
+	"_7\xb83\xd0y\xee\x9f\x9a\xca\xdc\xbb\x05<\x8a\x8c" +
+	"g\xcd\xbe\xbf\x8f\x1eg\xab\xeaP\x0f \xa1n_\x01" +
+	"H\xaa\x9b\x97\x00\xaa\xa9\xf7\xaf\x00\xd3Sm\xf2\x9f\xf2" +
+	"E\x13Xm;gr\x93,\xf2O\xfcn\xa334" +
+	"\xc9\xfe\xe4\x1cP^ih\xacY\x1c\x89\xf6G_\x1d" +
+	"\xa8^5J.\xfed\xfb\xf0\x85\x87\x9fP\x87V " +
+	"\xd4\xcd\x0d\x9a\xbc\x134\x1e\xdf\xea\xfa%\x08\xd5n," +
+	"\x8e\xc6\xf3*u\xd8\xd7*\xad\xd3{\xcc\xdb\xd1u-" +
+	"\x9f\x1c\xca\xfd$<4\x9aHm:\xcaYp\xea<" +
+	"QH8D\x07Gy\xb8\xfa\xa1Q\x1e^\xe5\xe4\xd4" +
+	"\xd5\xcb\x9c\xaa\x19\xf5W\xd64\xd4\x953\x005\xd5e" +
+	"^\x9bU/\xf2\xda\x9c\xda\xfb\x12@\x07\xd4^\x06P" +
+	"K]b\xabm\xf5<\xaf\xcd\xab\xdd\x0b\x00u\xd4." +
+	"K\xbaj\xf7k\x00)\xb5\xfb$@\xd7\xa8\xdd\xcf\xf3" +
+	"\xab\xa6\x9ec\xa5\xab~z\x0e\xa0k\xd53\xec\xe8:" +
+	"\xf5\xc3\x0b\xc0N\x91\x9cM\xccvRn\xf9q\x14\xfa" +
+	"6\x824\x89\x8cLC\x9b\xcd2\xf0\x93@\xc7\xb1\x06" +
+	"\x85e\xa8\xfd0\x8e\x12\xcd\xb7\xb5\xe1\x87=\xfdH\xa1" +
+	"!s[\x16\x89_\xd8\xd3&C':\xa7\xc3r\xd3" +
+	"d\x1bQ\x18jPR&\xc6\xdec\x8a$\xe4=\x03" +
+	"mO\x9b\xf0\x93\x86\xecZ\x1c\x9bm\x1d\x02\xbc\xbe\x16" +
+	"\x04:\xc5\xa2\xf57b\xbd\xc3\xe5g\x0a[\x06&\xd9" +
+	"\x8c\xa3\xfd\xcaH3\x1d\x98$\x8c\xc8F&\xb9\xc7\x8f" +
+	"b\xa9\xc3\xb2H\xf2\"MMFV\x87\x0f\xe80\xf2" +
+	"\x81R\x7f.\xd5\x81\xf5-\xbd\xa3\xd3\xc4\xba43\x81" +
+	"\xce)g\xfbw\x99\xa4cubKk\xcc\x03~2" +
+	"\xec\x09>DnsD\x89\xd5Y\xc2\xaf\x0f\xc7t\xdf" +
+	" \x8d5\x8e\x0ctbu\xc8\x87\xfd\x84o\xf56\xa4" +
+	"?,s\x9dmE\x81\xfe\x14%\xfe\x96\x1f\xc5\xfe\x86" +
+	"\x8c\xf5{\xd6gO\xe7E,m\xfe\xef\x00\x00\x00\xff" +
+	"\xff\xff\x9buD"
 
 func RegisterSchema(reg *schemas.Registry) {
 	reg.Register(&schemas.Schema{
 		String: schema_85d3acc39d94e0f8,
 		Nodes: []uint64{
+			0x80771458f748835f,
 			0x8cc20228b0f1020d,
 			0xb1092b0e00ae75e5,
 			0xb6507620d585d9aa,
 			0xbbc6975bdbf2ac03,
+			0xde41b8fef461a640,
+			0xe24395066f807185,
 			0xe35eff8ed54464f6,
+			0xf96f1c40b685feaa,
 		},
 		Compressed: true,
 	})

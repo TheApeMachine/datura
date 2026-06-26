@@ -336,7 +336,7 @@ func (ring *MPMCRing[T]) Read(p []byte) (int, error) {
 
 	outbound.WithPayload(payload)
 
-	return outbound.Read(p)
+	return outbound.PackInto(p)
 }
 
 /*
@@ -348,7 +348,7 @@ func (ring *MPMCRing[T]) Write(p []byte) (int, error) {
 		return 0, errors.New("structure: MPMCRing has no artifact")
 	}
 
-	written, err := ring.artifact.Write(p)
+	written, err := ring.artifact.Unpack(p)
 
 	if err != nil {
 		return written, err
@@ -601,7 +601,7 @@ func (navigator *mpmcNavigator[T]) Read(p []byte) (int, error) {
 
 	outbound.WithPayload(payload)
 
-	return outbound.Read(p)
+	return outbound.PackInto(p)
 }
 
 /*
@@ -613,7 +613,7 @@ func (navigator *mpmcNavigator[T]) Write(p []byte) (int, error) {
 		return 0, errors.New("structure: mpmcNavigator has no artifact")
 	}
 
-	written, err := navigator.parent.artifact.Write(p)
+	written, err := navigator.parent.artifact.Unpack(p)
 
 	if err != nil {
 		return written, err

@@ -38,7 +38,7 @@ func TestClockRing_ReadWrite(t *testing.T) {
 			So(readCount, ShouldBeGreaterThan, 0)
 
 			decoded := datura.Acquire("clock", datura.Artifact_Type_json)
-			_, err := decoded.Write(buffer[:readCount])
+			_, err := decoded.Unpack(buffer[:readCount])
 			So(err, ShouldBeNil)
 
 			out := decoded.DecryptPayload()

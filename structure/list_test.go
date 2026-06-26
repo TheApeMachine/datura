@@ -158,7 +158,7 @@ func TestListRingReadWrite(t *testing.T) {
 			So(readCount, ShouldBeGreaterThan, 0)
 
 			decoded := datura.Acquire("list", datura.Artifact_Type_json)
-			_, writeErr := decoded.Write(buffer[:readCount])
+			_, writeErr := decoded.Unpack(buffer[:readCount])
 			So(writeErr, ShouldBeNil)
 
 			out := decoded.DecryptPayload()

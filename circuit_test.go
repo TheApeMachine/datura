@@ -19,7 +19,7 @@ func TestZkSnarkProof(t *testing.T) {
 		pseudonymHash := []byte{1, 2, 3, 4}
 		merkleRoot := []byte{9, 8, 7, 6}
 
-		err = mockArtifact.SetPseudonymHash(pseudonymHash)
+		err = mockArtifact.SetPseudonym(pseudonymHash)
 		So(err, ShouldBeNil)
 		err = mockArtifact.SetMerkleRoot(merkleRoot)
 		So(err, ShouldBeNil)
@@ -66,7 +66,7 @@ func buildProofArtifact(t *testing.T, pseudonymHash, merkleRoot []byte) *Artifac
 		t.Fatal(err)
 	}
 
-	if err = artifact.SetPseudonymHash(pseudonymHash); err != nil {
+	if err = artifact.SetPseudonym(pseudonymHash); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,7 +112,7 @@ func BenchmarkGenerateProof(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	_ = artifact.SetPseudonymHash([]byte{1, 2, 3, 4})
+	_ = artifact.SetPseudonym([]byte{1, 2, 3, 4})
 	_ = artifact.SetMerkleRoot([]byte{9, 8, 7, 6})
 
 	b.ResetTimer()

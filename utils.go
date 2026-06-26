@@ -12,7 +12,7 @@ decryptPayload returns decrypted payload bytes when the artifact holds valid cip
 Absence of encrypted material is an ordinary outcome and returns an error without logging.
 */
 func (artifact *Artifact) decryptPayload() ([]byte, error) {
-	if artifact == nil || !artifact.HasEncryptedPayload() {
+	if artifact == nil || !artifact.HasPayload() {
 		return nil, errnie.Err(
 			errnie.Validation,
 			"artifact is nil or has no encrypted payload",
@@ -30,7 +30,7 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 		return nil, errnie.Err(errnie.Validation, "encrypted key too short", nil)
 	}
 
-	encryptedPayload, err := artifact.EncryptedPayload()
+	encryptedPayload, err := artifact.Payload()
 
 	if err != nil {
 		return nil, errnie.Err(errnie.Validation, "encrypted payload unavailable", err)
