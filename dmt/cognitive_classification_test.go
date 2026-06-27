@@ -13,17 +13,17 @@ func TestClassify(t *testing.T) {
 
 		sequence := []byte("the_blue")
 
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
 			[]byte("the_blue"),
 			CognitiveState{Count: 12, Probability: 0.737},
 		)
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Truck"),
 			[]byte("the"),
 			CognitiveState{Count: 2, Probability: 0.058},
 		)
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Car"),
 			[]byte("the_blue"),
 			CognitiveState{Count: 4, Probability: 0.12},
@@ -49,7 +49,7 @@ func TestUnsupervisedLearn(t *testing.T) {
 
 		sequence := []byte("the_blue")
 
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
 			[]byte("the"),
 			CognitiveState{Count: 4, Probability: 0.6},
@@ -95,12 +95,12 @@ func TestClassifyZeroAlloc(t *testing.T) {
 	Convey("Given packed basin weights", t, func() {
 		tree := NewTree("")
 
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
 			[]byte("the_blue"),
 			CognitiveState{Count: 12, Probability: 0.737},
 		)
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Truck"),
 			[]byte("the"),
 			CognitiveState{Count: 2, Probability: 0.058},
@@ -123,12 +123,12 @@ func TestClassifyZeroAlloc(t *testing.T) {
 func BenchmarkClassify(b *testing.B) {
 	tree := NewTree("")
 
-	_, _ = tree.InsertAttractorBasin(
+	_, _, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),
 		[]byte("the_blue"),
 		CognitiveState{Count: 12, Probability: 0.737},
 	)
-	_, _ = tree.InsertAttractorBasin(
+	_, _, _ = tree.InsertAttractorBasin(
 		[]byte("Truck"),
 		[]byte("the"),
 		CognitiveState{Count: 2, Probability: 0.058},
@@ -145,7 +145,7 @@ func BenchmarkClassify(b *testing.B) {
 func BenchmarkUnsupervisedLearn(b *testing.B) {
 	tree := NewTree("")
 
-	_, _ = tree.InsertAttractorBasin(
+	_, _, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),
 		[]byte("the"),
 		CognitiveState{Count: 4, Probability: 0.6},

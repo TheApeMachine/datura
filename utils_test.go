@@ -1,6 +1,8 @@
 package datura
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
 	"fmt"
 	"testing"
 
@@ -29,11 +31,11 @@ func TestDecryptPayload(t *testing.T) {
 		})
 	})
 
-	Convey("Given an artifact with an encrypted payload", t, func() {
+	Convey("Given an artifact with a default payload", t, func() {
 		artifact := Acquire("decrypt-test", Artifact_Type_json).
 			WithPayload([]byte(`{"method":"add_order"}`))
 
-		Convey("It should decrypt the payload", func() {
+		Convey("It should expose the plaintext payload", func() {
 			payload, err := artifact.decryptPayload()
 			So(err, ShouldBeNil)
 			So(string(payload), ShouldEqual, `{"method":"add_order"}`)
@@ -49,6 +51,48 @@ func TestDecryptPayload(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(string(payload), ShouldEqual, `{"method":"local_stage"}`)
 			So(string(artifact.DecryptPayload()), ShouldEqual, `{"method":"local_stage"}`)
+		})
+	})
+}
+
+func TestSealedPayload(t *testing.T) {
+	Convey("Given a recipient key pair and a sealed payload", t, func() {
+		recipientKey, keyErr := ecdh.P256().GenerateKey(rand.Reader)
+		So(keyErr, ShouldBeNil)
+
+		artifact := Acquire("seal-test", Artifact_Type_json).
+			WithRole("secret").
+			WithScope("BTC/USD")
+		artifact.SetTimestamp(123)
+		So(artifact.WithSealedPayload(
+			[]byte(`{"secret":true}`),
+			recipientKey.PublicKey().Bytes(),
+		), ShouldNotBeNil)
+
+		Convey("It should not store the raw AES key in the artifact", func() {
+			encryptedKey, encryptedKeyErr := artifact.EncryptedKey()
+			So(encryptedKeyErr != nil || len(encryptedKey) == 0, ShouldBeTrue)
+		})
+
+		Convey("It should not silently decode without the private key", func() {
+			payload, err := artifact.decryptPayload()
+			So(payload, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(artifact.DecryptPayload(), ShouldBeNil)
+		})
+
+		Convey("It should decrypt with the recipient private key", func() {
+			payload, err := artifact.DecryptPayloadWithKey(recipientKey)
+			So(err, ShouldBeNil)
+			So(string(payload), ShouldEqual, `{"secret":true}`)
+		})
+
+		Convey("It should authenticate artifact metadata", func() {
+			artifact.WithScope("ETH/USD")
+
+			payload, err := artifact.DecryptPayloadWithKey(recipientKey)
+			So(payload, ShouldBeNil)
+			So(err, ShouldNotBeNil)
 		})
 	})
 }

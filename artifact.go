@@ -205,6 +205,10 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 }
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
+	return artifact.WithPlaintextPayload(payload)
+}
+
+func (artifact *Artifact) WithSealedPayload(payload, recipientPublicKey []byte) *Artifact {
 	if len(payload) == 0 {
 		origin, _ := artifact.Origin()
 		role, _ := artifact.Role()
@@ -224,48 +228,56 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	}
 
 	cryptoSuite := NewCryptoSuite()
-	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
-
-	if errnie.Error(artifact.SetPayload(make([]byte, cipherLen))) != nil {
-		return nil
-	}
-
-	if errnie.Error(artifact.SetEncryptedKey(make([]byte, aesKeyBytes))) != nil {
-		return nil
-	}
-
-	if errnie.Error(artifact.SetPublicKey(make([]byte, p256PubKeyBytes))) != nil {
-		return nil
-	}
-
-	encPayloadBuf, err := artifact.Payload()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	encKeyBuf, err := artifact.EncryptedKey()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	ephemeralKeyBuf, err := artifact.PublicKey()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	if errnie.Error(cryptoSuite.EncryptPayloadDirect(
-		encPayloadBuf,
-		encKeyBuf,
-		ephemeralKeyBuf,
+	encryptedPayload, ephemeralPublicKey, err := cryptoSuite.SealPayload(
 		payload,
-	)) != nil {
+		recipientPublicKey,
+		artifact.payloadAAD(),
+	)
+
+	if errnie.Error(err) != nil {
 		return nil
 	}
+
+	if errnie.Error(artifact.SetPayload(encryptedPayload)) != nil {
+		return nil
+	}
+
+	if errnie.Error(artifact.SetEncryptedKey(nil)) != nil {
+		return nil
+	}
+
+	errnie.Error(artifact.SetPublicKey(ephemeralPublicKey))
 
 	return artifact
+}
+
+func (artifact *Artifact) payloadAAD() []byte {
+	var builder strings.Builder
+
+	origin, _ := artifact.Origin()
+	destination, _ := artifact.Destination()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+
+	builder.WriteString("origin=")
+	builder.WriteString(origin)
+	builder.WriteByte('\n')
+	builder.WriteString("destination=")
+	builder.WriteString(destination)
+	builder.WriteByte('\n')
+	builder.WriteString("role=")
+	builder.WriteString(role)
+	builder.WriteByte('\n')
+	builder.WriteString("scope=")
+	builder.WriteString(scope)
+	builder.WriteByte('\n')
+	builder.WriteString("timestamp=")
+	builder.WriteString(fmt.Sprint(artifact.Timestamp()))
+	builder.WriteByte('\n')
+	builder.WriteString("type=")
+	builder.WriteString(artifact.Type().String())
+
+	return []byte(builder.String())
 }
 
 func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
@@ -334,7 +346,7 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 }
 
 /*
-WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
+WithAttributesAsPayload copies staged attributes into the payload slot.
 */
 func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
 	encoded, err := artifact.Attributes()

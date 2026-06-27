@@ -74,7 +74,7 @@ func (tree *Tree) GetContextWeight(contextPath []byte) PackedWeight {
 /*
 InsertContextWeight stores a packed weight at contextPath.
 */
-func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool) {
+func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool, error) {
 	return tree.Insert(contextPath, MarshalWeight(weight.Count, weight.Probability))
 }
 

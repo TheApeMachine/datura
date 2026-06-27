@@ -9,6 +9,7 @@ package dmt
 import (
 	"bytes"
 	"iter"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,7 @@ type Tree struct {
 	state        *batch
 	root         atomic.Pointer[iradix.Tree[[]byte]]
 	persist      *PersistentStore
+	persistMu    sync.Mutex
 	term         atomic.Uint64
 	logIndex     atomic.Uint64
 	opCount      atomic.Uint64
@@ -44,6 +46,34 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 	}
 
 	return iradix.New[[]byte]()
+}
+
+func (tree *Tree) persistenceError() error {
+	if tree == nil {
+		return nil
+	}
+
+	if tree.state != nil && tree.state.Err() != nil {
+		return tree.state.Err()
+	}
+
+	if tree.persist != nil {
+		return tree.persist.fatalError()
+	}
+
+	return nil
+}
+
+func (tree *Tree) failPersistence(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if tree.state != nil && tree.state.Err() == nil {
+		tree.state.err = errnie.Err(errnie.IO, "dmt/tree", err)
+	}
+
+	return tree.persistenceError()
 }
 
 const treeOpSampleMask = uint64(63)
@@ -208,10 +238,25 @@ func (tree *Tree) WalkLowerBound(lowerBound []byte, fn func(key, value []byte) b
 Insert adds or updates a key-value pair in the tree.
 Due to the immutable nature of the tree, this operation creates a new version
 of the tree rather than modifying the existing one.
-Returns the updated tree and a boolean indicating if the tree was modified.
+Returns the updated tree, a boolean indicating if the tree was modified, and a
+persistence error when a durable tree cannot write its WAL.
 */
-func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
+func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 	started, track := tree.beginOp()
+
+	if tree == nil {
+		return tree, false, nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, err
+	}
+
+	if tree.persist != nil {
+		return tree.insertPersistent(started, track, key, value)
+	}
 
 	for {
 		oldRoot := tree.loadRoot()
@@ -220,32 +265,62 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 		if newRoot == oldRoot {
 			tree.endOp(started, track)
 
-			return tree, false
+			return tree, false, nil
 		}
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
-			index := tree.logIndex.Add(1)
-
-			if tree.persist != nil {
-				guardStep(tree.state, func() error {
-					return tree.persist.LogInsert(
-						key,
-						value,
-						tree.term.Load(),
-						index,
-					)
-				})
-
-				if index%tree.persist.snapCount == 0 {
-					guardStep(tree.state, tree.SaveSnapshot)
-				}
-			}
-
 			tree.endOp(started, track)
 
-			return tree, true
+			return tree, true, nil
 		}
 	}
+}
+
+func (tree *Tree) insertPersistent(
+	started time.Time,
+	track bool,
+	key []byte,
+	value []byte,
+) (*Tree, bool, error) {
+	tree.persistMu.Lock()
+	defer tree.persistMu.Unlock()
+
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, err
+	}
+
+	oldRoot := tree.loadRoot()
+	newRoot, _, _ := oldRoot.Insert(key, value)
+
+	if newRoot == oldRoot {
+		tree.endOp(started, track)
+
+		return tree, false, nil
+	}
+
+	index := tree.logIndex.Load() + 1
+	if err := tree.persist.LogInsert(key, value, tree.term.Load(), index); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, tree.failPersistence(err)
+	}
+
+	tree.root.Store(newRoot)
+	tree.logIndex.Store(index)
+
+	if index%tree.persist.snapCount == 0 {
+		if err := tree.SaveSnapshot(); err != nil {
+			tree.endOp(started, track)
+
+			return tree, true, tree.failPersistence(err)
+		}
+	}
+
+	tree.endOp(started, track)
+
+	return tree, true, nil
 }
 
 func (tree *Tree) SaveSnapshot() error {
@@ -253,7 +328,11 @@ func (tree *Tree) SaveSnapshot() error {
 		return nil
 	}
 
-	return tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	if err := tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
 		root := tree.loadRoot()
 		it := root.Root().Iterator()
 
@@ -262,27 +341,32 @@ func (tree *Tree) SaveSnapshot() error {
 				return
 			}
 		}
-	})
+	}); err != nil {
+		return tree.failPersistence(err)
+	}
+
+	return nil
 }
 
 /*
 InsertArtifact adds or updates a datura.Artifact in the tree.
 Due to the immutable nature of the tree, this operation creates a new version
 of the tree rather than modifying the existing one.
-Returns the updated tree and a boolean indicating if the tree was modified.
+Returns the updated tree, a boolean indicating if the tree was modified, and any
+persistence error.
 */
 func (tree *Tree) InsertArtifact(
 	prefix []byte,
 	artifact *datura.Artifact,
-) (*Tree, bool) {
+) (*Tree, bool, error) {
 	if tree == nil || artifact == nil || len(prefix) == 0 {
-		return tree, false
+		return tree, false, nil
 	}
 
 	wire := artifact.Pack()
 
 	if len(wire) == 0 {
-		return tree, false
+		return tree, false, nil
 	}
 
 	return tree.Insert(prefix, wire)
@@ -326,24 +410,39 @@ func (tree *Tree) Close() error {
 	}
 
 	if tree.persist != nil {
-		guardStep(tree.state, tree.persist.Close)
+		if err := tree.persist.Close(); err != nil {
+			tree.failPersistence(err)
+		}
 	}
 
 	return tree.state.Err()
 }
 
-func (tree *Tree) UpdateTerm(term uint64) {
+func (tree *Tree) UpdateTerm(term uint64) error {
 	if tree == nil {
-		return
+		return nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	if tree.persist != nil {
+		tree.persistMu.Lock()
+		defer tree.persistMu.Unlock()
+
+		if err := tree.persistenceError(); err != nil {
+			return err
+		}
+
+		if err := tree.persist.LogTerm(term); err != nil {
+			return tree.failPersistence(err)
+		}
 	}
 
 	tree.term.Store(term)
 
-	if tree.persist != nil {
-		guardStep(tree.state, func() error {
-			return tree.persist.LogTerm(term)
-		})
-	}
+	return nil
 }
 
 func (tree *Tree) GetLogState() (term, index uint64) {

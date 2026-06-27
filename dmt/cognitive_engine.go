@@ -49,7 +49,7 @@ func (tree *Tree) GetSensoryWeight(sequence []byte) CognitiveState {
 /*
 InsertSensoryWeight writes s/[sequence] suffix statistics.
 */
-func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool) {
+func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool, error) {
 	return tree.Insert(sensoryStorageKey(sequence), MarshalCognitive(state))
 }
 
@@ -73,7 +73,7 @@ func (tree *Tree) InsertAttractorBasin(
 	class []byte,
 	sequence []byte,
 	state CognitiveState,
-) (*Tree, bool) {
+) (*Tree, bool, error) {
 	return tree.Insert(basinStorageKey(class, sequence), MarshalCognitive(state))
 }
 
@@ -263,7 +263,7 @@ func (tree *Tree) ExecuteBeamSearch(
 /*
 CommitToEpisodicBuffer stores e/[timestamp][sequence] episodic observations.
 */
-func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tree, bool) {
+func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tree, bool, error) {
 	return tree.Insert(episodicStorageKey(timestamp, sequence), []byte{1})
 }
 

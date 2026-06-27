@@ -1,6 +1,8 @@
 package dmt
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,14 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/theapemachine/datura"
 )
+
+var errForcedWALWrite = errors.New("forced wal write failure")
+
+type failingWALWriter struct{}
+
+func (failingWALWriter) Write(_ []byte) (int, error) {
+	return 0, errForcedWALWrite
+}
 
 func TestNewTree(t *testing.T) {
 	Convey("Given a new tree", t, func() {
@@ -157,7 +167,8 @@ func TestInsert(t *testing.T) {
 		tree := NewTree("")
 
 		Convey("When an insert is performed", func() {
-			newTree, ok := tree.Insert([]byte("test"), []byte("test"))
+			newTree, ok, err := tree.Insert([]byte("test"), []byte("test"))
+			So(err, ShouldBeNil)
 			So(ok, ShouldBeTrue)
 			So(newTree, ShouldNotBeNil)
 
@@ -247,7 +258,8 @@ func TestTreeWithPersistence(t *testing.T) {
 			})
 
 			Convey("And when inserting data", func() {
-				newTree, ok := tree.Insert([]byte("test-key"), []byte("test-value"))
+				newTree, ok, err := tree.Insert([]byte("test-key"), []byte("test-value"))
+				So(err, ShouldBeNil)
 				So(ok, ShouldBeTrue)
 				So(newTree, ShouldNotBeNil)
 
@@ -267,6 +279,44 @@ func TestTreeWithPersistence(t *testing.T) {
 					So(exists, ShouldBeTrue)
 					So(value, ShouldResemble, []byte("test-value"))
 				})
+			})
+		})
+	})
+}
+
+func TestTreePersistentInsertFailsClosedOnWALWriteFailure(t *testing.T) {
+	Convey("Given a persistent tree with a failing WAL writer", t, func() {
+		tree := NewTree(t.TempDir())
+		So(tree.persist, ShouldNotBeNil)
+
+		originalWriter := tree.persist.walWriter
+		originalPool := tree.persist.pool
+		tree.persist.pool = nil
+		tree.persist.walWriter = bufio.NewWriter(failingWALWriter{})
+		defer func() {
+			tree.persist.walWriter = originalWriter
+			tree.persist.pool = originalPool
+			_ = tree.Close()
+		}()
+
+		Convey("When inserting a key", func() {
+			_, ok, err := tree.Insert([]byte("unsafe"), []byte("value"))
+
+			Convey("Then the insert should fail without publishing the root", func() {
+				So(err, ShouldNotBeNil)
+				So(ok, ShouldBeFalse)
+
+				_, exists := tree.Get([]byte("unsafe"))
+				So(exists, ShouldBeFalse)
+			})
+
+			Convey("And future writes should fail closed", func() {
+				_, ok, err := tree.Insert([]byte("future"), []byte("value"))
+				So(err, ShouldNotBeNil)
+				So(ok, ShouldBeFalse)
+
+				_, exists := tree.Get([]byte("future"))
+				So(exists, ShouldBeFalse)
 			})
 		})
 	})
@@ -292,7 +342,7 @@ func TestTreeStateRecovery(t *testing.T) {
 
 		for _, e := range entries {
 			tree1.UpdateTerm(e.term)
-			tree1, _ = tree1.Insert([]byte(e.key), []byte(e.value))
+			tree1, _, _ = tree1.Insert([]byte(e.key), []byte(e.value))
 		}
 		tree1.Close()
 
@@ -331,7 +381,8 @@ func TestTreeSnapshotPreservesActiveEntries(t *testing.T) {
 		}
 
 		for key, value := range entries {
-			_, ok := tree.Insert([]byte(key), []byte(value))
+			_, ok, err := tree.Insert([]byte(key), []byte(value))
+			So(err, ShouldBeNil)
 			So(ok, ShouldBeTrue)
 		}
 
@@ -493,11 +544,12 @@ func TestInsertArtifact(testingTB *testing.T) {
 		artifact.WithPayload([]byte(`{"channel":"ticker"}`))
 
 		Convey("When inserting with an explicit prefix", func() {
-			_, ok := tree.InsertArtifact(
+			_, ok, err := tree.InsertArtifact(
 				[]byte("ticker/update/kraken:public"),
 				tree.WithCognition(artifact),
 			)
 
+			So(err, ShouldBeNil)
 			So(ok, ShouldBeTrue)
 
 			var found bool
@@ -516,11 +568,11 @@ func TestWithCognition(testingTB *testing.T) {
 	Convey("Given a trained context path", testingTB, func() {
 		tree := NewTree("")
 
-		_, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
+		_, _, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
 			Count:       10,
 			Probability: 1.0,
 		})
-		_, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
+		_, _, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
 			Count:       4,
 			Probability: 0.5,
 		})
@@ -548,11 +600,11 @@ func BenchmarkCognitiveEngineStamp(benchmark *testing.B) {
 	tree := NewTree("")
 	engine := NewCognitiveEngine(tree)
 
-	_, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
+	_, _, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
 		Count:       10,
 		Probability: 1.0,
 	})
-	_, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
+	_, _, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
 		Count:       4,
 		Probability: 0.5,
 	})

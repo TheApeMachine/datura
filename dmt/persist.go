@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,12 @@ const (
 	opSnapshot
 	opTermUpdate
 )
+
+const maxWALFieldBytes = 64 << 20
+
+type persistenceFatal struct {
+	message string
+}
 
 /*
 WALEntry represents a single write-ahead log entry. Each entry contains the
@@ -62,8 +69,50 @@ type PersistentStore struct {
 	lastIndex atomic.Uint64
 	lastTerm  atomic.Uint64
 	closed    atomic.Bool
+	fatal     atomic.Pointer[persistenceFatal]
 	snapCount uint64
 	lastSnap  atomic.Int64
+}
+
+func (ps *PersistentStore) fatalError() error {
+	fatal := ps.fatal.Load()
+	if fatal == nil {
+		return nil
+	}
+
+	return errors.New(fatal.message)
+}
+
+func (ps *PersistentStore) markFatal(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if existing := ps.fatalError(); existing != nil {
+		return existing
+	}
+
+	fatal := &persistenceFatal{
+		message: fmt.Sprintf("persistent store fatal: %v", err),
+	}
+
+	if ps.fatal.CompareAndSwap(nil, fatal) {
+		return errors.New(fatal.message)
+	}
+
+	return ps.fatalError()
+}
+
+func (ps *PersistentStore) requireWritable() error {
+	if err := ps.fatalError(); err != nil {
+		return err
+	}
+
+	if ps.closed.Load() {
+		return fmt.Errorf("persistent store is closed")
+	}
+
+	return nil
 }
 
 /*
@@ -107,8 +156,8 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 LogInsert logs an insert operation to the WAL through the serialized worker pool.
 */
 func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("insert", func() error {
@@ -123,15 +172,15 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 			binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
 
-			if _, err := ps.walWriter.Write(frame[:]); err != nil {
+			if err := writeFull(ps.walWriter, frame[:]); err != nil {
 				return err
 			}
 
-			if _, err := ps.walWriter.Write(key); err != nil {
+			if err := writeFull(ps.walWriter, key); err != nil {
 				return err
 			}
 
-			if _, err := ps.walWriter.Write(value); err != nil {
+			if err := writeFull(ps.walWriter, value); err != nil {
 				return err
 			}
 
@@ -144,7 +193,7 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -154,8 +203,8 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 }
 
 func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	if len(entries) == 0 {
@@ -177,15 +226,15 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 				binary.LittleEndian.PutUint32(frame[17:21], uint32(len(entry.Key)))
 				binary.LittleEndian.PutUint32(frame[21:25], uint32(len(entry.Value)))
 
-				if _, err := ps.walWriter.Write(frame[:]); err != nil {
+				if err := writeFull(ps.walWriter, frame[:]); err != nil {
 					return err
 				}
 
-				if _, err := ps.walWriter.Write(entry.Key); err != nil {
+				if err := writeFull(ps.walWriter, entry.Key); err != nil {
 					return err
 				}
 
-				if _, err := ps.walWriter.Write(entry.Value); err != nil {
+				if err := writeFull(ps.walWriter, entry.Value); err != nil {
 					return err
 				}
 
@@ -199,7 +248,7 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	last := entries[len(entries)-1]
@@ -213,8 +262,8 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 LogDelete logs a delete operation to the WAL through the serialized worker pool.
 */
 func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("delete", func() error {
@@ -228,13 +277,11 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 			binary.LittleEndian.PutUint64(frame[9:17], index)
 			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 
-			if _, err := ps.walWriter.Write(frame[:]); err != nil {
+			if err := writeFull(ps.walWriter, frame[:]); err != nil {
 				return err
 			}
 
-			_, err := ps.walWriter.Write(key)
-
-			return err
+			return writeFull(ps.walWriter, key)
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
@@ -243,7 +290,7 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -296,8 +343,8 @@ func (ps *PersistentStore) Close() error {
 LogTerm writes a term-update entry to the WAL so it survives restart.
 */
 func (ps *PersistentStore) LogTerm(term uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("term", func() error {
@@ -309,9 +356,7 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 			frame[0] = opTermUpdate
 			binary.LittleEndian.PutUint64(frame[1:9], term)
 
-			_, err := ps.walWriter.Write(frame[:])
-
-			return err
+			return writeFull(ps.walWriter, frame[:])
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
@@ -320,7 +365,7 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -355,7 +400,11 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	for {
 		op, err := reader.ReadByte()
 		if err != nil {
-			break
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return entries, ps.markFatal(err)
 		}
 
 		switch op {
@@ -376,6 +425,14 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			index := binary.LittleEndian.Uint64(header[8:16])
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
 			valLen := binary.LittleEndian.Uint32(header[20:24])
+
+			if err := validateWALLength("key", keyLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
+
+			if err := validateWALLength("value", valLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
@@ -418,6 +475,10 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			term := binary.LittleEndian.Uint64(header[0:8])
 			index := binary.LittleEndian.Uint64(header[8:16])
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
+
+			if err := validateWALLength("key", keyLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
@@ -470,8 +531,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 		default:
-			return entries, fmt.Errorf("invalid wal operation: %d", op)
+			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
 		}
+	}
+
+	if ps.state.Failed() {
+		return entries, ps.markFatal(ps.state.Err())
 	}
 
 	return entries, nil
@@ -488,6 +553,10 @@ func (ps *PersistentStore) loadLastState() error {
 func (ps *PersistentStore) CreateSnapshot(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	if err := ps.requireWritable(); err != nil {
+		return err
+	}
+
 	if iterator == nil {
 		return fmt.Errorf("persistent snapshot requires active tree iterator")
 	}
@@ -503,7 +572,7 @@ func (ps *PersistentStore) CreateSnapshot(
 		return nil
 	}
 
-	return ps.persistWal(func() error {
+	err := ps.persistWal(func() error {
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
@@ -530,9 +599,7 @@ func (ps *PersistentStore) CreateSnapshot(
 			binary.LittleEndian.PutUint64(stateFrame[0:8], ps.lastTerm.Load())
 			binary.LittleEndian.PutUint64(stateFrame[8:16], ps.lastIndex.Load())
 
-			_, err := file.Write(stateFrame[:])
-
-			return err
+			return writeFull(file, stateFrame[:])
 		})
 
 		guardStep(ps.state, func() error {
@@ -541,6 +608,12 @@ func (ps *PersistentStore) CreateSnapshot(
 
 		return ps.state.Err()
 	})
+
+	if err != nil {
+		return ps.markFatal(err)
+	}
+
+	return nil
 }
 
 func (ps *PersistentStore) truncateWAL(
@@ -569,9 +642,7 @@ func (ps *PersistentStore) truncateWAL(
 		binary.LittleEndian.PutUint64(walFrame[1:9], ps.lastTerm.Load())
 		binary.LittleEndian.PutUint64(walFrame[9:17], ps.lastIndex.Load())
 
-		_, err := writer.Write(walFrame[:])
-
-		return err
+		return writeFull(writer, walFrame[:])
 	})
 
 	var writeErr error
@@ -591,13 +662,13 @@ func (ps *PersistentStore) truncateWAL(
 		binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 		binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
 
-		if _, writeErr = writer.Write(frame[:]); writeErr != nil {
+		if writeErr = writeFull(writer, frame[:]); writeErr != nil {
 			return false
 		}
-		if _, writeErr = writer.Write(key); writeErr != nil {
+		if writeErr = writeFull(writer, key); writeErr != nil {
 			return false
 		}
-		if _, writeErr = writer.Write(value); writeErr != nil {
+		if writeErr = writeFull(writer, value); writeErr != nil {
 			return false
 		}
 
@@ -647,10 +718,18 @@ func (ps *PersistentStore) GetLastState() (term, index uint64) {
 func (ps *PersistentStore) TruncateWAL(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	if err := ps.requireWritable(); err != nil {
+		return err
+	}
+
 	return ps.runWal("truncate", func() error {
 		ps.state.Reset()
 
-		return ps.truncateWAL(iterator)
+		if err := ps.truncateWAL(iterator); err != nil {
+			return ps.markFatal(err)
+		}
+
+		return nil
 	})
 }
 
@@ -673,6 +752,32 @@ func (ps *PersistentStore) runWal(op string, fn func() error) error {
 
 func (ps *PersistentStore) persistWal(fn func() error) error {
 	return fn()
+}
+
+func writeFull(writer io.Writer, data []byte) error {
+	written, err := writer.Write(data)
+	if err != nil {
+		return err
+	}
+
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+
+	return nil
+}
+
+func validateWALLength(field string, length uint32) error {
+	if length > maxWALFieldBytes {
+		return fmt.Errorf(
+			"invalid wal %s length %d exceeds max %d",
+			field,
+			length,
+			maxWALFieldBytes,
+		)
+	}
+
+	return nil
 }
 
 func (ps *PersistentStore) schedule(

@@ -10,7 +10,7 @@ func TestSensoryNamespace(t *testing.T) {
 	Convey("Given sensory storage keys", t, func() {
 		tree := NewTree("")
 
-		_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{
+		_, _, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{
 			Count:       5,
 			Probability: 0.5,
 		})
@@ -30,7 +30,7 @@ func TestAttractorBasin(t *testing.T) {
 	Convey("Given attractor basin entries", t, func() {
 		tree := NewTree("")
 
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_2"),
 			[]byte("big_cab_test"),
 			CognitiveState{Count: 3, Probability: 0.8},
@@ -68,10 +68,10 @@ func TestExecuteBeamSearch(t *testing.T) {
 	Convey("Given trained sensory branches", t, func() {
 		tree := NewTree("")
 
-		_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
-		_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
-		_, _ = tree.InsertSensoryWeight([]byte("blue_cab_big"), CognitiveState{Count: 4, Probability: 0.8})
-		_, _ = tree.InsertSensoryWeight([]byte("blue_truck"), CognitiveState{Count: 2, Probability: 0.2})
+		_, _, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
+		_, _, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
+		_, _, _ = tree.InsertSensoryWeight([]byte("blue_cab_big"), CognitiveState{Count: 4, Probability: 0.8})
+		_, _, _ = tree.InsertSensoryWeight([]byte("blue_truck"), CognitiveState{Count: 2, Probability: 0.2})
 
 		scratch := &BeamSearchScratch{
 			NextBeams:    make([]BeamPath, 0, 4),
@@ -98,8 +98,8 @@ func TestEpisodicREMConsolidation(t *testing.T) {
 	Convey("Given episodic observations", t, func() {
 		tree := NewTree("")
 
-		_, _ = tree.CommitToEpisodicBuffer(100, []byte("blue_cab_big"))
-		_, _ = tree.CommitToEpisodicBuffer(200, []byte("blue_cab_big"))
+		_, _, _ = tree.CommitToEpisodicBuffer(100, []byte("blue_cab_big"))
+		_, _, _ = tree.CommitToEpisodicBuffer(200, []byte("blue_cab_big"))
 
 		Convey("When running REM consolidation", func() {
 			tree.ExecuteREMSleepConsolidation(100, 200)
@@ -118,10 +118,10 @@ func TestEpisodicREMConsolidation(t *testing.T) {
 
 func BenchmarkExecuteBeamSearch(b *testing.B) {
 	tree := NewTree("")
-	_, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
-	_, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
-	_, _ = tree.InsertSensoryWeight([]byte("blue_cab_big"), CognitiveState{Count: 4, Probability: 0.8})
-	_, _ = tree.InsertSensoryWeight([]byte("blue_truck"), CognitiveState{Count: 2, Probability: 0.2})
+	_, _, _ = tree.InsertSensoryWeight([]byte("blue"), CognitiveState{Count: 10, Probability: 1.0})
+	_, _, _ = tree.InsertSensoryWeight([]byte("blue_cab"), CognitiveState{Count: 6, Probability: 0.75})
+	_, _, _ = tree.InsertSensoryWeight([]byte("blue_cab_big"), CognitiveState{Count: 4, Probability: 0.8})
+	_, _, _ = tree.InsertSensoryWeight([]byte("blue_truck"), CognitiveState{Count: 2, Probability: 0.2})
 
 	scratch := &BeamSearchScratch{
 		NextBeams:    make([]BeamPath, 0, 8),

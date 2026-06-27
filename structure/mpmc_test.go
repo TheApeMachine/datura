@@ -2,9 +2,11 @@ package structure
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +39,10 @@ func TestMPMCRingPush(t *testing.T) {
 
 		Convey("Pop on empty returns zero before any Push", func() {
 			So(ring.Pop(), ShouldBeNil)
+		})
+
+		Convey("Navigator Pop on an empty cell returns zero instead of panicking", func() {
+			So(ring.Select(0).Pop(), ShouldBeNil)
 		})
 
 		Convey("FIFO order holds for sequential Push then Pop", func() {
@@ -126,6 +132,108 @@ func TestMPMCRingPush(t *testing.T) {
 		producers.Wait()
 		So(popped, ShouldEqual, target)
 	})
+}
+
+func TestMPMCRingConcurrentNoLossOrDuplicate(t *testing.T) {
+	const capacity = 512
+	const producers = 4
+	const consumers = 4
+	const perProducer = 2500
+	const total = producers * perProducer
+
+	ring, err := NewMPMCRing[uint64](context.Background(), capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make([]atomic.Bool, total+1)
+	errs := make(chan string, consumers)
+
+	var pushed atomic.Int64
+	var consumed atomic.Int64
+	var producerWG sync.WaitGroup
+	var consumerWG sync.WaitGroup
+
+	recordError := func(format string, args ...any) {
+		select {
+		case errs <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+
+	producerWG.Add(producers)
+	for producer := 0; producer < producers; producer++ {
+		base := producer * perProducer
+
+		go func() {
+			defer producerWG.Done()
+
+			for offset := 0; offset < perProducer; offset++ {
+				value := uint64(base + offset + 1)
+
+				for !ring.Push(value) {
+					runtime.Gosched()
+				}
+
+				pushed.Add(1)
+			}
+		}()
+	}
+
+	consumerWG.Add(consumers)
+	for range consumers {
+		go func() {
+			defer consumerWG.Done()
+
+			for consumed.Load() < total {
+				value := ring.Pop()
+				if value == 0 {
+					runtime.Gosched()
+					continue
+				}
+
+				if value > total {
+					recordError("value outside produced range: %d", value)
+					continue
+				}
+
+				if !seen[value].CompareAndSwap(false, true) {
+					recordError("duplicate value: %d", value)
+				}
+
+				consumed.Add(1)
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		producerWG.Wait()
+		consumerWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf(
+			"MPMC concurrent drain timed out (pushed=%d consumed=%d target=%d)",
+			pushed.Load(),
+			consumed.Load(),
+			total,
+		)
+	}
+
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	for value := 1; value <= total; value++ {
+		if !seen[value].Load() {
+			t.Errorf("missing value: %d", value)
+		}
+	}
 }
 
 func TestMPMCRingReadWrite(t *testing.T) {

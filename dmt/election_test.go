@@ -2,6 +2,7 @@ package dmt
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func TestNewElection(t *testing.T) {
 			defer election.Close()
 
 			Convey("Then it should be properly initialized", func() {
-				So(election, ShouldNotBeNil)
+				So(election == nil, ShouldBeFalse)
 				So(election.config, ShouldResemble, config)
 				So(election.node, ShouldEqual, node)
 				So(election.getState(), ShouldEqual, Follower)
@@ -233,6 +234,46 @@ func TestElectionTimeout(t *testing.T) {
 				state := election.getState()
 				So(state, ShouldEqual, Candidate)
 				So(election.getCurrentTerm(), ShouldBeGreaterThan, 0)
+			})
+		})
+	})
+}
+
+func TestElectionTimerLifecycle(t *testing.T) {
+	Convey("Given an election manager with active timers", t, func() {
+		config := ElectionConfig{
+			ElectionTimeout:   50 * time.Millisecond,
+			HeartbeatInterval: 10 * time.Millisecond,
+			QuorumSize:        1,
+		}
+
+		node, cleanup := newTestElectionNode("timer-node")
+		defer cleanup()
+
+		election := NewElection(config, node)
+
+		Convey("When timer state changes concurrently", func() {
+			var wg sync.WaitGroup
+
+			for range 8 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+
+					for range 64 {
+						election.stepDown(1)
+						election.becomeLeader()
+						election.handleHeartbeat(1, "leader")
+					}
+				}()
+			}
+
+			wg.Wait()
+			election.Close()
+
+			Convey("Then close is idempotent and leaves the election closed", func() {
+				election.Close()
+				So(election.closed.Load(), ShouldBeTrue)
 			})
 		})
 	})

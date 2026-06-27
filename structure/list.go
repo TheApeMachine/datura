@@ -241,7 +241,7 @@ Read implements io.Reader. It marshals the value at the cursor through the bound
 artifact.
 */
 func (ring *ListRing[T]) Read(p []byte) (int, error) {
-	if ring.artifact == nil {
+	if ring == nil || ring.artifact == nil || ring.cursor == nil {
 		return 0, io.EOF
 	}
 

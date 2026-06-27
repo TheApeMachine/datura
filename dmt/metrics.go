@@ -15,17 +15,17 @@ import (
 Metrics tracks performance and operational metrics for the radix tree.
 */
 type Metrics struct {
-	insertCount   atomic.Uint64
-	lookupCount   atomic.Uint64
-	syncCount     atomic.Uint64
-	conflictCount atomic.Uint64
-	votesReceived atomic.Uint64
-	termNumber    atomic.Uint64
-	lastVoter     atomic.Pointer[string]
-	insertLatency  *Latency
-	lookupLatency  *Latency
-	syncLatency    *Latency
-	networkLatency *Latency
+	insertCount      atomic.Uint64
+	lookupCount      atomic.Uint64
+	syncCount        atomic.Uint64
+	conflictCount    atomic.Uint64
+	votesReceived    atomic.Uint64
+	termNumber       atomic.Uint64
+	lastVoter        atomic.Pointer[string]
+	insertLatency    *Latency
+	lookupLatency    *Latency
+	syncLatency      *Latency
+	networkLatency   *Latency
 	bytesTransmitted atomic.Uint64
 	bytesReceived    atomic.Uint64
 	peerCount        atomic.Int32

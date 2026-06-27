@@ -60,8 +60,8 @@ struct Artifact {
     attributes  @11 :Data;
 
     payload       @12 :Data;
-    encryptedKey  @13 :Data;
-    publicKey     @14 :Data;
+    encryptedKey  @13 :Data;  # legacy non-secret AES key carriage; do not use for confidentiality
+    publicKey     @14 :Data;  # sealed payload ephemeral public key
 
     struct Approval {
         zkProof   @0 :Data; # Users's zero-knowledge proof

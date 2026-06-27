@@ -22,6 +22,27 @@ func TestNewSPSCRing(t *testing.T) {
 			So(ring.Empty(), ShouldBeTrue)
 		})
 	})
+
+	Convey("Given capacity one", t, func() {
+		ring, err := NewSPSCRing[*spscFrame](1, false, nil)
+
+		Convey("NewSPSCRing should accept it as the smallest valid ring", func() {
+			So(err, ShouldBeNil)
+			So(ring, ShouldNotBeNil)
+		})
+	})
+
+	Convey("Given zero or non-power-of-two capacity", t, func() {
+		zero, zeroErr := NewSPSCRing[*spscFrame](0, false, nil)
+		three, threeErr := NewSPSCRing[*spscFrame](3, false, nil)
+
+		Convey("NewSPSCRing should reject invalid capacities", func() {
+			So(zero, ShouldBeNil)
+			So(zeroErr, ShouldNotBeNil)
+			So(three, ShouldBeNil)
+			So(threeErr, ShouldNotBeNil)
+		})
+	})
 }
 
 func TestSPSCRingPush(t *testing.T) {

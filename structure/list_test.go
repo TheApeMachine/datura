@@ -131,6 +131,28 @@ func TestListRingDo(t *testing.T) {
 }
 
 func TestListRingReadWrite(t *testing.T) {
+	Convey("Given a nil ListRing", t, func() {
+		var ring *ListRing[int]
+		buffer := make([]byte, 4096)
+		readCount, err := ring.Read(buffer)
+
+		Convey("Read should fail closed", func() {
+			So(readCount, ShouldEqual, 0)
+			So(err, ShouldEqual, io.EOF)
+		})
+	})
+
+	Convey("Given a ListRing with no cursor", t, func() {
+		ring := &ListRing[int]{artifact: datura.Acquire("list", datura.Artifact_Type_json)}
+		buffer := make([]byte, 4096)
+		readCount, err := ring.Read(buffer)
+
+		Convey("Read should fail closed", func() {
+			So(readCount, ShouldEqual, 0)
+			So(err, ShouldEqual, io.EOF)
+		})
+	})
+
 	Convey("Given a ListRing with a bound artifact", t, func() {
 		ring := NewListRing[int](1, datura.Acquire("list", datura.Artifact_Type_json))
 		source := datura.Acquire("list", datura.Artifact_Type_json)

@@ -36,7 +36,7 @@ type SPSCRing[T any] struct {
 NewSPSCRing allocates a single-producer single-consumer ring of the given
 capacity.
 
-Returns a validation error when capacity is not a power of two. When
+Returns a validation error when capacity is not a positive power of two. When
 dropOldestOnFull is true, a full Push drops the oldest element instead of
 failing.
 */
@@ -45,11 +45,11 @@ func NewSPSCRing[T any](
 	dropOldestOnFull bool,
 	artifact *datura.Artifact,
 ) (*SPSCRing[T], error) {
-	if (capacity & (capacity - 1)) != 0 {
+	if capacity < 1 || (capacity&(capacity-1)) != 0 {
 		return nil, errnie.Error(errnie.Err(
 			errnie.Validation,
-			"SPSCRing capacity must be a power of two",
-			errors.New("SPSCRing capacity must be a power of two"),
+			"SPSCRing capacity must be a positive power of two",
+			errors.New("SPSCRing capacity must be a positive power of two"),
 		))
 	}
 

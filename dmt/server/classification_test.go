@@ -15,7 +15,7 @@ func TestEvaluateClassification(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		tree := forest.GetFastestTree()
-		_, _ = tree.InsertAttractorBasin(
+		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
 			[]byte("the_blue"),
 			dmt.CognitiveState{Count: 12, Probability: 0.737},

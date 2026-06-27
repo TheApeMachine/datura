@@ -9,6 +9,7 @@ import (
 	"context"
 	"math/rand"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,10 +51,12 @@ type Election struct {
 	lastLogIndex   atomic.Uint64
 	votesReceived  atomic.Uint32
 	votesNeeded    atomic.Uint32
+	timerMu        sync.Mutex
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	voteRing       *structure.MPMCRing[uint64]
 	closed         atomic.Bool
+	done           chan struct{}
 }
 
 /*
@@ -63,11 +66,14 @@ func NewElection(config ElectionConfig, node *NetworkNode) *Election {
 	election := &Election{
 		config:         config,
 		node:           node,
+		electionTimer:  time.NewTimer(0),
 		heartbeatTimer: time.NewTimer(0),
+		done:           make(chan struct{}),
 	}
 
 	election.role.Store(uint32(Follower))
-	election.heartbeatTimer.Stop()
+	stopTimer(election.electionTimer)
+	stopTimer(election.heartbeatTimer)
 
 	voteRing, err := structure.NewMPMCRing[uint64](node.ctx, 128)
 
@@ -88,14 +94,22 @@ func NewElection(config ElectionConfig, node *NetworkNode) *Election {
 
 func (election *Election) tick(jobCtx context.Context) {
 	for !election.closed.Load() {
+		election.timerMu.Lock()
+		electionTimerC := election.electionTimer.C
+		heartbeatTimerC := election.heartbeatTimer.C
+		election.timerMu.Unlock()
+
 		select {
 		case <-jobCtx.Done():
 			return
 
-		case <-election.electionTimer.C:
+		case <-election.done:
+			return
+
+		case <-electionTimerC:
 			election.startElection()
 
-		case <-election.heartbeatTimer.C:
+		case <-heartbeatTimerC:
 			if election.getState() == Leader {
 				election.sendHeartbeats()
 			}
@@ -160,7 +174,7 @@ func (election *Election) tryPromoteToLeader() {
 func (election *Election) becomeLeader() {
 	election.role.Store(uint32(Leader))
 	election.node.metrics.SetLeader(true)
-	election.heartbeatTimer = time.NewTimer(election.config.HeartbeatInterval)
+	election.resetHeartbeatTimer()
 }
 
 func (election *Election) sendHeartbeats() {
@@ -193,7 +207,7 @@ func (election *Election) sendHeartbeats() {
 		})
 	}
 
-	election.heartbeatTimer.Reset(election.config.HeartbeatInterval)
+	election.resetHeartbeatTimer()
 }
 
 func (election *Election) stepDown(newTerm uint64) {
@@ -205,17 +219,50 @@ func (election *Election) stepDownLocked(newTerm uint64) {
 	election.term.Store(newTerm)
 	election.votedFor.Store(0)
 	election.node.metrics.SetLeader(false)
+	election.stopHeartbeatTimer()
 	election.resetElectionTimer()
 }
 
 func (election *Election) resetElectionTimer() {
-	if election.electionTimer != nil {
-		election.electionTimer.Stop()
-	}
-
 	jitter := time.Duration(rand.Int63n(int64(election.config.ElectionTimeout)))
 	timeout := election.config.ElectionTimeout + jitter
-	election.electionTimer = time.NewTimer(timeout)
+	election.timerMu.Lock()
+	resetTimer(election.electionTimer, timeout)
+	election.timerMu.Unlock()
+}
+
+func (election *Election) resetHeartbeatTimer() {
+	election.timerMu.Lock()
+	resetTimer(election.heartbeatTimer, election.config.HeartbeatInterval)
+	election.timerMu.Unlock()
+}
+
+func (election *Election) stopHeartbeatTimer() {
+	election.timerMu.Lock()
+	stopTimer(election.heartbeatTimer)
+	election.timerMu.Unlock()
+}
+
+func resetTimer(timer *time.Timer, timeout time.Duration) {
+	if timer == nil {
+		return
+	}
+
+	stopTimer(timer)
+	timer.Reset(timeout)
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func (election *Election) getState() NodeState {
@@ -324,23 +371,12 @@ func (election *Election) Close() {
 		return
 	}
 
-	if election.electionTimer != nil {
-		if !election.electionTimer.Stop() {
-			select {
-			case <-election.electionTimer.C:
-			default:
-			}
-		}
-	}
+	close(election.done)
 
-	if election.heartbeatTimer != nil {
-		if !election.heartbeatTimer.Stop() {
-			select {
-			case <-election.heartbeatTimer.C:
-			default:
-			}
-		}
-	}
+	election.timerMu.Lock()
+	stopTimer(election.electionTimer)
+	stopTimer(election.heartbeatTimer)
+	election.timerMu.Unlock()
 
 	if election.voteRing != nil {
 		election.voteRing.Close()

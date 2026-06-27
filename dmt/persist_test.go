@@ -1,6 +1,7 @@
 package dmt
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,58 @@ func TestLoadLastState(t *testing.T) {
 				So(term, ShouldEqual, entries[len(entries)-1].term)
 				So(index, ShouldEqual, entries[len(entries)-1].index)
 			})
+		})
+	})
+}
+
+func TestReplayRejectsCorruptWAL(t *testing.T) {
+	Convey("Given a truncated WAL record", t, func() {
+		tmpDir := t.TempDir()
+		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), []byte{opInsert, 1, 2, 3}, 0644), ShouldBeNil)
+
+		store, err := NewPersistentStore(tmpDir)
+		if store != nil {
+			defer store.Close()
+		}
+
+		Convey("NewPersistentStore should reject it instead of treating it as EOF", func() {
+			So(err, ShouldNotBeNil)
+		})
+	})
+
+	Convey("Given a WAL record with an invalid op", t, func() {
+		tmpDir := t.TempDir()
+		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), []byte{255}, 0644), ShouldBeNil)
+
+		store, err := NewPersistentStore(tmpDir)
+		if store != nil {
+			defer store.Close()
+		}
+
+		Convey("NewPersistentStore should reject it", func() {
+			So(err, ShouldNotBeNil)
+		})
+	})
+
+	Convey("Given a WAL record with a corrupt length", t, func() {
+		tmpDir := t.TempDir()
+		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
+
+		var record [25]byte
+		record[0] = opInsert
+		binary.LittleEndian.PutUint32(record[17:21], uint32(maxWALFieldBytes+1))
+
+		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), record[:], 0644), ShouldBeNil)
+
+		store, err := NewPersistentStore(tmpDir)
+		if store != nil {
+			defer store.Close()
+		}
+
+		Convey("NewPersistentStore should reject it before allocating the field", func() {
+			So(err, ShouldNotBeNil)
 		})
 	})
 }

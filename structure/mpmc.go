@@ -127,9 +127,10 @@ func (ring *MPMCRing[T]) pushpop(
 			return value
 		}
 
+		value := cell.data.Swap(nil)
 		cell.sequence.Store(position + ring.mask + 1)
 
-		return cell.data.Swap(nil)
+		return value
 	}
 }
 
@@ -466,8 +467,20 @@ Pop Swap's the navigator's cell payload to nil without advancing dequeuePos.
 Returns the zero value of T when the cell is empty or navigator is invalid.
 */
 func (navigator *mpmcNavigator[T]) Pop() T {
+	var zero T
+
+	if navigator == nil ||
+		navigator.parent == nil ||
+		len(navigator.parent.buffer) == 0 {
+		return zero
+	}
+
 	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
 	value := cell.data.Swap(nil)
+
+	if value == nil {
+		return zero
+	}
 
 	return *value
 }
