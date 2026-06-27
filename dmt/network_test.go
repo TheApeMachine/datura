@@ -2,6 +2,7 @@ package dmt
 
 import (
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -130,6 +131,55 @@ func TestNetworkSync(t *testing.T) {
 			Convey("Then data should be synced to second node", func() {
 				exists := node2.merkleTree.Verify([]byte("key1"), []byte("value1"))
 				So(exists, ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestNetworkedForestInsertSyncsOnPeriodicFlush(t *testing.T) {
+	Convey("Given networked forests", t, func() {
+		forest1, err := NewForest(ForestConfig{
+			Network: &NetworkConfig{
+				ListenAddr:   "127.0.0.1:0",
+				NodeID:       "forest-node-1",
+				SyncInterval: 25 * time.Millisecond,
+			},
+		})
+		So(err, ShouldBeNil)
+		defer forest1.Close()
+
+		forest2, err := NewForest(ForestConfig{
+			Network: &NetworkConfig{
+				ListenAddr:   "127.0.0.1:0",
+				NodeID:       "forest-node-2",
+				PeerAddrs:    []string{forest1.network.listener.Addr().String()},
+				SyncInterval: 25 * time.Millisecond,
+			},
+		})
+		So(err, ShouldBeNil)
+		defer forest2.Close()
+
+		Convey("When forest insert stages network state", func() {
+			key := []byte("queued-key")
+			value := []byte("queued-value")
+			forest1.Insert(key, value)
+
+			deadline := time.Now().Add(2 * time.Second)
+			var replicated []byte
+			var ok bool
+
+			for time.Now().Before(deadline) {
+				replicated, ok = forest2.Get(key)
+				if ok {
+					break
+				}
+
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			Convey("Then periodic sync should replicate the insert", func() {
+				So(ok, ShouldBeTrue)
+				So(string(replicated), ShouldEqual, string(value))
 			})
 		})
 	})
@@ -274,4 +324,21 @@ func TestNetworkQuorumSizing(t *testing.T) {
 			So(node.election.config.QuorumSize, ShouldEqual, 3)
 		})
 	})
+}
+
+func BenchmarkNetworkStageInsert(benchmark *testing.B) {
+	node := &NetworkNode{
+		merkleTree: NewMerkleTree(),
+	}
+	node.merkleLoaded.Store(true)
+	value := []byte("value")
+
+	benchmark.ReportAllocs()
+
+	for index := 0; index < benchmark.N; index++ {
+		key := strconv.AppendInt([]byte("key/"), int64(index), 10)
+		node.stageInsert(key, value)
+	}
+
+	node.updateMerkleRoot()
 }

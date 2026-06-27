@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"capnproto.org/go/capnp/v3"
@@ -43,16 +44,18 @@ It manages peer connections, handles RPC communication, maintains a merkle tree
 for consistency verification, and participates in leader election.
 */
 type NetworkNode struct {
-	state      *batch
-	config     NetworkConfig
-	forest     *Forest
-	listener   net.Listener
-	peers      *peerRegistry
-	ctx        context.Context
-	cancel     context.CancelFunc
-	merkleTree *MerkleTree
-	metrics    *Metrics
-	election   *Election
+	state        *batch
+	config       NetworkConfig
+	forest       *Forest
+	listener     net.Listener
+	peers        *peerRegistry
+	ctx          context.Context
+	cancel       context.CancelFunc
+	merkleTree   *MerkleTree
+	merkleLoaded atomic.Bool
+	merkleDirty  atomic.Bool
+	metrics      *Metrics
+	election     *Election
 }
 
 /*
@@ -400,12 +403,9 @@ func (n *NetworkNode) Insert(ctx context.Context, call RadixRPC_insert) error {
 		return fmt.Errorf("stale term")
 	}
 
-	// Update local state with log tracking
 	n.forest.Insert(key, value)
-	n.merkleTree.Insert(key, value)
-	n.merkleTree.Rebuild()
+	n.stageInsert(key, value)
 	n.election.updateLogState(index, term)
-	n.updateMerkleRoot()
 
 	result := guardValue(state, call.AllocResults)
 
@@ -422,6 +422,7 @@ and sending any necessary updates to maintain consistency.
 */
 func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 	state := newBatch("dmt/network/sync-handler")
+	n.updateMerkleRoot()
 
 	args := call.Args()
 	peerRoot := guardValue(state, args.MerkleRoot)
@@ -509,17 +510,48 @@ It rebuilds the merkle tree from the current state of the fastest tree
 to ensure an accurate representation of the data.
 */
 func (n *NetworkNode) updateMerkleRoot() {
+	if n == nil || n.merkleTree == nil {
+		return
+	}
+
+	if n.merkleLoaded.CompareAndSwap(false, true) {
+		n.loadMerkleFromForest()
+		n.merkleTree.Rebuild()
+		n.merkleDirty.Store(false)
+
+		return
+	}
+
+	if !n.merkleDirty.CompareAndSwap(true, false) {
+		return
+	}
+
+	n.merkleTree.Rebuild()
+}
+
+func (n *NetworkNode) loadMerkleFromForest() {
+	if n == nil || n.forest == nil {
+		return
+	}
+
 	tree := n.forest.getFastestTree()
 	if tree == nil {
 		return
 	}
 
-	// Rebuild Merkle tree from current data
 	it := tree.loadRoot().Root().Iterator()
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
 		n.merkleTree.Insert(key, value)
 	}
-	n.merkleTree.Rebuild()
+}
+
+func (n *NetworkNode) stageInsert(key, value []byte) {
+	if n == nil || n.merkleTree == nil || len(key) == 0 {
+		return
+	}
+
+	n.merkleTree.Insert(key, value)
+	n.merkleDirty.Store(true)
 }
 
 /*

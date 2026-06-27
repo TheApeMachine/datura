@@ -229,7 +229,7 @@ func (idx *ForestServer) Lookup(
 			continue
 		}
 
-		element := datura.Acquire("dmt/server", datura.APPJSON)
+		element := &datura.Artifact{}
 
 		if _, err := element.Unpack(value); err != nil {
 			return errnie.Error(err, "rpc_output_population_failed")

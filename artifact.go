@@ -31,11 +31,9 @@ func Acquire(
 		errnie.Error(errnie.Err(errnie.Validation, "artifact acquire failed", err))
 	}).Value()
 
-	errnie.Error(artifact.SetUuid([]byte(uuid.NewString())))
 	artifact.SetUuid([]byte(uuid.NewString()))
 	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetAttributes([]byte("{}"))
-	artifact.SetTimestamp(time.Now().UnixNano())
 	artifact.SetOrigin(origin)
 	artifact.SetType(artifactType)
 

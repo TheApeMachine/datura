@@ -207,16 +207,11 @@ func TestForestNetworking(t *testing.T) {
 		Convey("When inserting data with networking enabled", func() {
 			forest.Insert([]byte("network-key"), []byte("network-value"))
 
-			Convey("Then the network node should broadcast the insert", func() {
-				// Verify local insertion worked
+			Convey("Then the network node should stage the insert", func() {
 				value, exists := forest.Get([]byte("network-key"))
 				So(exists, ShouldBeTrue)
 				So(value, ShouldResemble, []byte("network-value"))
-
-				// Network metrics should be updated
-				metrics := forest.network.GetMetrics()
-				networkStats := metrics["network"].(map[string]interface{})
-				So(networkStats["bytes_tx"], ShouldBeGreaterThan, 0)
+				So(forest.network.merkleDirty.Load(), ShouldBeTrue)
 			})
 		})
 	})

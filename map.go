@@ -25,8 +25,24 @@ payload data (e.g. a per-stage "sample"), and MergeOutput for results under the
 nested "output" object.
 */
 func (artifact *Artifact) Merge(key string, value any) {
+	artifact.MergeFields(map[string]any{key: value})
+}
+
+/*
+MergeFields writes several top-level key/value pairs into the artifact payload
+with one payload mutation, preserving sibling keys already present.
+*/
+func (artifact *Artifact) MergeFields(values map[string]any) {
+	if len(values) == 0 {
+		return
+	}
+
 	body := artifact.payloadMap()
-	body[key] = value
+
+	for key, value := range values {
+		body[key] = value
+	}
+
 	artifact.WithPayload(body.Marshal())
 }
 
@@ -37,6 +53,19 @@ data channel: input data and computation results both live here. Descriptors
 (root, inputs, transforms) live on the attributes via Poke.
 */
 func (artifact *Artifact) MergeOutput(key string, value any) {
+	artifact.MergeOutputs(map[string]any{key: value})
+}
+
+/*
+MergeOutputs writes several named results into the artifact payload's output
+object with one payload mutation, preserving sibling results and top-level
+payload data.
+*/
+func (artifact *Artifact) MergeOutputs(values map[string]any) {
+	if len(values) == 0 {
+		return
+	}
+
 	body := artifact.payloadMap()
 	output, ok := body["output"].(map[string]any)
 
@@ -48,7 +77,10 @@ func (artifact *Artifact) MergeOutput(key string, value any) {
 		}
 	}
 
-	output[key] = value
+	for key, value := range values {
+		output[key] = value
+	}
+
 	body["output"] = output
 	artifact.WithPayload(body.Marshal())
 }

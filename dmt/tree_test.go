@@ -467,11 +467,38 @@ func TestWithCognition(testingTB *testing.T) {
 		artifact.WithOrigin("kraken:public")
 		artifact.WithPayload([]byte(`{}`))
 
-		Convey("When cognizing a known suffix", func() {
-			stamped := tree.WithCognition(artifact)
+		Convey("When the cognitive engine stamps a known suffix", func() {
+			stamped := NewCognitiveEngine(tree).Stamp(artifact)
 
 			So(datura.Peek[float64](stamped, "cognition", "surprise", "value"), ShouldBeGreaterThan, 0)
 			So(datura.Peek[string](stamped, "cognition", "sequence", "value"), ShouldEqual, "update_kraken:public_ticker")
 		})
 	})
+}
+
+func BenchmarkCognitiveEngineStamp(benchmark *testing.B) {
+	tree := NewTree("")
+	engine := NewCognitiveEngine(tree)
+
+	_, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
+		Count:       10,
+		Probability: 1.0,
+	})
+	_, _ = tree.InsertContextWeight([]byte("update_kraken:public"), PackedWeight{
+		Count:       4,
+		Probability: 0.5,
+	})
+
+	benchmark.ReportAllocs()
+
+	for benchmark.Loop() {
+		artifact := datura.Acquire("test", datura.APPJSON)
+		artifact.WithRole("ticker")
+		artifact.WithScope("update")
+		artifact.WithOrigin("kraken:public")
+		artifact.WithPayload([]byte(`{}`))
+
+		engine.Stamp(artifact)
+		artifact.Release()
+	}
 }

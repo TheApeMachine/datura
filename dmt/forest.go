@@ -254,9 +254,8 @@ func (forest *Forest) Insert(key []byte, value []byte) {
 		tree.Insert(key, value)
 	}
 
-	// Broadcast to other nodes if networked
 	if forest.network != nil {
-		forest.network.BroadcastInsert(key, value)
+		forest.network.stageInsert(key, value)
 	}
 }
 
