@@ -181,6 +181,30 @@ func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
 }
 
 /*
+WalkLowerBound visits every key/value pair at or after lowerBound in
+lexicographical order. The caller owns the stopping condition, which lets
+role/timestamp readers scan [role/timestamp, next-role) without manufacturing
+every intermediate second prefix.
+*/
+func (tree *Tree) WalkLowerBound(lowerBound []byte, fn func(key, value []byte) bool) {
+	started, track := tree.beginOp()
+	root := tree.loadRoot()
+
+	it := root.Root().Iterator()
+	it.SeekLowerBound(lowerBound)
+
+	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
+		if !fn(key, value) {
+			tree.endOp(started, track)
+
+			return
+		}
+	}
+
+	tree.endOp(started, track)
+}
+
+/*
 Insert adds or updates a key-value pair in the tree.
 Due to the immutable nature of the tree, this operation creates a new version
 of the tree rather than modifying the existing one.
@@ -211,6 +235,10 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 						index,
 					)
 				})
+
+				if index%tree.persist.snapCount == 0 {
+					guardStep(tree.state, tree.SaveSnapshot)
+				}
 			}
 
 			tree.endOp(started, track)
@@ -218,6 +246,23 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 			return tree, true
 		}
 	}
+}
+
+func (tree *Tree) SaveSnapshot() error {
+	if tree == nil || tree.persist == nil {
+		return nil
+	}
+
+	return tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
+		root := tree.loadRoot()
+		it := root.Root().Iterator()
+
+		for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
+			if !yield(key, value) {
+				return
+			}
+		}
+	})
 }
 
 /*

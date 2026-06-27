@@ -113,6 +113,18 @@ func (engine *CognitiveEngine) lookahead(sequence []byte) (float64, int) {
 }
 
 func (engine *CognitiveEngine) train(sequence []byte) {
+	if engine.tree == nil || len(sequence) == 0 {
+		return
+	}
+
+	mutations := engine.buildContextTrainingMutations(sequence)
+	mutations = append(mutations, engine.tree.buildSensoryMutations(sequence)...)
+	engine.tree.commitLearnMutations(mutations)
+}
+
+func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []learnMutation {
+	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
+	pending := make(map[string]PackedWeight, countTokenBoundaries(sequence))
 	tokenStart := 0
 
 	for index := 0; index <= len(sequence); index++ {
@@ -126,34 +138,46 @@ func (engine *CognitiveEngine) train(sequence []byte) {
 			continue
 		}
 
-		engine.trainPath(sequence[:index])
+		currentPath := append([]byte(nil), sequence[:index]...)
+		parentPath := parentContextPath(currentPath)
+		current := engine.tree.GetContextWeight(currentPath)
+
+		if pendingCurrent, ok := pending[string(currentPath)]; ok {
+			current = pendingCurrent
+		}
+
+		parent := engine.tree.GetContextWeight(parentPath)
+
+		if pendingParent, ok := pending[string(parentPath)]; ok {
+			parent = pendingParent
+		}
+
+		nextCount := current.Count + 1
+		probability := 1.0
+
+		if len(parentPath) > 0 {
+			denominator := float64(parent.Count + 1)
+
+			if denominator <= 0 {
+				denominator = float64(nextCount)
+			}
+
+			probability = float64(nextCount) / denominator
+		}
+
+		next := PackedWeight{
+			Count:       nextCount,
+			Probability: probability,
+		}
+		pending[string(currentPath)] = next
+		mutations = append(mutations, learnMutation{
+			key:   currentPath,
+			value: MarshalWeight(next.Count, next.Probability),
+		})
 		tokenStart = index + 1
 	}
 
-	engine.tree.TrainSensorySequence(sequence)
-}
-
-func (engine *CognitiveEngine) trainPath(currentPath []byte) {
-	parentPath := parentContextPath(currentPath)
-	current := engine.tree.GetContextWeight(currentPath)
-	parent := engine.tree.GetContextWeight(parentPath)
-	nextCount := current.Count + 1
-	probability := 1.0
-
-	if len(parentPath) > 0 {
-		denominator := float64(parent.Count + 1)
-
-		if denominator <= 0 {
-			denominator = float64(nextCount)
-		}
-
-		probability = float64(nextCount) / denominator
-	}
-
-	engine.tree.InsertContextWeight(currentPath, PackedWeight{
-		Count:       nextCount,
-		Probability: probability,
-	})
+	return mutations
 }
 
 func (engine *CognitiveEngine) writeArtifact(

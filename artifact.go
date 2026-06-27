@@ -268,6 +268,35 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	return artifact
 }
 
+func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
+	if len(payload) == 0 {
+		origin, _ := artifact.Origin()
+		role, _ := artifact.Role()
+		scope, _ := artifact.Scope()
+		destination, _ := artifact.Destination()
+
+		errnie.Error(errnie.Err(
+			errnie.Validation, "payload is empty", nil,
+		).With(
+			"origin", origin,
+			"role", role,
+			"scope", scope,
+			"destination", destination,
+		))
+
+		return nil
+	}
+
+	if errnie.Error(artifact.SetPayload(append([]byte(nil), payload...))) != nil {
+		return nil
+	}
+
+	errnie.Error(artifact.SetEncryptedKey(nil))
+	errnie.Error(artifact.SetPublicKey(nil))
+
+	return artifact
+}
+
 func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
 	encoded := errnie.Does(func() ([]byte, error) {
 		return sonic.Marshal(attributes)

@@ -372,12 +372,33 @@ func (tree *Tree) logLearnMutations(mutations []learnMutation) {
 		return
 	}
 
-	term, index := tree.GetLogState()
+	term := tree.term.Load()
+	startIndex := tree.logIndex.Load()
+	entries := make([]WALEntry, 0, len(mutations))
 
 	for _, mutation := range mutations {
-		index++
-		_ = tree.persist.LogInsert(mutation.key, mutation.value, term, index)
+		index := startIndex + uint64(len(entries)) + 1
+		entries = append(entries, WALEntry{
+			Op:    opInsert,
+			Term:  term,
+			Index: index,
+			Key:   mutation.key,
+			Value: mutation.value,
+		})
 	}
 
-	tree.logIndex.Store(index)
+	guardStep(tree.state, func() error {
+		return tree.persist.LogInserts(entries)
+	})
+
+	if tree.state.Failed() {
+		return
+	}
+
+	lastIndex := startIndex + uint64(len(entries))
+	tree.logIndex.Store(lastIndex)
+
+	if startIndex/tree.persist.snapCount != lastIndex/tree.persist.snapCount {
+		guardStep(tree.state, tree.SaveSnapshot)
+	}
 }

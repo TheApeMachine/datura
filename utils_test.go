@@ -39,6 +39,18 @@ func TestDecryptPayload(t *testing.T) {
 			So(string(payload), ShouldEqual, `{"method":"add_order"}`)
 		})
 	})
+
+	Convey("Given an artifact with a plaintext payload", t, func() {
+		artifact := Acquire("decrypt-test", Artifact_Type_json).
+			WithPlaintextPayload([]byte(`{"method":"local_stage"}`))
+
+		Convey("It should expose the plaintext payload", func() {
+			payload, err := artifact.decryptPayload()
+			So(err, ShouldBeNil)
+			So(string(payload), ShouldEqual, `{"method":"local_stage"}`)
+			So(string(artifact.DecryptPayload()), ShouldEqual, `{"method":"local_stage"}`)
+		})
+	})
 }
 
 func TestWithPayload(testingTB *testing.T) {

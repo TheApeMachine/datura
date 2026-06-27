@@ -125,6 +125,33 @@ func TestSeekSkipsInvalidArtifactValue(testingTB *testing.T) {
 	})
 }
 
+func TestWalkLowerBoundScansRange(testingTB *testing.T) {
+	Convey("Given lexicographically ordered tree keys", testingTB, func() {
+		tree := NewTree("")
+		tree.Insert([]byte("001"), []byte("1"))
+		tree.Insert([]byte("002"), []byte("2"))
+		tree.Insert([]byte("005"), []byte("5"))
+		tree.Insert([]byte("010"), []byte("10"))
+		tree.Insert([]byte("100"), []byte("100"))
+
+		Convey("When walking from a lower bound until an upper bound", func() {
+			keys := make([]string, 0)
+
+			tree.WalkLowerBound([]byte("003"), func(key, value []byte) bool {
+				if string(key) >= "050" {
+					return false
+				}
+
+				keys = append(keys, string(key))
+
+				return true
+			})
+
+			So(keys, ShouldResemble, []string{"005", "010"})
+		})
+	})
+}
+
 func TestInsert(t *testing.T) {
 	Convey("Given a new tree", t, func() {
 		tree := NewTree("")
@@ -285,6 +312,47 @@ func TestTreeStateRecovery(t *testing.T) {
 						So(value, ShouldResemble, []byte(e.value))
 					}
 				})
+			})
+		})
+	})
+}
+
+func TestTreeSnapshotPreservesActiveEntries(t *testing.T) {
+	Convey("Given a persistent tree with a low snapshot interval", t, func() {
+		tmpDir := t.TempDir()
+
+		tree := NewTree(tmpDir)
+		tree.persist.snapCount = 3
+
+		entries := map[string]string{
+			"snapshot/key/one":   "value-one",
+			"snapshot/key/two":   "value-two",
+			"snapshot/key/three": "value-three",
+		}
+
+		for key, value := range entries {
+			_, ok := tree.Insert([]byte(key), []byte(value))
+			So(ok, ShouldBeTrue)
+		}
+
+		closeErr := tree.Close()
+		So(closeErr, ShouldBeNil)
+
+		Convey("When the tree is reopened after the snapshot", func() {
+			reopened := NewTree(tmpDir)
+			defer reopened.Close()
+
+			Convey("Then every active entry should be recovered", func() {
+				for key, value := range entries {
+					recovered, ok := reopened.Get([]byte(key))
+					So(ok, ShouldBeTrue)
+					So(string(recovered), ShouldEqual, value)
+				}
+			})
+
+			Convey("And the log index should match the inserted entries", func() {
+				_, index := reopened.GetLogState()
+				So(index, ShouldEqual, uint64(len(entries)))
 			})
 		})
 	})

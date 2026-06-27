@@ -175,12 +175,28 @@ Write stores a Morton-packed key in the forest. The key is encoded as
 func (idx *ForestServer) Write(
 	ctx context.Context, call Server_write,
 ) error {
-	key := call.Args().Key()
+	args := call.Args()
+	key := args.Key()
+
+	if !args.HasValue() {
+		return errors.New("dmt/server write requires value")
+	}
+
+	value, err := args.Value()
+	if err != nil {
+		return errnie.Error(err, "rpc_input_value_failed")
+	}
+	if len(value) == 0 {
+		return errors.New("dmt/server write requires non-empty value")
+	}
 
 	var keyBytes [8]byte
 	binary.BigEndian.PutUint64(keyBytes[:], key)
 
-	idx.IntelligentIngestPipeline(keyBytes[:], nil)
+	idx.IntelligentIngestPipeline(
+		append([]byte(nil), keyBytes[:]...),
+		append([]byte(nil), value...),
+	)
 
 	return nil
 }

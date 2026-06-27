@@ -8,8 +8,9 @@ import (
 )
 
 /*
-decryptPayload returns decrypted payload bytes when the artifact holds valid ciphertext.
-Absence of encrypted material is an ordinary outcome and returns an error without logging.
+decryptPayload returns decrypted payload bytes when the artifact holds valid
+ciphertext. Artifacts with payload bytes but no encrypted key are plaintext local
+frames and return their payload directly.
 */
 func (artifact *Artifact) decryptPayload() ([]byte, error) {
 	if artifact == nil || !artifact.HasPayload() {
@@ -23,7 +24,21 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 	encryptedKey, err := artifact.EncryptedKey()
 
 	if err != nil {
-		return nil, errnie.Err(errnie.Validation, "encrypted key unavailable", err)
+		payload, payloadErr := artifact.Payload()
+		if payloadErr != nil {
+			return nil, errnie.Err(errnie.Validation, "payload unavailable", payloadErr)
+		}
+
+		return payload, nil
+	}
+
+	if len(encryptedKey) == 0 {
+		payload, payloadErr := artifact.Payload()
+		if payloadErr != nil {
+			return nil, errnie.Err(errnie.Validation, "payload unavailable", payloadErr)
+		}
+
+		return payload, nil
 	}
 
 	if len(encryptedKey) < aesKeyBytes {

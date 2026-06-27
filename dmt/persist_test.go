@@ -3,8 +3,8 @@ package dmt
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
-	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -106,23 +106,44 @@ func TestCreateSnapshot(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		for index := uint64(1); index <= 1001; index++ {
-			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
-			So(err, ShouldBeNil)
+		active := map[string]string{
+			"key/one": "value/one",
+			"key/two": "value/two",
 		}
 
-		Convey("When waiting for snapshot creation", func() {
-			time.Sleep(100 * time.Millisecond)
+		index := uint64(1)
+		for key, value := range active {
+			err := store.LogInsert([]byte(key), []byte(value), 1, index)
+			So(err, ShouldBeNil)
+			index++
+		}
+
+		Convey("When creating a snapshot", func() {
+			err := store.CreateSnapshot(func(yield func(key, value []byte) bool) {
+				for key, value := range active {
+					if !yield([]byte(key), []byte(value)) {
+						return
+					}
+				}
+			})
+			So(err, ShouldBeNil)
 
 			Convey("Then a snapshot file should exist", func() {
 				files, err := os.ReadDir(filepath.Join(tmpDir, "snapshot"))
 				So(err, ShouldBeNil)
 				So(len(files), ShouldBeGreaterThan, 0)
 
-				Convey("And the WAL should be truncated", func() {
-					walInfo, err := os.Stat(filepath.Join(tmpDir, "wal.log"))
+				Convey("And the replacement WAL should replay active entries", func() {
+					entries, err := store.Replay()
 					So(err, ShouldBeNil)
-					So(walInfo.Size(), ShouldBeLessThan, 100)
+					So(len(entries), ShouldEqual, len(active))
+
+					replayed := make(map[string]string, len(entries))
+					for _, entry := range entries {
+						replayed[string(entry.Key)] = string(entry.Value)
+					}
+
+					So(replayed, ShouldResemble, active)
 				})
 			})
 		})
@@ -137,8 +158,10 @@ func TestTruncateWAL(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer store.Close()
 
+		active := map[string]string{"key": "value-100"}
+
 		for index := uint64(1); index <= 100; index++ {
-			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
+			err := store.LogInsert([]byte("key"), []byte("value-"+strconv.FormatUint(index, 10)), 1, index)
 			So(err, ShouldBeNil)
 		}
 
@@ -146,7 +169,13 @@ func TestTruncateWAL(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When truncating the WAL", func() {
-			err := store.TruncateWAL()
+			err := store.TruncateWAL(func(yield func(key, value []byte) bool) {
+				for key, value := range active {
+					if !yield([]byte(key), []byte(value)) {
+						return
+					}
+				}
+			})
 			So(err, ShouldBeNil)
 
 			Convey("Then the WAL should be smaller", func() {
@@ -155,7 +184,15 @@ func TestTruncateWAL(t *testing.T) {
 				So(newSize.Size(), ShouldBeLessThan, originalSize.Size())
 			})
 
-			Convey("And the state should be preserved", func() {
+			Convey("And active entries should be preserved", func() {
+				entries, err := store.Replay()
+				So(err, ShouldBeNil)
+				So(len(entries), ShouldEqual, 1)
+				So(string(entries[0].Key), ShouldEqual, "key")
+				So(string(entries[0].Value), ShouldEqual, "value-100")
+			})
+
+			Convey("And the state index should be preserved", func() {
 				term, index := store.GetLastState()
 				So(term, ShouldEqual, uint64(1))
 				So(index, ShouldEqual, uint64(100))

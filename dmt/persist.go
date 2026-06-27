@@ -150,11 +150,61 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 	ps.lastTerm.Store(term)
 	ps.lastIndex.Store(index)
 
-	if index%ps.snapCount == 0 {
-		ps.schedule("snapshot", func(ctx context.Context) (any, error) {
-			return nil, ps.createSnapshot()
-		})
+	return nil
+}
+
+func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
+	if ps.closed.Load() {
+		return fmt.Errorf("persistent store is closed")
 	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	err := ps.runWal("insert-batch", func() error {
+		ps.state.Reset()
+
+		for _, entry := range entries {
+			entry := entry
+
+			guardStep(ps.state, func() error {
+				var frame [25]byte
+
+				frame[0] = opInsert
+				binary.LittleEndian.PutUint64(frame[1:9], entry.Term)
+				binary.LittleEndian.PutUint64(frame[9:17], entry.Index)
+				binary.LittleEndian.PutUint32(frame[17:21], uint32(len(entry.Key)))
+				binary.LittleEndian.PutUint32(frame[21:25], uint32(len(entry.Value)))
+
+				if _, err := ps.walWriter.Write(frame[:]); err != nil {
+					return err
+				}
+
+				if _, err := ps.walWriter.Write(entry.Key); err != nil {
+					return err
+				}
+
+				if _, err := ps.walWriter.Write(entry.Value); err != nil {
+					return err
+				}
+
+				return nil
+			})
+		}
+
+		guardStep(ps.state, ps.walWriter.Flush)
+
+		return ps.state.Err()
+	})
+
+	if err != nil {
+		return err
+	}
+
+	last := entries[len(entries)-1]
+	ps.lastTerm.Store(last.Term)
+	ps.lastIndex.Store(last.Index)
 
 	return nil
 }
@@ -211,24 +261,26 @@ func (ps *PersistentStore) Close() error {
 		return nil
 	}
 
-	if ps.cancel != nil {
-		ps.cancel()
-	}
-
 	err := ps.runWal("close", func() error {
 		ps.state.Reset()
 
-		guardStep(ps.state, ps.walWriter.Flush)
+		if ps.walWriter != nil {
+			guardStep(ps.state, ps.walWriter.Flush)
+		}
 		if ps.walFile != nil {
 			_ = ps.walFile.Sync()
+			guardStep(ps.state, ps.walFile.Close)
 		}
-		guardStep(ps.state, ps.walFile.Close)
 
 		ps.walFile = nil
 		ps.walWriter = nil
 
 		return ps.state.Err()
 	})
+
+	if ps.cancel != nil {
+		ps.cancel()
+	}
 
 	workerPool := ps.pool
 	ps.pool = nil
@@ -433,7 +485,13 @@ func (ps *PersistentStore) loadLastState() error {
 	return err
 }
 
-func (ps *PersistentStore) createSnapshot() error {
+func (ps *PersistentStore) CreateSnapshot(
+	iterator func(yield func(key, value []byte) bool),
+) error {
+	if iterator == nil {
+		return fmt.Errorf("persistent snapshot requires active tree iterator")
+	}
+
 	now := time.Now().UnixNano()
 	lastSnap := ps.lastSnap.Load()
 
@@ -478,26 +536,20 @@ func (ps *PersistentStore) createSnapshot() error {
 		})
 
 		guardStep(ps.state, func() error {
-			var walFrame [17]byte
-
-			walFrame[0] = opSnapshot
-			binary.LittleEndian.PutUint64(walFrame[1:9], ps.lastTerm.Load())
-			binary.LittleEndian.PutUint64(walFrame[9:17], ps.lastIndex.Load())
-
-			if _, err := ps.walWriter.Write(walFrame[:]); err != nil {
-				return err
-			}
-
-			return nil
+			return ps.truncateWAL(iterator)
 		})
-
-		guardStep(ps.state, ps.truncateWAL)
 
 		return ps.state.Err()
 	})
 }
 
-func (ps *PersistentStore) truncateWAL() error {
+func (ps *PersistentStore) truncateWAL(
+	iterator func(yield func(key, value []byte) bool),
+) error {
+	if iterator == nil {
+		return fmt.Errorf("persistent wal truncation requires active tree iterator")
+	}
+
 	newPath := ps.walPath + ".new"
 
 	newFile := guardValue(ps.state, func() (*os.File, error) {
@@ -522,15 +574,60 @@ func (ps *PersistentStore) truncateWAL() error {
 		return err
 	})
 
+	var writeErr error
+	term := ps.lastTerm.Load()
+	index := ps.lastIndex.Load()
+
+	iterator(func(key, value []byte) bool {
+		if writeErr != nil {
+			return false
+		}
+
+		var frame [25]byte
+
+		frame[0] = opInsert
+		binary.LittleEndian.PutUint64(frame[1:9], term)
+		binary.LittleEndian.PutUint64(frame[9:17], index)
+		binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
+		binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
+
+		if _, writeErr = writer.Write(frame[:]); writeErr != nil {
+			return false
+		}
+		if _, writeErr = writer.Write(key); writeErr != nil {
+			return false
+		}
+		if _, writeErr = writer.Write(value); writeErr != nil {
+			return false
+		}
+
+		return true
+	})
+
+	if writeErr != nil {
+		guardStep(ps.state, func() error {
+			return writeErr
+		})
+	}
+
 	guardStep(ps.state, writer.Flush)
 	guardStep(ps.state, newFile.Sync)
 	guardStep(ps.state, newFile.Close)
+
+	if ps.walWriter != nil {
+		guardStep(ps.state, ps.walWriter.Flush)
+	}
+	if ps.walFile != nil {
+		_ = ps.walFile.Sync()
+	}
 
 	guardStep(ps.state, func() error {
 		return os.Rename(newPath, ps.walPath)
 	})
 
-	guardStep(ps.state, ps.walFile.Close)
+	if ps.walFile != nil {
+		guardStep(ps.state, ps.walFile.Close)
+	}
 
 	ps.walFile = guardValue(ps.state, func() (*os.File, error) {
 		return os.OpenFile(ps.walPath, os.O_APPEND|os.O_RDWR, 0644)
@@ -547,8 +644,14 @@ func (ps *PersistentStore) GetLastState() (term, index uint64) {
 	return ps.lastTerm.Load(), ps.lastIndex.Load()
 }
 
-func (ps *PersistentStore) TruncateWAL() error {
-	return ps.runWal("truncate", ps.truncateWAL)
+func (ps *PersistentStore) TruncateWAL(
+	iterator func(yield func(key, value []byte) bool),
+) error {
+	return ps.runWal("truncate", func() error {
+		ps.state.Reset()
+
+		return ps.truncateWAL(iterator)
+	})
 }
 
 func (ps *PersistentStore) runWal(op string, fn func() error) error {

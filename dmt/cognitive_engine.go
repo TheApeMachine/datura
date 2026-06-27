@@ -315,6 +315,16 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 TrainSensorySequence increments sensory counts and conditional probabilities inline.
 */
 func (tree *Tree) TrainSensorySequence(sequence []byte) {
+	tree.commitLearnMutations(tree.buildSensoryMutations(sequence))
+}
+
+func (tree *Tree) buildSensoryMutations(sequence []byte) []learnMutation {
+	if tree == nil || len(sequence) == 0 {
+		return nil
+	}
+
+	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
+	pending := make(map[string]CognitiveState, countTokenBoundaries(sequence))
 	tokenStart := 0
 
 	for index := 0; index <= len(sequence); index++ {
@@ -328,10 +338,17 @@ func (tree *Tree) TrainSensorySequence(sequence []byte) {
 			continue
 		}
 
-		currentPath := sequence[:index]
+		currentPath := append([]byte(nil), sequence[:index]...)
 		parentPath := parentContextPath(currentPath)
 		currentState := tree.GetSensoryWeight(currentPath)
 		parentState := tree.GetSensoryWeight(parentPath)
+
+		if pendingCurrent, ok := pending[string(currentPath)]; ok {
+			currentState = pendingCurrent
+		}
+		if pendingParent, ok := pending[string(parentPath)]; ok {
+			parentState = pendingParent
+		}
 
 		nextCount := currentState.Count + 1
 		probability := 1.0
@@ -346,13 +363,20 @@ func (tree *Tree) TrainSensorySequence(sequence []byte) {
 			probability = float64(nextCount) / denominator
 		}
 
-		_, _ = tree.InsertSensoryWeight(currentPath, CognitiveState{
+		next := CognitiveState{
 			Count:       nextCount,
 			Probability: probability,
+		}
+		pending[string(currentPath)] = next
+		mutations = append(mutations, learnMutation{
+			key:   sensoryStorageKey(currentPath),
+			value: MarshalCognitive(next),
 		})
 
 		tokenStart = index + 1
 	}
+
+	return mutations
 }
 
 func appendSequenceToken(buffer []byte, prefix []byte, token []byte) []byte {
