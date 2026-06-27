@@ -96,6 +96,10 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 
 	guardStep(ps.state, ps.loadLastState)
 
+	if ps.state.Err() == nil {
+		go ps.backgroundSyncer()
+	}
+
 	return ps, ps.state.Err()
 }
 
@@ -135,7 +139,6 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
-		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -185,7 +188,6 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
-		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -217,6 +219,9 @@ func (ps *PersistentStore) Close() error {
 		ps.state.Reset()
 
 		guardStep(ps.state, ps.walWriter.Flush)
+		if ps.walFile != nil {
+			_ = ps.walFile.Sync()
+		}
 		guardStep(ps.state, ps.walFile.Close)
 
 		ps.walFile = nil
@@ -258,7 +263,6 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
-		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -581,4 +585,26 @@ func (ps *PersistentStore) schedule(
 		fn,
 		qpool.WithTTL(time.Second),
 	)
+}
+
+func (ps *PersistentStore) backgroundSyncer() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ps.ctx.Done():
+			return
+		case <-ticker.C:
+			if ps.closed.Load() {
+				return
+			}
+			_ = ps.runWal("sync", func() error {
+				if ps.walFile != nil {
+					return ps.walFile.Sync()
+				}
+				return nil
+			})
+		}
+	}
 }
