@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
+	"github.com/theapemachine/errnie"
 )
 
 type Map[T any] map[string]T
@@ -16,6 +18,28 @@ func (m Map[T]) Marshal() []byte {
 	}
 
 	return payload
+}
+
+func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
+	root := errnie.Does(func() (ast.Node, error) {
+		return sonic.Get(artifact.DecryptPayload())
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
+	}).Value()
+
+	if !root.Exists() {
+		root = ast.NewObject(nil)
+	}
+
+	root.SetAnyByPath(finite(value), path...)
+
+	errnie.Error(artifact.SetAttributes(errnie.Does(func() ([]byte, error) {
+		return root.MarshalJSON()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "attributes marshal failed", err))
+	}).Value()))
+
+	return artifact
 }
 
 /*
