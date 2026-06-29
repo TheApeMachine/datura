@@ -30,9 +30,9 @@ func NewClockTrack[T any](clock *ClockRing[T]) (*ClockTrack[T], error) {
 		return nil, errClockNil
 	}
 
-	secondValues := NewListRing[T](clock.SecondHand.Len(), clock.SecondHand.artifact)
-	littleValues := NewListRing[T](clock.LittleHand.Len(), clock.LittleHand.artifact)
-	bigValues := NewListRing[T](clock.BigHand.Len(), clock.BigHand.artifact)
+	secondValues := NewListRing[T](clock.SecondHand.Len())
+	littleValues := NewListRing[T](clock.LittleHand.Len())
+	bigValues := NewListRing[T](clock.BigHand.Len())
 
 	if secondValues == nil || littleValues == nil || bigValues == nil {
 		return nil, errClockTrackAlloc

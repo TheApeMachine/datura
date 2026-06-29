@@ -82,9 +82,9 @@ func NewClockRing[T any](
 		return nil
 	}
 
-	secondHand := NewListRing[ClockSlot[T]](secondCapacity, artifact)
-	littleHand := NewListRing[ClockSlot[T]](littleCapacity, artifact)
-	bigHand := NewListRing[ClockSlot[T]](bigCapacity, artifact)
+	secondHand := NewListRing[ClockSlot[T]](secondCapacity)
+	littleHand := NewListRing[ClockSlot[T]](littleCapacity)
+	bigHand := NewListRing[ClockSlot[T]](bigCapacity)
 
 	if secondHand == nil || littleHand == nil || bigHand == nil {
 		return nil
