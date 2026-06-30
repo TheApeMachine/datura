@@ -13,8 +13,6 @@ replace (
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.1
-	github.com/consensys/gnark v0.15.0
-	github.com/consensys/gnark-crypto v0.20.1
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/hashicorp/go-immutable-radix/v2 v2.1.0
 	github.com/theapemachine/errnie v1.2.5
@@ -38,8 +36,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.21 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
-	github.com/bits-and-blooms/bitset v1.24.4 // indirect
-	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -48,7 +44,6 @@ require (
 	github.com/elastic/elastic-transport-go/v8 v8.11.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/google/pprof v0.0.0-20260202012954-cb029daf43ef // indirect
 	github.com/google/wire v0.7.0 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/gopherjs/gopherjs v1.20.2 // indirect
@@ -56,8 +51,6 @@ require (
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/phuslu/log v1.0.124 // indirect
-	github.com/ronanh/intcomp v1.1.1 // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/smarty/assertions v1.16.0 // indirect
 	github.com/smarty/go-disruptor v0.5.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
