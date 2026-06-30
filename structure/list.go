@@ -1,5 +1,13 @@
 package structure
 
+import (
+	"errors"
+	"io"
+
+	"github.com/bytedance/sonic"
+	"github.com/theapemachine/datura"
+)
+
 /*
 listRingNode is one node in the circular list backing a ListRing. Nodes are
 linked through prev and next; Value holds the element payload for type T.
@@ -32,7 +40,8 @@ an empty ring. NewListRing never returns a ring with zero nodes; elementCount
 must be positive.
 */
 type ListRing[T any] struct {
-	cursor *ListRingNode[T]
+	cursor   *ListRingNode[T]
+	artifact *datura.Artifact
 }
 
 /*
@@ -97,7 +106,10 @@ The receiver's cursor is not mutated. The returned Ring shares the same underlyi
 nodes as the receiver.
 */
 func (ring *ListRing[T]) Select(step int) Ring[T] {
-	return &ListRing[T]{cursor: ring.move(step)}
+	return &ListRing[T]{
+		cursor:   ring.move(step),
+		artifact: ring.artifact,
+	}
 }
 
 /*
@@ -189,7 +201,30 @@ func (ring *ListRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	return &ListRing[T]{cursor: removed}
+	return &ListRing[T]{
+		cursor:   removed,
+		artifact: ring.artifact,
+	}
+}
+
+/*
+WithArtifact binds artifact I/O on this ring.
+*/
+func (ring *ListRing[T]) WithArtifact(artifact *datura.Artifact) *ListRing[T] {
+	ring.artifact = artifact
+
+	return ring
+}
+
+/*
+WithPayload replaces the bound artifact payload before Read.
+*/
+func (ring *ListRing[T]) WithPayload(payload []byte) *ListRing[T] {
+	if ring.artifact != nil {
+		ring.artifact.WithPayload(payload)
+	}
+
+	return ring
 }
 
 /*
@@ -228,11 +263,40 @@ func (ring *ListRing[T]) Do(visitor func(T)) {
 }
 
 /*
-Read implements io.Reader. It marshals the value at the cursor through the bound
+Read implements io.Reader. It marshals the last written value through the bound
 artifact.
 */
 func (ring *ListRing[T]) Read(p []byte) (n int, err error) {
-	return
+	if ring == nil || ring.cursor == nil || ring.artifact == nil {
+		return 0, io.EOF
+	}
+
+	node := ring.cursor
+
+	if ring.cursor.prev != nil {
+		node = ring.cursor.prev
+	}
+
+	value := node.Value
+	payload, err := sonic.Marshal(value)
+
+	if err != nil {
+		return 0, err
+	}
+
+	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
+
+	if outbound == nil {
+		return 0, errors.New("structure: ListRing artifact acquire failed")
+	}
+
+	if scope, scopeErr := ring.artifact.Scope(); scopeErr == nil {
+		outbound.WithScope(scope)
+	}
+
+	outbound.WithPayload(payload)
+
+	return outbound.PackInto(p)
 }
 
 /*
@@ -240,7 +304,29 @@ Write implements io.Writer. It unmarshals p into the bound artifact and Push'es
 the decoded value.
 */
 func (ring *ListRing[T]) Write(p []byte) (n int, err error) {
-	return
+	if ring == nil || ring.cursor == nil {
+		return 0, errors.New("structure: ListRing has no cursor")
+	}
+
+	if ring.artifact == nil {
+		ring.artifact = datura.Acquire("structure", datura.Artifact_Type_json)
+	}
+
+	if ring.artifact == nil {
+		return 0, errors.New("structure: ListRing artifact acquire failed")
+	}
+
+	written, err := ring.artifact.Unpack(p)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !ring.Push(datura.As[T](ring.artifact)) {
+		return written, errors.New("structure: ListRing Push failed")
+	}
+
+	return written, nil
 }
 
 /*

@@ -90,10 +90,15 @@ func NewClockRing[T any](
 		return nil
 	}
 
+	secondHand.WithArtifact(artifact)
+	littleHand.WithArtifact(artifact)
+	bigHand.WithArtifact(artifact)
+
 	return &ClockRing[T]{
 		SecondHand: secondHand,
 		LittleHand: littleHand,
 		BigHand:    bigHand,
+		artifact:   artifact,
 	}
 }
 
