@@ -24,7 +24,7 @@ func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
 	root := errnie.Does(func() (ast.Node, error) {
 		return sonic.Get(artifact.DecryptPayload())
 	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
+		errnie.Error(errnie.Err(errnie.Validation, "payload peek failed", err))
 	}).Value()
 
 	if !root.Exists() {
@@ -33,11 +33,15 @@ func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
 
 	root.SetAnyByPath(finite(value), path...)
 
-	errnie.Error(artifact.SetAttributes(errnie.Does(func() ([]byte, error) {
+	payload := errnie.Does(func() ([]byte, error) {
 		return root.MarshalJSON()
 	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "attributes marshal failed", err))
-	}).Value()))
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshal failed", err))
+	}).Value()
+
+	if len(payload) > 0 {
+		artifact.WithPayload(payload)
+	}
 
 	return artifact
 }

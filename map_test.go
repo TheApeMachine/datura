@@ -3,8 +3,52 @@ package datura
 import (
 	"testing"
 
+	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestPokePayloadMutatesPayload(t *testing.T) {
+	Convey("Given an artifact with a JSON payload", t, func() {
+		artifact := Acquire("poke-payload", Artifact_Type_json).
+			WithAttributes(Map[any]{"role": "orders"}).
+			WithPayload([]byte(`{"method":"subscribe","params":{"channel":"orders"}}`))
+
+		Convey("When a payload path is poked", func() {
+			artifact.PokePayload("secret-token", "params", "token")
+
+			Convey("Then the decrypted payload should contain the mutation", func() {
+				var payload map[string]any
+				So(sonic.Unmarshal(artifact.DecryptPayload(), &payload), ShouldBeNil)
+
+				params, ok := payload["params"].(map[string]any)
+				So(ok, ShouldBeTrue)
+				So(params["token"], ShouldEqual, "secret-token")
+			})
+		})
+	})
+}
+
+func TestPokePayloadDoesNotMutateAttributes(t *testing.T) {
+	Convey("Given an artifact with attributes and payload", t, func() {
+		artifact := Acquire("poke-payload-attributes", Artifact_Type_json).
+			WithAttributes(Map[any]{"role": "orders"}).
+			WithPayload([]byte(`{"method":"subscribe","params":{"channel":"orders"}}`))
+
+		before, err := artifact.Attributes()
+		So(err, ShouldBeNil)
+
+		Convey("When a payload path is poked", func() {
+			artifact.PokePayload("secret-token", "params", "token")
+			after, err := artifact.Attributes()
+
+			Convey("Then attributes should be unchanged", func() {
+				So(err, ShouldBeNil)
+				So(string(after), ShouldEqual, string(before))
+				So(Peek[string](artifact, "params", "token"), ShouldEqual, "secret-token")
+			})
+		})
+	})
+}
 
 func TestMergeOutputs(t *testing.T) {
 	Convey("Given an artifact with existing payload data and output", t, func() {
