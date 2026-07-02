@@ -39,7 +39,15 @@ Flush delivers buffered writes to the underlying ReadWriteCloser.
 Copy defers this so capnp frames arrive in one Write to destinations that need it.
 */
 func (stream *Stream) Flush() error {
-	return stream.buffer.Flush()
+	if err := stream.buffer.Flush(); err != nil {
+		return err
+	}
+
+	if flusher, ok := stream.closer.(interface{ Flush() error }); ok {
+		return flusher.Flush()
+	}
+
+	return nil
 }
 
 func (stream *Stream) Close() error {

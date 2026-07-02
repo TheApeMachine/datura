@@ -3,7 +3,6 @@ package structure
 import (
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/theapemachine/datura"
@@ -76,7 +75,6 @@ NewClockRing builds a click clock with positive second, little, and big capaciti
 */
 func NewClockRing[T any](
 	secondCapacity, littleCapacity, bigCapacity int,
-	artifact *datura.Artifact,
 ) *ClockRing[T] {
 	if secondCapacity <= 0 || littleCapacity <= 0 || bigCapacity <= 0 {
 		return nil
@@ -90,15 +88,10 @@ func NewClockRing[T any](
 		return nil
 	}
 
-	secondHand.WithArtifact(artifact)
-	littleHand.WithArtifact(artifact)
-	bigHand.WithArtifact(artifact)
-
 	return &ClockRing[T]{
 		SecondHand: secondHand,
 		LittleHand: littleHand,
 		BigHand:    bigHand,
-		artifact:   artifact,
 	}
 }
 
@@ -343,28 +336,6 @@ func (clock *ClockRing[T]) Do(visitor func(ClockSlot[T])) {
 	}
 
 	clock.SecondHand.Do(visitor)
-}
-
-/*
-Write unmarshals bytes into the second-hand artifact.
-*/
-func (clock *ClockRing[T]) Write(payload []byte) (int, error) {
-	if clock == nil || clock.SecondHand == nil {
-		return 0, io.EOF
-	}
-
-	return clock.SecondHand.Write(payload)
-}
-
-/*
-Read implements io.Reader via the second-hand ListRing.
-*/
-func (clock *ClockRing[T]) Read(p []byte) (int, error) {
-	if clock == nil || clock.SecondHand == nil {
-		return 0, io.EOF
-	}
-
-	return clock.SecondHand.Read(p)
 }
 
 /*

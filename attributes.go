@@ -12,11 +12,7 @@ import (
 )
 
 func Peek[T any](artifact *Artifact, path ...any) T {
-	var (
-		zero T
-		root ast.Node
-		ok   bool
-	)
+	var zero T
 
 	if artifact == nil {
 		return zero
@@ -33,61 +29,36 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 			strings.Contains(message, "read traversal limit reached")
 	}
 
-	if len(path) > 0 && path[0] == "role" {
-		role := errnie.Does(func() (string, error) {
-			return artifact.Role()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
+	if len(path) > 0 {
+		var (
+			meta string
+			err  error
+		)
 
-		if role != "" {
-			if zero, ok = any(role).(T); ok {
-				return zero
+		switch path[0] {
+		case "role":
+			meta, err = artifact.Role()
+		case "scope":
+			meta, err = artifact.Scope()
+		case "origin":
+			meta, err = artifact.Origin()
+		case "destination":
+			meta, err = artifact.Destination()
+		}
+
+		if err != nil {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}
+
+		if meta != "" {
+			if typed, ok := any(meta).(T); ok {
+				return typed
 			}
 		}
 	}
 
-	if len(path) > 0 && path[0] == "scope" {
-		scope := errnie.Does(func() (string, error) {
-			return artifact.Scope()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if scope != "" {
-			if zero, ok = any(scope).(T); ok {
-				return zero
-			}
-		}
-	}
-
-	if len(path) > 0 && path[0] == "origin" {
-		origin := errnie.Does(func() (string, error) {
-			return artifact.Origin()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if origin != "" {
-			if zero, ok = any(origin).(T); ok {
-				return zero
-			}
-		}
-	}
-
-	if len(path) > 0 && path[0] == "destination" {
-		destination := errnie.Does(func() (string, error) {
-			return artifact.Destination()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if destination != "" {
-			if zero, ok = any(destination).(T); ok {
-				return zero
-			}
-		}
-	}
+	var value any
+	found := false
 
 	for _, region := range []func() ([]byte, error){
 		artifact.Attributes, artifact.decryptPayload,
@@ -111,51 +82,55 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 			continue
 		}
 
-		if len(path) > 0 && content[0] != '{' && content[0] != '[' {
-			continue
-		}
-
 		if !json.Valid(content) {
 			continue
 		}
 
-		root = errnie.Does(func() (ast.Node, error) {
-			return sonic.Get(content, path...)
-		}).Or(func(err error) {
+		root, err := sonic.Get(content, path...)
+
+		if err != nil {
 			if missing(err) {
-				return
+				continue
 			}
 
 			errnie.Error(errnie.Err(
 				errnie.Validation, err.Error(), err,
 			).With(artifact.Log()...))
-		}).Value()
 
-		if root.Exists() {
-			break
-		}
-	}
-
-	if !root.Exists() {
-		return zero
-	}
-
-	value := errnie.Does(func() (any, error) {
-		return root.Interface()
-	}).Or(func(err error) {
-		if missing(err) {
-			return
+			continue
 		}
 
-		errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-	}).Value()
+		if !root.Exists() {
+			continue
+		}
 
-	if zero, ok = value.(T); ok {
+		value, err = root.Interface()
+
+		if err != nil {
+			if missing(err) {
+				continue
+			}
+
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+
+			continue
+		}
+
+		found = true
+
+		break
+	}
+
+	if !found {
 		return zero
 	}
 
-	if zero, ok = numericPeek[T](value); ok {
-		return zero
+	if typed, ok := value.(T); ok {
+		return typed
+	}
+
+	if typed, ok := numericPeek[T](value); ok {
+		return typed
 	}
 
 	return zero

@@ -26,13 +26,11 @@ func (artifact *Artifact) To(v any) (err error) {
 	payload, err := artifact.decryptPayload()
 
 	if err != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-
 		return err
 	}
 
-	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	if err := sonic.Unmarshal(payload, v); err != nil {
+		return err
 	}
 
 	return nil
@@ -81,25 +79,19 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 	msg, err := capnp.UnmarshalPacked(p)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "payload unmarshalling failed", err,
-		))
+		return 0, err
 	}
 
 	decoded, err := ReadRootArtifact(msg)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "reading root artifact failed", err,
-		))
+		return 0, err
 	}
 
 	writable, err := cloneDecodedArtifact(decoded)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "copying root artifact failed", err,
-		))
+		return 0, err
 	}
 
 	*artifact = *writable
@@ -126,7 +118,7 @@ func (artifact *Artifact) Clone() (*Artifact, error) {
 	wire, err := artifact.Message().MarshalPacked()
 
 	if err != nil {
-		return nil, errnie.Error(err)
+		return nil, err
 	}
 
 	cloned = &Artifact{}

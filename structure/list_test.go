@@ -1,12 +1,9 @@
 package structure
 
 import (
-	"io"
 	"testing"
 
-	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura"
 )
 
 func TestNewListRing(t *testing.T) {
@@ -128,97 +125,6 @@ func TestListRingDo(t *testing.T) {
 			So(seen, ShouldResemble, []int{1, 2, 3})
 		})
 	})
-}
-
-func TestListRingReadWrite(t *testing.T) {
-	Convey("Given a nil ListRing", t, func() {
-		var ring *ListRing[int]
-		buffer := make([]byte, 4096)
-		readCount, err := ring.Read(buffer)
-
-		Convey("Read should fail closed", func() {
-			So(readCount, ShouldEqual, 0)
-			So(err, ShouldEqual, io.EOF)
-		})
-	})
-
-	Convey("Given a ListRing with no cursor", t, func() {
-		ring := &ListRing[int]{}
-		buffer := make([]byte, 4096)
-		readCount, err := ring.Read(buffer)
-
-		Convey("Read should fail closed", func() {
-			So(readCount, ShouldEqual, 0)
-			So(err, ShouldEqual, io.EOF)
-		})
-	})
-
-	Convey("Given a ListRing with a bound artifact", t, func() {
-		ring := NewListRing[int](1)
-		source := datura.Acquire("list", datura.Artifact_Type_json)
-
-		So(source, ShouldNotBeNil)
-
-		payload, err := sonic.Marshal(42)
-
-		So(err, ShouldBeNil)
-		source.WithPayload(payload)
-
-		wire := source.Pack()
-		written, err := ring.Write(wire)
-
-		Convey("Write should unmarshal into the ring", func() {
-			So(err, ShouldBeNil)
-			So(written, ShouldEqual, len(wire))
-		})
-
-		buffer := make([]byte, 4096)
-		readCount, readErr := ring.Read(buffer)
-
-		Convey("Read should marshal the cursor value through the artifact", func() {
-			So(readErr, ShouldEqual, io.EOF)
-			So(readCount, ShouldBeGreaterThan, 0)
-
-			decoded := datura.Acquire("list", datura.Artifact_Type_json)
-			_, writeErr := decoded.Unpack(buffer[:readCount])
-			So(writeErr, ShouldBeNil)
-
-			out := decoded.DecryptPayload()
-			So(string(out), ShouldEqual, "42")
-		})
-	})
-}
-
-func BenchmarkListRingReadWrite(b *testing.B) {
-	ring := NewListRing[int](1)
-	source := datura.Acquire("list", datura.Artifact_Type_json)
-
-	if source == nil {
-		b.Fatal("Acquire returned nil")
-	}
-
-	payload, err := sonic.Marshal(42)
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	source.WithPayload(payload)
-	wire := source.Pack()
-	buffer := make([]byte, 4096)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for b.Loop() {
-		if _, err := ring.Write(wire); err != nil {
-			b.Fatal(err)
-		}
-
-		if _, err := ring.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
-			b.Fatal(err)
-		}
-	}
 }
 
 func TestListRingImplementsRing(t *testing.T) {

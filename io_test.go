@@ -1,148 +1,153 @@
 package datura
 
 import (
-	"context"
+	"bytes"
 	"io"
-	"net"
-	"sync"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/theapemachine/datura/transport"
+	"github.com/theapemachine/errnie"
 )
 
-func testArtifact() *Artifact {
-	return Acquire(
-		"test", Artifact_Type_json,
-	).WithPayload(
-		[]byte("test payload"),
-	)
-}
+func TestRWCStreamRead(t *testing.T) {
+	Convey("Setup", t, func() {
+		artifact := Acquire(
+			"test-origin", APPJSON,
+		).WithRole(
+			"test-role",
+		).WithScope(
+			"test-scope",
+		).WithPayload(Map[any]{
+			"testkey": "testvalue",
+		}.Marshal())
 
-func TestPackInto(t *testing.T) {
-	Convey("Given an artifact", t, func() {
-		artifact := testArtifact()
-		expected := artifact.Pack()
+		Convey("Given an Artifact wrapped in an RWCStream", func() {
+			stream := NewRWCStream(artifact)
 
-		Convey("When the artifact is packed into a buffer", func() {
-			buffer := make([]byte, len(expected))
-			n, err := artifact.PackInto(buffer)
+			Convey("When using io.Copy", func() {
+				result := bytes.NewBuffer([]byte{})
+				n, err := io.Copy(result, stream)
 
-			So(err, ShouldEqual, io.EOF)
-			So(n, ShouldEqual, len(expected))
-			So(buffer, ShouldResemble, expected)
+				So(err, ShouldBeNil)
+				So(n, ShouldNotEqual, 0)
+
+				Convey("Result should receive the full artifact", func() {
+					out := Acquire(
+						"test-result", APPJSON,
+					)
+
+					out.Unpack(result.Bytes())
+					payload := out.DecryptPayload()
+
+					So(payload, ShouldResemble, artifact.DecryptPayload())
+				})
+			})
 		})
 	})
 }
 
-func TestPackIntoShortBuffer(t *testing.T) {
-	Convey("Given an artifact and a short destination buffer", t, func() {
-		artifact := testArtifact()
-		buffer := make([]byte, 3)
+func TestRWCStreamWrite(t *testing.T) {
+	Convey("Setup", t, func() {
+		source := Acquire(
+			"test-source", APPJSON,
+		).WithRole(
+			"source-role",
+		).WithScope(
+			"source-scope",
+		).WithPayload(Map[any]{
+			"answer": 42,
+		}.Marshal())
 
-		Convey("When the artifact is packed into the buffer", func() {
-			n, err := artifact.PackInto(buffer)
+		target := Acquire(
+			"test-target", APPJSON,
+		).WithPayload(Map[any]{
+			"answer": 0,
+		}.Marshal())
 
-			So(err, ShouldEqual, io.ErrShortBuffer)
-			So(n, ShouldEqual, len(buffer))
+		Convey("Given an Artifact wrapped in an RWCStream", func() {
+			stream := NewRWCStream(target)
+			wire := source.Pack()
+			split := len(wire) / 2
+
+			Convey("When writing one packed artifact as chunks", func() {
+				first, err := stream.Write(wire[:split])
+				So(err, ShouldBeNil)
+				So(first, ShouldEqual, split)
+				So(Peek[int](target, "answer"), ShouldEqual, 0)
+
+				second, err := stream.Write(wire[split:])
+				So(err, ShouldBeNil)
+				So(second, ShouldEqual, len(wire)-split)
+
+				Convey("Then the complete artifact should commit once", func() {
+					So(Peek[int](target, "answer"), ShouldEqual, 42)
+					So(Peek[string](target, "role"), ShouldEqual, "source-role")
+					So(Peek[string](target, "scope"), ShouldEqual, "source-scope")
+				})
+			})
 		})
 	})
 }
 
-func TestUnpack(t *testing.T) {
-	Convey("Given an empty artifact", t, func() {
-		empty := &Artifact{}
-
-		Convey("When unpacking a packed artifact frame", func() {
-			artifact := testArtifact()
-			wire := artifact.Pack()
-			n, err := empty.Unpack(wire)
-
-			So(err, ShouldBeNil)
-			So(n, ShouldEqual, len(wire))
-			So(empty.DecryptPayload(), ShouldResemble, artifact.DecryptPayload())
-		})
-	})
+type Compute struct {
+	artifact *Artifact
+	writes   []byte
 }
 
-func TestUnpackRejectsInvalidWire(testingTB *testing.T) {
-	Convey("Given an artifact and invalid packed data", testingTB, func() {
-		artifact := Acquire("unpack-invalid", Artifact_Type_json)
+func (modb *Compute) Read(p []byte) (n int, err error) {
+	state := Acquire("feature-extractor", APPJSON)
 
-		Convey("When unpacking the invalid data", func() {
-			written, err := artifact.Unpack(nil)
-
-			So(written, ShouldEqual, 0)
-			So(err, ShouldNotBeNil)
-		})
-	})
-}
-
-func TestArtifactStreamRPC(t *testing.T) {
-	Convey("Given a Cap'n Proto artifact stream over a net.Pipe", t, func() {
-		ctx := context.Background()
-		serverSide, clientSide := net.Pipe()
-		var mu sync.Mutex
-		received := make([]string, 0, 2)
-		doneCalled := false
-
-		server := NewArtifactStream(
-			func(_ context.Context, artifact *Artifact) error {
-				mu.Lock()
-				defer mu.Unlock()
-
-				received = append(received, string(artifact.DecryptPayload()))
-
-				return nil
-			},
-			func(context.Context) error {
-				mu.Lock()
-				defer mu.Unlock()
-
-				doneCalled = true
-
-				return nil
-			},
-		)
-
-		serverConn := NewArtifactStreamConnection(serverSide, server)
-		defer serverConn.Close()
-
-		client, clientConn := NewArtifactStreamClient(ctx, clientSide)
-		defer clientConn.Close()
-
-		first := Acquire("stream-test", Artifact_Type_json).WithPayload([]byte("first"))
-		second := Acquire("stream-test", Artifact_Type_json).WithPayload([]byte("second"))
-
-		Convey("When two artifacts are sent and the stream is closed", func() {
-			err := client.Send(ctx, first, second)
-
-			mu.Lock()
-			defer mu.Unlock()
-
-			So(err, ShouldBeNil)
-			So(doneCalled, ShouldBeTrue)
-			So(received, ShouldResemble, []string{"first", "second"})
-		})
-	})
-}
-
-func BenchmarkPackUnpack(benchmark *testing.B) {
-	source := testArtifact()
-	wire := source.Pack()
-	buffer := make([]byte, len(wire))
-
-	benchmark.ReportAllocs()
-	benchmark.ResetTimer()
-
-	for benchmark.Loop() {
-		target := &Artifact{}
-
-		if _, err := target.Unpack(wire); err != nil {
-			benchmark.Fatal(err)
-		}
-
-		if _, err := source.PackInto(buffer); err != io.EOF {
-			benchmark.Fatal(err)
-		}
+	if _, err := state.Unpack(modb.artifact.DecryptPayload()); err != nil {
+		return 0, errnie.Error(errnie.Err(
+			errnie.Validation,
+			"feature-extractor: state write failed",
+			err,
+		))
 	}
+
+	modb.writes = nil
+	state.Poke("test", "output")
+	return state.PackInto(p)
+}
+
+func (modb *Compute) Write(p []byte) (n int, err error) {
+	modb.writes = append(modb.writes, p...)
+	modb.artifact.WithPayload(modb.writes)
+
+	return len(p), nil
+}
+
+func (modb *Compute) Close() (err error) {
+	return nil
+}
+
+func TestRWCIntergrtion(t *testing.T) {
+	Convey("Setup", t, func() {
+		source := Acquire(
+			"test-source", APPJSON,
+		).WithRole(
+			"source-role",
+		).WithScope(
+			"source-scope",
+		).WithPayload(Map[any]{
+			"answer": 42,
+		}.Marshal())
+
+		Convey("Given an Artifact wrapped in an RWCStream", func() {
+			stream := NewRWCStream(source)
+			modb := &Compute{
+				artifact: Acquire("test", APPJSON),
+			}
+
+			Convey("When FlipFlopping", func() {
+				err := transport.NewFlipFlop(stream, modb)
+				So(err, ShouldBeNil)
+
+				Convey("It should contain the new data", func() {
+					So(Peek[string](source, "output"), ShouldEqual, "test")
+				})
+			})
+		})
+	})
 }

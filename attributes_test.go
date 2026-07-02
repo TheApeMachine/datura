@@ -58,6 +58,15 @@ func TestPeek(t *testing.T) {
 			So(Peek[string](artifact, "destination"), ShouldEqual, "")
 		})
 	})
+
+	Convey("Given an artifact with a scalar JSON payload", t, func() {
+		artifact := Acquire("peek-scalar", Artifact_Type_json).
+			WithPayload([]byte(`"ready"`))
+
+		Convey("It should let sonic handle scalar traversal", func() {
+			So(Peek[string](artifact, "missing"), ShouldEqual, "")
+		})
+	})
 }
 
 func TestPoke(t *testing.T) {

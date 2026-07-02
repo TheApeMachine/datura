@@ -4,7 +4,6 @@ Directory Structure:
     ├── artifact.capnp
     ├── artifact.go
     ├── attributes.go
-    ├── circuit.go
     ├── conversion.go
     ├── crypto.go
     ├── dmt
@@ -31,8 +30,11 @@ Directory Structure:
     │   │   ├── server.capnp
     │   │   └── server.go
     │   ├── snapshot.go
-    │   └── tree.go
+    │   ├── tree.go
+    │   └── tree_persistence.go
     ├── enum.go
+    ├── experimental_circuit.go
+    ├── io.go
     ├── map.go
     ├── memory
     │   └── store.go
@@ -44,7 +46,8 @@ Directory Structure:
     │   ├── list.go
     │   ├── mpmc.go
     │   ├── ring.go
-    │   └── spsc.go
+    │   ├── spsc.go
+    │   └── ultra.go
     ├── transport
     │   ├── copier.go
     │   ├── feedback.go
@@ -131,8 +134,8 @@ struct Artifact {
     attributes  @11 :Data;
 
     payload       @12 :Data;
-    encryptedKey  @13 :Data;
-    publicKey     @14 :Data;
+    encryptedKey  @13 :Data;  # legacy non-secret AES key carriage; do not use for confidentiality
+    publicKey     @14 :Data;  # sealed payload ephemeral public key
 
     struct Approval {
         zkProof   @0 :Data; # Users's zero-knowledge proof
@@ -361,6 +364,10 @@ func (artifact *Artifact) WithDestination(destination string) *Artifact {
 }
 
 func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
+	return artifact.WithPlaintextPayload(payload)
+}
+
+func (artifact *Artifact) WithSealedPayload(payload, recipientPublicKey []byte) *Artifact {
 	if len(payload) == 0 {
 		origin, _ := artifact.Origin()
 		role, _ := artifact.Role()
@@ -380,48 +387,56 @@ func (artifact *Artifact) WithPayload(payload []byte) *Artifact {
 	}
 
 	cryptoSuite := NewCryptoSuite()
-	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
-
-	if errnie.Error(artifact.SetPayload(make([]byte, cipherLen))) != nil {
-		return nil
-	}
-
-	if errnie.Error(artifact.SetEncryptedKey(make([]byte, aesKeyBytes))) != nil {
-		return nil
-	}
-
-	if errnie.Error(artifact.SetPublicKey(make([]byte, p256PubKeyBytes))) != nil {
-		return nil
-	}
-
-	encPayloadBuf, err := artifact.Payload()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	encKeyBuf, err := artifact.EncryptedKey()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	ephemeralKeyBuf, err := artifact.PublicKey()
-
-	if errnie.Error(err) != nil {
-		return nil
-	}
-
-	if errnie.Error(cryptoSuite.EncryptPayloadDirect(
-		encPayloadBuf,
-		encKeyBuf,
-		ephemeralKeyBuf,
+	encryptedPayload, ephemeralPublicKey, err := cryptoSuite.SealPayload(
 		payload,
-	)) != nil {
+		recipientPublicKey,
+		artifact.payloadAAD(),
+	)
+
+	if errnie.Error(err) != nil {
 		return nil
 	}
+
+	if errnie.Error(artifact.SetPayload(encryptedPayload)) != nil {
+		return nil
+	}
+
+	if errnie.Error(artifact.SetEncryptedKey(nil)) != nil {
+		return nil
+	}
+
+	errnie.Error(artifact.SetPublicKey(ephemeralPublicKey))
 
 	return artifact
+}
+
+func (artifact *Artifact) payloadAAD() []byte {
+	var builder strings.Builder
+
+	origin, _ := artifact.Origin()
+	destination, _ := artifact.Destination()
+	role, _ := artifact.Role()
+	scope, _ := artifact.Scope()
+
+	builder.WriteString("origin=")
+	builder.WriteString(origin)
+	builder.WriteByte('\n')
+	builder.WriteString("destination=")
+	builder.WriteString(destination)
+	builder.WriteByte('\n')
+	builder.WriteString("role=")
+	builder.WriteString(role)
+	builder.WriteByte('\n')
+	builder.WriteString("scope=")
+	builder.WriteString(scope)
+	builder.WriteByte('\n')
+	builder.WriteString("timestamp=")
+	builder.WriteString(fmt.Sprint(artifact.Timestamp()))
+	builder.WriteByte('\n')
+	builder.WriteString("type=")
+	builder.WriteString(artifact.Type().String())
+
+	return []byte(builder.String())
 }
 
 func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
@@ -490,7 +505,7 @@ func (artifact *Artifact) WithScope(scope string) *Artifact {
 }
 
 /*
-WithAttributesAsPayload copies staged attributes into the encrypted payload slot.
+WithAttributesAsPayload copies staged attributes into the payload slot.
 */
 func (artifact *Artifact) WithAttributesAsPayload() *Artifact {
 	encoded, err := artifact.Attributes()
@@ -804,191 +819,6 @@ func finite(value any) any {
 ---
 
 ---
-File: /circuit.go
----
-
-package datura
-
-import (
-	"bytes"
-	"errors"
-	"fmt"
-	"sync"
-
-	"github.com/consensys/gnark-crypto/ecc/bn254"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark/backend/groth16"
-	"github.com/consensys/gnark/constraint"
-	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
-	"github.com/theapemachine/errnie"
-)
-
-/*
-AuthCircuit defines the zk-SNARK proof structure.
-This proves an employee has access without revealing identity.
-*/
-type AuthCircuit struct {
-	PseudonymHash frontend.Variable `gnark:",private"`
-	MerkleRoot    frontend.Variable `gnark:",public"`
-}
-
-/*
-Define implements the frontend.Circuit interface.
-*/
-func (circuit *AuthCircuit) Define(api frontend.API) error {
-	return nil
-}
-
-var (
-	compiledCircuit constraint.ConstraintSystem
-	provingKey      groth16.ProvingKey
-	verifyingKey    groth16.VerifyingKey
-	zkSetupOnce     sync.Once
-	zkSetupErr      error
-)
-
-/*
-InitZKSNARKEngine compiles the circuit and runs trusted setup exactly once.
-*/
-func InitZKSNARKEngine() error {
-	zkSetupOnce.Do(func() {
-		var circuit AuthCircuit
-		modulus := fr.Modulus()
-
-		compiledCircuit, zkSetupErr = frontend.Compile(modulus, r1cs.NewBuilder, &circuit)
-
-		if zkSetupErr != nil {
-			return
-		}
-
-		provingKey, verifyingKey, zkSetupErr = groth16.Setup(compiledCircuit)
-	})
-
-	return zkSetupErr
-}
-
-/*
-GenerateProof creates a zk-SNARK proof for an artifact using precompiled keys.
-*/
-func GenerateProof(artifact *Artifact) ([]byte, error) {
-	if err := InitZKSNARKEngine(); err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	if artifact == nil {
-		return nil, errnie.Error(errors.New("nil artifact"))
-	}
-
-	pseudonymHash, err := artifact.Pseudonym()
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	merkleRoot, err := artifact.MerkleRoot()
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	modulus := fr.Modulus()
-
-	witness, err := frontend.NewWitness(&AuthCircuit{
-		PseudonymHash: pseudonymHash,
-		MerkleRoot:    merkleRoot,
-	}, modulus)
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	proof, err := groth16.Prove(compiledCircuit, provingKey, witness)
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	var buf bytes.Buffer
-
-	if _, err = proof.WriteTo(&buf); err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-/*
-VerifyProof checks if a given zk-SNARK proof is valid using precompiled keys.
-*/
-func VerifyProof(artifact *Artifact, proofBytes []byte) bool {
-	if err := InitZKSNARKEngine(); err != nil {
-		return false
-	}
-
-	if artifact == nil {
-		return false
-	}
-
-	merkleRoot, err := artifact.MerkleRoot()
-
-	if err != nil {
-		return false
-	}
-
-	proof := groth16.NewProof(bn254.ID)
-	reader := bytes.NewReader(proofBytes)
-
-	if _, err = proof.ReadFrom(reader); err != nil {
-		return false
-	}
-
-	modulus := fr.Modulus()
-
-	publicWitness, err := frontend.NewWitness(&AuthCircuit{
-		MerkleRoot: merkleRoot,
-	}, modulus, frontend.PublicOnly())
-
-	if err != nil {
-		return false
-	}
-
-	return groth16.Verify(proof, verifyingKey, publicWitness) == nil
-}
-
-/*
-BatchVerifyProofs validates every proof in artifacts.
-Groth16 batch verification is not exposed in gnark v0.15, so proofs are checked sequentially.
-*/
-func BatchVerifyProofs(artifacts []*Artifact) error {
-	for _, artifact := range artifacts {
-		if artifact == nil {
-			return errnie.Error(errors.New("nil artifact in batch"))
-		}
-
-		approvals, err := artifact.Approvals()
-
-		if err != nil || approvals.Len() == 0 {
-			return errnie.Error(fmt.Errorf("missing approval proof"))
-		}
-
-		proofBytes, err := approvals.At(0).ZkProof()
-
-		if err != nil {
-			return errnie.Error(err, "approval_proof")
-		}
-
-		if !VerifyProof(artifact, proofBytes) {
-			return errnie.Error(errors.New("batch verification failed"))
-		}
-	}
-
-	return nil
-}
-
----
-
----
 File: /conversion.go
 ---
 
@@ -1164,7 +994,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 
 	"github.com/theapemachine/errnie"
@@ -1174,6 +1006,8 @@ const (
 	aesKeyBytes     = 32
 	p256PubKeyBytes = 65
 )
+
+var sealedPayloadSalt = []byte("datura sealed payload v1")
 
 /*
 CryptoSuite handles encryption and decryption operations for Artifacts.
@@ -1300,6 +1134,45 @@ func (cryptoSuite *CryptoSuite) EncryptPayload(payload []byte) ([]byte, []byte, 
 	return encryptedPayload, encryptedKey, ephemeralPubKey, nil
 }
 
+func (cryptoSuite *CryptoSuite) SealPayload(
+	payload, recipientPublicKey, aad []byte,
+) ([]byte, []byte, error) {
+	ephemeralKey, err := cryptoSuite.GenerateEphemeralKeyPair()
+	if err != nil {
+		return nil, nil, errnie.Error(err, "ephemeral_key")
+	}
+
+	recipientKey, err := cryptoSuite.curve.NewPublicKey(recipientPublicKey)
+	if err != nil {
+		return nil, nil, errnie.Error(err, "recipient_public_key")
+	}
+
+	sharedSecret, err := ephemeralKey.ECDH(recipientKey)
+	if err != nil {
+		return nil, nil, errnie.Error(err, "ecdh")
+	}
+
+	aesKey := derivePayloadKey(sharedSecret, aad)
+	block, err := aes.NewCipher(aesKey[:])
+	if err != nil {
+		return nil, nil, errnie.Error(err, "cipher")
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, errnie.Error(err, "gcm")
+	}
+
+	encryptedPayload := make([]byte, gcm.NonceSize(), gcm.NonceSize()+len(payload)+gcm.Overhead())
+	if _, err = rand.Read(encryptedPayload); err != nil {
+		return nil, nil, errnie.Error(err, "rand_nonce")
+	}
+
+	encryptedPayload = gcm.Seal(encryptedPayload, encryptedPayload, payload, aad)
+
+	return encryptedPayload, ephemeralKey.PublicKey().Bytes(), nil
+}
+
 /*
 DecryptPayloadDirect decrypts into dst when capacity allows, otherwise allocates.
 */
@@ -1355,6 +1228,59 @@ func (cryptoSuite *CryptoSuite) DecryptPayload(
 	_ = ephemeralPubKey
 
 	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+}
+
+func (cryptoSuite *CryptoSuite) OpenSealedPayload(
+	encryptedPayload, ephemeralPubKey []byte,
+	privateKey *ecdh.PrivateKey,
+	aad []byte,
+) ([]byte, error) {
+	if privateKey == nil {
+		return nil, errors.New("private key is required")
+	}
+
+	publicKey, err := cryptoSuite.curve.NewPublicKey(ephemeralPubKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sharedSecret, err := privateKey.ECDH(publicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	aesKey := derivePayloadKey(sharedSecret, aad)
+	block, err := aes.NewCipher(aesKey[:])
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(encryptedPayload) < nonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	return gcm.Open(nil, encryptedPayload[:nonceSize], encryptedPayload[nonceSize:], aad)
+}
+
+func derivePayloadKey(sharedSecret, aad []byte) [aesKeyBytes]byte {
+	mac := hmac.New(sha256.New, sealedPayloadSalt)
+	mac.Write(sharedSecret)
+	prk := mac.Sum(nil)
+
+	mac = hmac.New(sha256.New, prk)
+	mac.Write([]byte("artifact payload"))
+	mac.Write(aad)
+	mac.Write([]byte{1})
+
+	var out [aesKeyBytes]byte
+	copy(out[:], mac.Sum(nil))
+	return out
 }
 
 ---
@@ -1439,7 +1365,7 @@ func (tree *Tree) GetContextWeight(contextPath []byte) PackedWeight {
 /*
 InsertContextWeight stores a packed weight at contextPath.
 */
-func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool) {
+func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool, error) {
 	return tree.Insert(contextPath, MarshalWeight(weight.Count, weight.Probability))
 }
 
@@ -2082,7 +2008,7 @@ func (tree *Tree) GetSensoryWeight(sequence []byte) CognitiveState {
 /*
 InsertSensoryWeight writes s/[sequence] suffix statistics.
 */
-func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool) {
+func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool, error) {
 	return tree.Insert(sensoryStorageKey(sequence), MarshalCognitive(state))
 }
 
@@ -2106,7 +2032,7 @@ func (tree *Tree) InsertAttractorBasin(
 	class []byte,
 	sequence []byte,
 	state CognitiveState,
-) (*Tree, bool) {
+) (*Tree, bool, error) {
 	return tree.Insert(basinStorageKey(class, sequence), MarshalCognitive(state))
 }
 
@@ -2296,7 +2222,7 @@ func (tree *Tree) ExecuteBeamSearch(
 /*
 CommitToEpisodicBuffer stores e/[timestamp][sequence] episodic observations.
 */
-func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tree, bool) {
+func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tree, bool, error) {
 	return tree.Insert(episodicStorageKey(timestamp, sequence), []byte{1})
 }
 
@@ -3304,6 +3230,7 @@ import (
 	"context"
 	"math/rand"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -3345,10 +3272,12 @@ type Election struct {
 	lastLogIndex   atomic.Uint64
 	votesReceived  atomic.Uint32
 	votesNeeded    atomic.Uint32
+	timerMu        sync.Mutex
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	voteRing       *structure.MPMCRing[uint64]
 	closed         atomic.Bool
+	done           chan struct{}
 }
 
 /*
@@ -3358,11 +3287,14 @@ func NewElection(config ElectionConfig, node *NetworkNode) *Election {
 	election := &Election{
 		config:         config,
 		node:           node,
+		electionTimer:  time.NewTimer(0),
 		heartbeatTimer: time.NewTimer(0),
+		done:           make(chan struct{}),
 	}
 
 	election.role.Store(uint32(Follower))
-	election.heartbeatTimer.Stop()
+	stopTimer(election.electionTimer)
+	stopTimer(election.heartbeatTimer)
 
 	voteRing, err := structure.NewMPMCRing[uint64](node.ctx, 128)
 
@@ -3383,14 +3315,22 @@ func NewElection(config ElectionConfig, node *NetworkNode) *Election {
 
 func (election *Election) tick(jobCtx context.Context) {
 	for !election.closed.Load() {
+		election.timerMu.Lock()
+		electionTimerC := election.electionTimer.C
+		heartbeatTimerC := election.heartbeatTimer.C
+		election.timerMu.Unlock()
+
 		select {
 		case <-jobCtx.Done():
 			return
 
-		case <-election.electionTimer.C:
+		case <-election.done:
+			return
+
+		case <-electionTimerC:
 			election.startElection()
 
-		case <-election.heartbeatTimer.C:
+		case <-heartbeatTimerC:
 			if election.getState() == Leader {
 				election.sendHeartbeats()
 			}
@@ -3455,7 +3395,7 @@ func (election *Election) tryPromoteToLeader() {
 func (election *Election) becomeLeader() {
 	election.role.Store(uint32(Leader))
 	election.node.metrics.SetLeader(true)
-	election.heartbeatTimer = time.NewTimer(election.config.HeartbeatInterval)
+	election.resetHeartbeatTimer()
 }
 
 func (election *Election) sendHeartbeats() {
@@ -3488,7 +3428,7 @@ func (election *Election) sendHeartbeats() {
 		})
 	}
 
-	election.heartbeatTimer.Reset(election.config.HeartbeatInterval)
+	election.resetHeartbeatTimer()
 }
 
 func (election *Election) stepDown(newTerm uint64) {
@@ -3500,17 +3440,50 @@ func (election *Election) stepDownLocked(newTerm uint64) {
 	election.term.Store(newTerm)
 	election.votedFor.Store(0)
 	election.node.metrics.SetLeader(false)
+	election.stopHeartbeatTimer()
 	election.resetElectionTimer()
 }
 
 func (election *Election) resetElectionTimer() {
-	if election.electionTimer != nil {
-		election.electionTimer.Stop()
-	}
-
 	jitter := time.Duration(rand.Int63n(int64(election.config.ElectionTimeout)))
 	timeout := election.config.ElectionTimeout + jitter
-	election.electionTimer = time.NewTimer(timeout)
+	election.timerMu.Lock()
+	resetTimer(election.electionTimer, timeout)
+	election.timerMu.Unlock()
+}
+
+func (election *Election) resetHeartbeatTimer() {
+	election.timerMu.Lock()
+	resetTimer(election.heartbeatTimer, election.config.HeartbeatInterval)
+	election.timerMu.Unlock()
+}
+
+func (election *Election) stopHeartbeatTimer() {
+	election.timerMu.Lock()
+	stopTimer(election.heartbeatTimer)
+	election.timerMu.Unlock()
+}
+
+func resetTimer(timer *time.Timer, timeout time.Duration) {
+	if timer == nil {
+		return
+	}
+
+	stopTimer(timer)
+	timer.Reset(timeout)
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func (election *Election) getState() NodeState {
@@ -3619,23 +3592,12 @@ func (election *Election) Close() {
 		return
 	}
 
-	if election.electionTimer != nil {
-		if !election.electionTimer.Stop() {
-			select {
-			case <-election.electionTimer.C:
-			default:
-			}
-		}
-	}
+	close(election.done)
 
-	if election.heartbeatTimer != nil {
-		if !election.heartbeatTimer.Stop() {
-			select {
-			case <-election.heartbeatTimer.C:
-			default:
-			}
-		}
-	}
+	election.timerMu.Lock()
+	stopTimer(election.electionTimer)
+	stopTimer(election.heartbeatTimer)
+	election.timerMu.Unlock()
 
 	if election.voteRing != nil {
 		election.voteRing.Close()
@@ -4758,17 +4720,17 @@ import (
 Metrics tracks performance and operational metrics for the radix tree.
 */
 type Metrics struct {
-	insertCount   atomic.Uint64
-	lookupCount   atomic.Uint64
-	syncCount     atomic.Uint64
-	conflictCount atomic.Uint64
-	votesReceived atomic.Uint64
-	termNumber    atomic.Uint64
-	lastVoter     atomic.Pointer[string]
-	insertLatency  *Latency
-	lookupLatency  *Latency
-	syncLatency    *Latency
-	networkLatency *Latency
+	insertCount      atomic.Uint64
+	lookupCount      atomic.Uint64
+	syncCount        atomic.Uint64
+	conflictCount    atomic.Uint64
+	votesReceived    atomic.Uint64
+	termNumber       atomic.Uint64
+	lastVoter        atomic.Pointer[string]
+	insertLatency    *Latency
+	lookupLatency    *Latency
+	syncLatency      *Latency
+	networkLatency   *Latency
 	bytesTransmitted atomic.Uint64
 	bytesReceived    atomic.Uint64
 	peerCount        atomic.Int32
@@ -5928,6 +5890,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -5949,6 +5912,12 @@ const (
 	opSnapshot
 	opTermUpdate
 )
+
+const maxWALFieldBytes = 64 << 20
+
+type persistenceFatal struct {
+	message string
+}
 
 /*
 WALEntry represents a single write-ahead log entry. Each entry contains the
@@ -5981,8 +5950,50 @@ type PersistentStore struct {
 	lastIndex atomic.Uint64
 	lastTerm  atomic.Uint64
 	closed    atomic.Bool
+	fatal     atomic.Pointer[persistenceFatal]
 	snapCount uint64
 	lastSnap  atomic.Int64
+}
+
+func (ps *PersistentStore) fatalError() error {
+	fatal := ps.fatal.Load()
+	if fatal == nil {
+		return nil
+	}
+
+	return errors.New(fatal.message)
+}
+
+func (ps *PersistentStore) markFatal(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if existing := ps.fatalError(); existing != nil {
+		return existing
+	}
+
+	fatal := &persistenceFatal{
+		message: fmt.Sprintf("persistent store fatal: %v", err),
+	}
+
+	if ps.fatal.CompareAndSwap(nil, fatal) {
+		return errors.New(fatal.message)
+	}
+
+	return ps.fatalError()
+}
+
+func (ps *PersistentStore) requireWritable() error {
+	if err := ps.fatalError(); err != nil {
+		return err
+	}
+
+	if ps.closed.Load() {
+		return fmt.Errorf("persistent store is closed")
+	}
+
+	return nil
 }
 
 /*
@@ -6026,8 +6037,8 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 LogInsert logs an insert operation to the WAL through the serialized worker pool.
 */
 func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("insert", func() error {
@@ -6042,15 +6053,15 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 			binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
 
-			if _, err := ps.walWriter.Write(frame[:]); err != nil {
+			if err := writeFull(ps.walWriter, frame[:]); err != nil {
 				return err
 			}
 
-			if _, err := ps.walWriter.Write(key); err != nil {
+			if err := writeFull(ps.walWriter, key); err != nil {
 				return err
 			}
 
-			if _, err := ps.walWriter.Write(value); err != nil {
+			if err := writeFull(ps.walWriter, value); err != nil {
 				return err
 			}
 
@@ -6063,7 +6074,7 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -6073,8 +6084,8 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 }
 
 func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	if len(entries) == 0 {
@@ -6096,15 +6107,15 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 				binary.LittleEndian.PutUint32(frame[17:21], uint32(len(entry.Key)))
 				binary.LittleEndian.PutUint32(frame[21:25], uint32(len(entry.Value)))
 
-				if _, err := ps.walWriter.Write(frame[:]); err != nil {
+				if err := writeFull(ps.walWriter, frame[:]); err != nil {
 					return err
 				}
 
-				if _, err := ps.walWriter.Write(entry.Key); err != nil {
+				if err := writeFull(ps.walWriter, entry.Key); err != nil {
 					return err
 				}
 
-				if _, err := ps.walWriter.Write(entry.Value); err != nil {
+				if err := writeFull(ps.walWriter, entry.Value); err != nil {
 					return err
 				}
 
@@ -6118,7 +6129,7 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	last := entries[len(entries)-1]
@@ -6132,8 +6143,8 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 LogDelete logs a delete operation to the WAL through the serialized worker pool.
 */
 func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("delete", func() error {
@@ -6147,13 +6158,11 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 			binary.LittleEndian.PutUint64(frame[9:17], index)
 			binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 
-			if _, err := ps.walWriter.Write(frame[:]); err != nil {
+			if err := writeFull(ps.walWriter, frame[:]); err != nil {
 				return err
 			}
 
-			_, err := ps.walWriter.Write(key)
-
-			return err
+			return writeFull(ps.walWriter, key)
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
@@ -6162,7 +6171,7 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -6215,8 +6224,8 @@ func (ps *PersistentStore) Close() error {
 LogTerm writes a term-update entry to the WAL so it survives restart.
 */
 func (ps *PersistentStore) LogTerm(term uint64) error {
-	if ps.closed.Load() {
-		return fmt.Errorf("persistent store is closed")
+	if err := ps.requireWritable(); err != nil {
+		return err
 	}
 
 	err := ps.runWal("term", func() error {
@@ -6228,9 +6237,7 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 			frame[0] = opTermUpdate
 			binary.LittleEndian.PutUint64(frame[1:9], term)
 
-			_, err := ps.walWriter.Write(frame[:])
-
-			return err
+			return writeFull(ps.walWriter, frame[:])
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
@@ -6239,7 +6246,7 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 	})
 
 	if err != nil {
-		return err
+		return ps.markFatal(err)
 	}
 
 	ps.lastTerm.Store(term)
@@ -6274,7 +6281,11 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	for {
 		op, err := reader.ReadByte()
 		if err != nil {
-			break
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return entries, ps.markFatal(err)
 		}
 
 		switch op {
@@ -6295,6 +6306,14 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			index := binary.LittleEndian.Uint64(header[8:16])
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
 			valLen := binary.LittleEndian.Uint32(header[20:24])
+
+			if err := validateWALLength("key", keyLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
+
+			if err := validateWALLength("value", valLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
@@ -6337,6 +6356,10 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			term := binary.LittleEndian.Uint64(header[0:8])
 			index := binary.LittleEndian.Uint64(header[8:16])
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
+
+			if err := validateWALLength("key", keyLen); err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			key := make([]byte, keyLen)
 			guardStep(ps.state, func() error {
@@ -6389,8 +6412,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 		default:
-			return entries, fmt.Errorf("invalid wal operation: %d", op)
+			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
 		}
+	}
+
+	if ps.state.Failed() {
+		return entries, ps.markFatal(ps.state.Err())
 	}
 
 	return entries, nil
@@ -6407,6 +6434,10 @@ func (ps *PersistentStore) loadLastState() error {
 func (ps *PersistentStore) CreateSnapshot(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	if err := ps.requireWritable(); err != nil {
+		return err
+	}
+
 	if iterator == nil {
 		return fmt.Errorf("persistent snapshot requires active tree iterator")
 	}
@@ -6422,7 +6453,7 @@ func (ps *PersistentStore) CreateSnapshot(
 		return nil
 	}
 
-	return ps.persistWal(func() error {
+	err := ps.persistWal(func() error {
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
@@ -6449,9 +6480,7 @@ func (ps *PersistentStore) CreateSnapshot(
 			binary.LittleEndian.PutUint64(stateFrame[0:8], ps.lastTerm.Load())
 			binary.LittleEndian.PutUint64(stateFrame[8:16], ps.lastIndex.Load())
 
-			_, err := file.Write(stateFrame[:])
-
-			return err
+			return writeFull(file, stateFrame[:])
 		})
 
 		guardStep(ps.state, func() error {
@@ -6460,6 +6489,12 @@ func (ps *PersistentStore) CreateSnapshot(
 
 		return ps.state.Err()
 	})
+
+	if err != nil {
+		return ps.markFatal(err)
+	}
+
+	return nil
 }
 
 func (ps *PersistentStore) truncateWAL(
@@ -6488,9 +6523,7 @@ func (ps *PersistentStore) truncateWAL(
 		binary.LittleEndian.PutUint64(walFrame[1:9], ps.lastTerm.Load())
 		binary.LittleEndian.PutUint64(walFrame[9:17], ps.lastIndex.Load())
 
-		_, err := writer.Write(walFrame[:])
-
-		return err
+		return writeFull(writer, walFrame[:])
 	})
 
 	var writeErr error
@@ -6510,13 +6543,13 @@ func (ps *PersistentStore) truncateWAL(
 		binary.LittleEndian.PutUint32(frame[17:21], uint32(len(key)))
 		binary.LittleEndian.PutUint32(frame[21:25], uint32(len(value)))
 
-		if _, writeErr = writer.Write(frame[:]); writeErr != nil {
+		if writeErr = writeFull(writer, frame[:]); writeErr != nil {
 			return false
 		}
-		if _, writeErr = writer.Write(key); writeErr != nil {
+		if writeErr = writeFull(writer, key); writeErr != nil {
 			return false
 		}
-		if _, writeErr = writer.Write(value); writeErr != nil {
+		if writeErr = writeFull(writer, value); writeErr != nil {
 			return false
 		}
 
@@ -6566,10 +6599,18 @@ func (ps *PersistentStore) GetLastState() (term, index uint64) {
 func (ps *PersistentStore) TruncateWAL(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	if err := ps.requireWritable(); err != nil {
+		return err
+	}
+
 	return ps.runWal("truncate", func() error {
 		ps.state.Reset()
 
-		return ps.truncateWAL(iterator)
+		if err := ps.truncateWAL(iterator); err != nil {
+			return ps.markFatal(err)
+		}
+
+		return nil
 	})
 }
 
@@ -6592,6 +6633,32 @@ func (ps *PersistentStore) runWal(op string, fn func() error) error {
 
 func (ps *PersistentStore) persistWal(fn func() error) error {
 	return fn()
+}
+
+func writeFull(writer io.Writer, data []byte) error {
+	written, err := writer.Write(data)
+	if err != nil {
+		return err
+	}
+
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+
+	return nil
+}
+
+func validateWALLength(field string, length uint32) error {
+	if length > maxWALFieldBytes {
+		return fmt.Errorf(
+			"invalid wal %s length %d exceeds max %d",
+			field,
+			length,
+			maxWALFieldBytes,
+		)
+	}
+
+	return nil
 }
 
 func (ps *PersistentStore) schedule(
@@ -7094,6 +7161,7 @@ package dmt
 import (
 	"bytes"
 	"iter"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -7111,6 +7179,7 @@ type Tree struct {
 	state        *batch
 	root         atomic.Pointer[iradix.Tree[[]byte]]
 	persist      *PersistentStore
+	persistMu    sync.Mutex
 	term         atomic.Uint64
 	logIndex     atomic.Uint64
 	opCount      atomic.Uint64
@@ -7130,6 +7199,8 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 
 	return iradix.New[[]byte]()
 }
+
+
 
 const treeOpSampleMask = uint64(63)
 
@@ -7293,10 +7364,25 @@ func (tree *Tree) WalkLowerBound(lowerBound []byte, fn func(key, value []byte) b
 Insert adds or updates a key-value pair in the tree.
 Due to the immutable nature of the tree, this operation creates a new version
 of the tree rather than modifying the existing one.
-Returns the updated tree and a boolean indicating if the tree was modified.
+Returns the updated tree, a boolean indicating if the tree was modified, and a
+persistence error when a durable tree cannot write its WAL.
 */
-func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
+func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 	started, track := tree.beginOp()
+
+	if tree == nil {
+		return tree, false, nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, err
+	}
+
+	if tree.persist != nil {
+		return tree.insertPersistent(started, track, key, value)
+	}
 
 	for {
 		oldRoot := tree.loadRoot()
@@ -7305,69 +7391,78 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool) {
 		if newRoot == oldRoot {
 			tree.endOp(started, track)
 
-			return tree, false
+			return tree, false, nil
 		}
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
-			index := tree.logIndex.Add(1)
-
-			if tree.persist != nil {
-				guardStep(tree.state, func() error {
-					return tree.persist.LogInsert(
-						key,
-						value,
-						tree.term.Load(),
-						index,
-					)
-				})
-
-				if index%tree.persist.snapCount == 0 {
-					guardStep(tree.state, tree.SaveSnapshot)
-				}
-			}
-
 			tree.endOp(started, track)
 
-			return tree, true
+			return tree, true, nil
 		}
 	}
 }
 
-func (tree *Tree) SaveSnapshot() error {
-	if tree == nil || tree.persist == nil {
-		return nil
+/*
+Delete removes a key-value pair from the tree.
+Due to the immutable nature of the tree, this operation creates a new version
+of the tree rather than modifying the existing one.
+Returns the updated tree, a boolean indicating if the tree was modified (i.e. if the key existed),
+and a persistence error when a durable tree cannot write its WAL.
+*/
+func (tree *Tree) Delete(key []byte) (*Tree, bool, error) {
+	started, track := tree.beginOp()
+
+	if tree == nil {
+		return tree, false, nil
 	}
 
-	return tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
-		root := tree.loadRoot()
-		it := root.Root().Iterator()
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
 
-		for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-			if !yield(key, value) {
-				return
-			}
+		return tree, false, err
+	}
+
+	if tree.persist != nil {
+		return tree.deletePersistent(started, track, key)
+	}
+
+	for {
+		oldRoot := tree.loadRoot()
+		newRoot, _, ok := oldRoot.Delete(key)
+
+		if !ok {
+			tree.endOp(started, track)
+
+			return tree, false, nil
 		}
-	})
+
+		if tree.root.CompareAndSwap(oldRoot, newRoot) {
+			tree.endOp(started, track)
+
+			return tree, true, nil
+		}
+	}
 }
 
 /*
 InsertArtifact adds or updates a datura.Artifact in the tree.
 Due to the immutable nature of the tree, this operation creates a new version
 of the tree rather than modifying the existing one.
-Returns the updated tree and a boolean indicating if the tree was modified.
+Returns the updated tree, a boolean indicating if the tree was modified, and any
+persistence error.
 */
 func (tree *Tree) InsertArtifact(
 	prefix []byte,
 	artifact *datura.Artifact,
-) (*Tree, bool) {
+) (*Tree, bool, error) {
 	if tree == nil || artifact == nil || len(prefix) == 0 {
-		return tree, false
+		return tree, false, nil
 	}
 
 	wire := artifact.Pack()
 
 	if len(wire) == 0 {
-		return tree, false
+		return tree, false, nil
 	}
 
 	return tree.Insert(prefix, wire)
@@ -7411,24 +7506,201 @@ func (tree *Tree) Close() error {
 	}
 
 	if tree.persist != nil {
-		guardStep(tree.state, tree.persist.Close)
+		if err := tree.persist.Close(); err != nil {
+			tree.failPersistence(err)
+		}
 	}
 
 	return tree.state.Err()
 }
 
-func (tree *Tree) UpdateTerm(term uint64) {
+
+
+---
+
+---
+File: /dmt/tree_persistence.go
+---
+
+package dmt
+
+import (
+	"time"
+
+	"github.com/theapemachine/errnie"
+)
+
+func (tree *Tree) persistenceError() error {
 	if tree == nil {
-		return
+		return nil
+	}
+
+	if tree.state != nil && tree.state.Err() != nil {
+		return tree.state.Err()
+	}
+
+	if tree.persist != nil {
+		return tree.persist.fatalError()
+	}
+
+	return nil
+}
+
+func (tree *Tree) failPersistence(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if tree.state != nil && tree.state.Err() == nil {
+		tree.state.err = errnie.Err(errnie.IO, "dmt/tree", err)
+	}
+
+	return tree.persistenceError()
+}
+
+func (tree *Tree) insertPersistent(
+	started time.Time,
+	track bool,
+	key []byte,
+	value []byte,
+) (*Tree, bool, error) {
+	tree.persistMu.Lock()
+	defer tree.persistMu.Unlock()
+
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, err
+	}
+
+	oldRoot := tree.loadRoot()
+	newRoot, _, _ := oldRoot.Insert(key, value)
+
+	if newRoot == oldRoot {
+		tree.endOp(started, track)
+
+		return tree, false, nil
+	}
+
+	index := tree.logIndex.Load() + 1
+	if err := tree.persist.LogInsert(key, value, tree.term.Load(), index); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, tree.failPersistence(err)
+	}
+
+	tree.root.Store(newRoot)
+	tree.logIndex.Store(index)
+
+	if index%tree.persist.snapCount == 0 {
+		if err := tree.SaveSnapshot(); err != nil {
+			tree.endOp(started, track)
+
+			return tree, true, tree.failPersistence(err)
+		}
+	}
+
+	tree.endOp(started, track)
+
+	return tree, true, nil
+}
+
+func (tree *Tree) deletePersistent(
+	started time.Time,
+	track bool,
+	key []byte,
+) (*Tree, bool, error) {
+	tree.persistMu.Lock()
+	defer tree.persistMu.Unlock()
+
+	if err := tree.persistenceError(); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, err
+	}
+
+	oldRoot := tree.loadRoot()
+	newRoot, _, ok := oldRoot.Delete(key)
+
+	if !ok {
+		tree.endOp(started, track)
+
+		return tree, false, nil
+	}
+
+	index := tree.logIndex.Load() + 1
+	if err := tree.persist.LogDelete(key, tree.term.Load(), index); err != nil {
+		tree.endOp(started, track)
+
+		return tree, false, tree.failPersistence(err)
+	}
+
+	tree.root.Store(newRoot)
+	tree.logIndex.Store(index)
+
+	if index%tree.persist.snapCount == 0 {
+		if err := tree.SaveSnapshot(); err != nil {
+			tree.endOp(started, track)
+
+			return tree, true, tree.failPersistence(err)
+		}
+	}
+
+	tree.endOp(started, track)
+
+	return tree, true, nil
+}
+
+func (tree *Tree) SaveSnapshot() error {
+	if tree == nil || tree.persist == nil {
+		return nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	if err := tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
+		root := tree.loadRoot()
+		it := root.Root().Iterator()
+
+		for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
+			if !yield(key, value) {
+				return
+			}
+		}
+	}); err != nil {
+		return tree.failPersistence(err)
+	}
+
+	return nil
+}
+
+func (tree *Tree) UpdateTerm(term uint64) error {
+	if tree == nil {
+		return nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	if tree.persist != nil {
+		tree.persistMu.Lock()
+		defer tree.persistMu.Unlock()
+
+		if err := tree.persistenceError(); err != nil {
+			return err
+		}
+
+		if err := tree.persist.LogTerm(term); err != nil {
+			return tree.failPersistence(err)
+		}
 	}
 
 	tree.term.Store(term)
 
-	if tree.persist != nil {
-		guardStep(tree.state, func() error {
-			return tree.persist.LogTerm(term)
-		})
-	}
+	return nil
 }
 
 func (tree *Tree) GetLogState() (term, index uint64) {
@@ -7456,6 +7728,125 @@ const (
 ---
 
 ---
+File: /experimental_circuit.go
+---
+
+package datura
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/theapemachine/errnie"
+)
+
+var ErrExperimentalProofsDisabled = errors.New(
+	"datura: zk proof support is experimental and disabled in production",
+)
+
+func InitZKSNARKEngine() error {
+	return ErrExperimentalProofsDisabled
+}
+
+func GenerateProof(artifact *Artifact) ([]byte, error) {
+	if artifact == nil {
+		return nil, errnie.Error(errors.New("nil artifact"))
+	}
+
+	return nil, errnie.Error(ErrExperimentalProofsDisabled)
+}
+
+func VerifyProof(artifact *Artifact, proofBytes []byte) bool {
+	_ = artifact
+	_ = proofBytes
+
+	return false
+}
+
+func BatchVerifyProofs(artifacts []*Artifact) error {
+	for _, artifact := range artifacts {
+		if artifact == nil {
+			return errnie.Error(errors.New("nil artifact in batch"))
+		}
+	}
+
+	return errnie.Error(fmt.Errorf("%w", ErrExperimentalProofsDisabled))
+}
+
+---
+
+---
+File: /io.go
+---
+
+package datura
+
+import (
+	"bufio"
+
+	"github.com/smallnest/ringbuffer"
+	"github.com/theapemachine/errnie"
+)
+
+/*
+RWCStream buffers an io.ReadWriteCloser with bufio for chunked streaming.
+*/
+type RWCStream struct {
+	artifact *Artifact
+	rw       *bufio.ReadWriter
+}
+
+/*
+NewRWCStream wraps artifact with bufio for use in Copy, FlipFlop, Pipeline, and Number.
+*/
+func NewRWCStream(artifact *Artifact) *RWCStream {
+	buffer := ringbuffer.New(32 * 1024)
+
+	return &RWCStream{
+		artifact: artifact,
+		rw: bufio.NewReadWriter(
+			bufio.NewReader(buffer),
+			bufio.NewWriter(buffer),
+		),
+	}
+}
+
+func (stream *RWCStream) Read(p []byte) (n int, err error) {
+	// Crucial: Do NOT call stream.rw.Flush() here.
+	// The writer already flushes. Touching stream.rw.Writer concurrently
+	// from the reader goroutine causes a critical data race and infinite loops.
+	return stream.rw.Read(p)
+}
+
+func (stream *RWCStream) Write(p []byte) (n int, err error) {
+	// If writing to the stream, directly unpack incoming bytes into the artifact.
+	// We return 0 on error to strictly satisfy the Go io.Writer contract.
+	if _, err = stream.artifact.Unpack(p); err != nil {
+		return 0, errnie.Error(errnie.Err(
+			errnie.IO,
+			err.Error(),
+			err,
+		))
+	}
+
+	// Write the serialized bytes of the artifact to the underlying ring buffer
+	n, err = stream.rw.Write(stream.artifact.Pack())
+	if err != nil {
+		return n, err
+	}
+
+	// Flush the buffer to ensure the bytes actually reach the ring buffer
+	err = stream.rw.Flush()
+	return n, err
+}
+
+func (stream *RWCStream) Close() error {
+	return stream.rw.Flush()
+}
+
+---
+
+---
 File: /map.go
 ---
 
@@ -7465,6 +7856,8 @@ import (
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
+	"github.com/theapemachine/errnie"
 )
 
 type Map[T any] map[string]T
@@ -7477,6 +7870,32 @@ func (m Map[T]) Marshal() []byte {
 	}
 
 	return payload
+}
+
+func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
+	root := errnie.Does(func() (ast.Node, error) {
+		return sonic.Get(artifact.DecryptPayload())
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload peek failed", err))
+	}).Value()
+
+	if !root.Exists() {
+		root = ast.NewObject(nil)
+	}
+
+	root.SetAnyByPath(finite(value), path...)
+
+	payload := errnie.Does(func() ([]byte, error) {
+		return root.MarshalJSON()
+	}).Or(func(err error) {
+		errnie.Error(errnie.Err(errnie.Validation, "payload marshal failed", err))
+	}).Value()
+
+	if len(payload) > 0 {
+		artifact.WithPayload(payload)
+	}
+
+	return artifact
 }
 
 /*
@@ -7573,6 +7992,8 @@ package memory
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 
@@ -7659,20 +8080,110 @@ func (store *Store) Search(_ context.Context, query types.Query) (types.Memory, 
 
 	out := types.NewMemory()
 	lower := strings.ToLower(text)
+	hits := make([]scoredDocument, 0, len(store.documents))
 
 	for _, doc := range store.documents {
-		if text != "" && !strings.Contains(strings.ToLower(doc.Text), lower) {
+		score, ok := scoreDocument(doc, lower, query)
+		if !ok {
 			continue
 		}
 
-		out.AddDocument(doc)
+		if query.ScoreThreshold != nil && score < float64(*query.ScoreThreshold) {
+			continue
+		}
+
+		hits = append(hits, scoredDocument{document: doc, score: score})
 	}
 
-	if query.Limit > 0 && len(out.Documents) > query.Limit {
-		out.Documents = out.Documents[:query.Limit]
+	sort.SliceStable(hits, func(left, right int) bool {
+		if hits[left].score == hits[right].score {
+			return hits[left].document.ID < hits[right].document.ID
+		}
+
+		return hits[left].score > hits[right].score
+	})
+
+	if query.Limit > 0 && len(hits) > query.Limit {
+		hits = hits[:query.Limit]
+	}
+
+	for _, hit := range hits {
+		out.AddDocument(hit.document)
 	}
 
 	return out, nil
+}
+
+type scoredDocument struct {
+	document types.Document
+	score    float64
+}
+
+func scoreDocument(doc types.Document, lower string, query types.Query) (float64, bool) {
+	hasText := lower != ""
+	hasVector := len(query.Embedding) > 0
+
+	if !hasText && !hasVector {
+		return 0, false
+	}
+
+	textMatch := false
+	if hasText {
+		textMatch = strings.Contains(strings.ToLower(doc.Text), lower)
+	}
+
+	if !hasVector {
+		if !textMatch {
+			return 0, false
+		}
+
+		return 1, true
+	}
+
+	vectorScore, ok := cosineSimilarity(query.Embedding, doc.Embedding)
+	if !ok {
+		return 0, false
+	}
+
+	vectorWeight := query.VectorWeight
+	if vectorWeight == 0 {
+		vectorWeight = 1
+	}
+
+	textWeight := query.TextWeight
+	if textWeight == 0 {
+		textWeight = 1
+	}
+
+	score := vectorWeight * vectorScore
+	if hasText && textMatch {
+		score += textWeight
+	}
+
+	return score, true
+}
+
+func cosineSimilarity(left, right []float32) (float64, bool) {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0, false
+	}
+
+	var dot, leftNorm, rightNorm float64
+
+	for index := range left {
+		lv := float64(left[index])
+		rv := float64(right[index])
+
+		dot += lv * rv
+		leftNorm += lv * lv
+		rightNorm += rv * rv
+	}
+
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0, false
+	}
+
+	return dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm)), true
 }
 
 ---
@@ -7691,11 +8202,33 @@ func NewMortonCoder() *MortonCoder {
 }
 
 func (c *MortonCoder) Encode(x, y uint64) uint64 {
-	return x<<1 | y
+	return splitMortonBits(x) | splitMortonBits(y)<<1
 }
 
 func (c *MortonCoder) Decode(morton uint64) (uint64, uint64) {
-	return morton >> 1, morton & 1
+	return compactMortonBits(morton), compactMortonBits(morton >> 1)
+}
+
+func splitMortonBits(value uint64) uint64 {
+	value &= 0x00000000ffffffff
+	value = (value | value<<16) & 0x0000ffff0000ffff
+	value = (value | value<<8) & 0x00ff00ff00ff00ff
+	value = (value | value<<4) & 0x0f0f0f0f0f0f0f0f
+	value = (value | value<<2) & 0x3333333333333333
+	value = (value | value<<1) & 0x5555555555555555
+
+	return value
+}
+
+func compactMortonBits(value uint64) uint64 {
+	value &= 0x5555555555555555
+	value = (value | value>>1) & 0x3333333333333333
+	value = (value | value>>2) & 0x0f0f0f0f0f0f0f0f
+	value = (value | value>>4) & 0x00ff00ff00ff00ff
+	value = (value | value>>8) & 0x0000ffff0000ffff
+	value = (value | value>>16) & 0x00000000ffffffff
+
+	return value
 }
 
 ---
@@ -7865,7 +8398,6 @@ package structure
 import (
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/theapemachine/datura"
@@ -7938,15 +8470,14 @@ NewClockRing builds a click clock with positive second, little, and big capaciti
 */
 func NewClockRing[T any](
 	secondCapacity, littleCapacity, bigCapacity int,
-	artifact *datura.Artifact,
 ) *ClockRing[T] {
 	if secondCapacity <= 0 || littleCapacity <= 0 || bigCapacity <= 0 {
 		return nil
 	}
 
-	secondHand := NewListRing[ClockSlot[T]](secondCapacity, artifact)
-	littleHand := NewListRing[ClockSlot[T]](littleCapacity, artifact)
-	bigHand := NewListRing[ClockSlot[T]](bigCapacity, artifact)
+	secondHand := NewListRing[ClockSlot[T]](secondCapacity)
+	littleHand := NewListRing[ClockSlot[T]](littleCapacity)
+	bigHand := NewListRing[ClockSlot[T]](bigCapacity)
 
 	if secondHand == nil || littleHand == nil || bigHand == nil {
 		return nil
@@ -8203,28 +8734,6 @@ func (clock *ClockRing[T]) Do(visitor func(ClockSlot[T])) {
 }
 
 /*
-Write unmarshals bytes into the second-hand artifact.
-*/
-func (clock *ClockRing[T]) Write(payload []byte) (int, error) {
-	if clock == nil || clock.SecondHand == nil {
-		return 0, io.EOF
-	}
-
-	return clock.SecondHand.Write(payload)
-}
-
-/*
-Read implements io.Reader via the second-hand ListRing.
-*/
-func (clock *ClockRing[T]) Read(p []byte) (int, error) {
-	if clock == nil || clock.SecondHand == nil {
-		return 0, io.EOF
-	}
-
-	return clock.SecondHand.Read(p)
-}
-
-/*
 Close is a no-op. It exists so ClockRing satisfies Ring[ClockSlot].
 */
 func (clock *ClockRing[T]) Close() error {
@@ -8330,9 +8839,9 @@ func NewClockTrack[T any](clock *ClockRing[T]) (*ClockTrack[T], error) {
 		return nil, errClockNil
 	}
 
-	secondValues := NewListRing[T](clock.SecondHand.Len(), clock.SecondHand.artifact)
-	littleValues := NewListRing[T](clock.LittleHand.Len(), clock.LittleHand.artifact)
-	bigValues := NewListRing[T](clock.BigHand.Len(), clock.BigHand.artifact)
+	secondValues := NewListRing[T](clock.SecondHand.Len())
+	littleValues := NewListRing[T](clock.LittleHand.Len())
+	bigValues := NewListRing[T](clock.BigHand.Len())
 
 	if secondValues == nil || littleValues == nil || bigValues == nil {
 		return nil, errClockTrackAlloc
@@ -8489,14 +8998,6 @@ File: /structure/list.go
 
 package structure
 
-import (
-	"errors"
-	"io"
-
-	"github.com/bytedance/sonic"
-	"github.com/theapemachine/datura"
-)
-
 /*
 listRingNode is one node in the circular list backing a ListRing. Nodes are
 linked through prev and next; Value holds the element payload for type T.
@@ -8529,8 +9030,7 @@ an empty ring. NewListRing never returns a ring with zero nodes; elementCount
 must be positive.
 */
 type ListRing[T any] struct {
-	cursor   *ListRingNode[T]
-	artifact *datura.Artifact
+	cursor *ListRingNode[T]
 }
 
 /*
@@ -8538,7 +9038,7 @@ NewListRing creates a ring of elementCount nodes, each with Value set to the zer
 value of T. The cursor starts at the first node. Returns nil when elementCount is
 not positive.
 */
-func NewListRing[T any](elementCount int, artifact *datura.Artifact) *ListRing[T] {
+func NewListRing[T any](elementCount int) *ListRing[T] {
 	if elementCount <= 0 {
 		return nil
 	}
@@ -8554,7 +9054,7 @@ func NewListRing[T any](elementCount int, artifact *datura.Artifact) *ListRing[T
 	tail.next = head
 	head.prev = tail
 
-	return &ListRing[T]{cursor: head, artifact: artifact}
+	return &ListRing[T]{cursor: head}
 }
 
 /*
@@ -8595,7 +9095,9 @@ The receiver's cursor is not mutated. The returned Ring shares the same underlyi
 nodes as the receiver.
 */
 func (ring *ListRing[T]) Select(step int) Ring[T] {
-	return &ListRing[T]{cursor: ring.move(step)}
+	return &ListRing[T]{
+		cursor: ring.move(step),
+	}
 }
 
 /*
@@ -8687,7 +9189,9 @@ func (ring *ListRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	return &ListRing[T]{cursor: removed}
+	return &ListRing[T]{
+		cursor: removed,
+	}
 }
 
 /*
@@ -8723,55 +9227,6 @@ func (ring *ListRing[T]) Do(visitor func(T)) {
 	for walk := ring.cursor.next; walk != ring.cursor; walk = walk.next {
 		visitor(walk.Value)
 	}
-}
-
-/*
-Read implements io.Reader. It marshals the value at the cursor through the bound
-artifact.
-*/
-func (ring *ListRing[T]) Read(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, io.EOF
-	}
-
-	value := ring.Select(-1).Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if scope, err := ring.artifact.Scope(); err == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p into the bound artifact and Push'es
-the decoded value.
-*/
-func (ring *ListRing[T]) Write(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, errors.New("structure: ListRing has no artifact")
-	}
-
-	written, err := ring.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !ring.Push(datura.As[T](ring.artifact)) {
-		return written, errors.New("structure: ListRing Push failed")
-	}
-
-	return written, nil
 }
 
 /*
@@ -8923,9 +9378,10 @@ func (ring *MPMCRing[T]) pushpop(
 			return value
 		}
 
+		value := cell.data.Swap(nil)
 		cell.sequence.Store(position + ring.mask + 1)
 
-		return cell.data.Swap(nil)
+		return value
 	}
 }
 
@@ -9262,8 +9718,20 @@ Pop Swap's the navigator's cell payload to nil without advancing dequeuePos.
 Returns the zero value of T when the cell is empty or navigator is invalid.
 */
 func (navigator *mpmcNavigator[T]) Pop() T {
+	var zero T
+
+	if navigator == nil ||
+		navigator.parent == nil ||
+		len(navigator.parent.buffer) == 0 {
+		return zero
+	}
+
 	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
 	value := cell.data.Swap(nil)
+
+	if value == nil {
+		return zero
+	}
 
 	return *value
 }
@@ -9455,8 +9923,6 @@ File: /structure/ring.go
 
 package structure
 
-import "io"
-
 /*
 Ring is the shared generic surface for every ring implementation in this
 package. All concrete rings — ListRing, SPSCRing, and MPMCRing — implement the
@@ -9473,7 +9939,6 @@ Implementations may document additional concurrency rules. Queue rings require
 quiescence (no concurrent Push or Pop) for Merge, Slice, and Do unless noted.
 */
 type Ring[T any] interface {
-	io.ReadWriteCloser
 	Push(T) bool
 	Pop() T
 	Select(int) Ring[T]
@@ -9482,6 +9947,7 @@ type Ring[T any] interface {
 	Len() int
 	Do(func(T))
 	Error() error
+	Close() error
 }
 
 /*
@@ -9536,7 +10002,7 @@ type SPSCRing[T any] struct {
 NewSPSCRing allocates a single-producer single-consumer ring of the given
 capacity.
 
-Returns a validation error when capacity is not a power of two. When
+Returns a validation error when capacity is not a positive power of two. When
 dropOldestOnFull is true, a full Push drops the oldest element instead of
 failing.
 */
@@ -9545,11 +10011,11 @@ func NewSPSCRing[T any](
 	dropOldestOnFull bool,
 	artifact *datura.Artifact,
 ) (*SPSCRing[T], error) {
-	if (capacity & (capacity - 1)) != 0 {
+	if capacity < 1 || (capacity&(capacity-1)) != 0 {
 		return nil, errnie.Error(errnie.Err(
 			errnie.Validation,
-			"SPSCRing capacity must be a power of two",
-			errors.New("SPSCRing capacity must be a power of two"),
+			"SPSCRing capacity must be a positive power of two",
+			errors.New("SPSCRing capacity must be a positive power of two"),
 		))
 	}
 
@@ -10100,6 +10566,136 @@ Error returns parent.Error when navigator and parent are valid.
 */
 func (navigator *spscNavigator[T]) Error() error {
 	return navigator.parent.Error()
+}
+
+---
+
+---
+File: /structure/ultra.go
+---
+
+//go:build hft
+
+package structure
+
+import (
+	"sync/atomic"
+	"unsafe"
+)
+
+// 1. Force tight memory alignment and layout.
+// Standard Go structs can have internal padding gaps. We tightly pack types
+// and cache-pad the entire Event array layout manually if needed.
+type OrderEvent struct {
+	OrderID   uint64  // 8 bytes
+	Price     uint64  // 8 bytes
+	Timestamp int64   // 8 bytes
+	Quantity  uint32  // 4 bytes
+	Side      byte    // 1 byte
+	_         [3]byte // Explicit padding to round up to 32 bytes (perfect sub-cache line fraction)
+}
+
+// 2. Pure 64-byte Cache-Line Isolation to eliminate False Sharing completely.
+type PaddedSequence struct {
+	_p1, _p2, _p3, _p4, _p5, _p6, _p7      int64
+	Value                                  int64
+	_p8, _p9, _p10, _p11, _p12, _p13, _p14 int64 // Rear padding for dual-core isolation
+}
+
+type UltraRingBuffer struct {
+	// We use an unsafe pointer to the underlying array memory block
+	// to bypass Go's slice boundary checks runtime overhead.
+	arrayPtr  unsafe.Pointer
+	mask      int64
+	_padding1 [8]uint64
+
+	ProducerSequence PaddedSequence
+	_padding2        [8]uint64
+
+	ConsumerSequence PaddedSequence
+}
+
+func NewUltraRingBuffer(size int64) *UltraRingBuffer {
+	// Size must be power of 2
+	buffer := make([]OrderEvent, size)
+
+	return &UltraRingBuffer{
+		// Grab the raw memory address of the first element
+		arrayPtr: unsafe.Pointer(&buffer[0]),
+		mask:     size - 1,
+	}
+}
+
+//go:nosplit
+//go:nowritebarrier
+func (rb *UltraRingBuffer) Publish(orderID, price uint64, qty uint32, side byte, ts int64) {
+	// 1. Direct atomic read without locks
+	nextWrite := rb.ProducerSequence.Value + 1
+	wrapPoint := nextWrite - (rb.mask + 1)
+
+	// 2. Aggressive CPU Spinning (No Gosched() or context switching)
+	// For HFT, yielding the CPU to the Go scheduler is a 2-5 microsecond penalty.
+	// We spin purely in assembly or a tight loop.
+	for atomic.LoadInt64(&rb.ConsumerSequence.Value) < wrapPoint {
+		// Pure hardware spin. Don't yield execution.
+	}
+
+	// 3. Unsafe Pointer Arithmetic (Bypasses bounds checking entirely)
+	slot := nextWrite & rb.mask
+	elementOffset := uintptr(slot) * unsafe.Sizeof(OrderEvent{})
+
+	// Directly mutate the raw hardware memory address
+	event := (*OrderEvent)(unsafe.Pointer(uintptr(rb.arrayPtr) + elementOffset))
+
+	event.OrderID = orderID
+	event.Price = price
+	event.Quantity = qty
+	event.Side = side
+	event.Timestamp = ts
+
+	// 4. Release Barrier: Atomic Store releases the visibility to the consumer core
+	atomic.StoreInt64(&rb.ProducerSequence.Value, nextWrite)
+}
+
+//go:nosplit
+func (rb *UltraRingBuffer) ConsumeBatch(limit int64, handler func(*OrderEvent)) {
+	nextRead := rb.ConsumerSequence.Value + 1
+
+	for {
+		// Read the maximum available published sequence at this moment
+		currentAvailable := atomic.LoadInt64(
+			&rb.ProducerSequence.Value,
+		)
+
+		if nextRead > currentAvailable {
+			// Zero-latency wait: Spin on hardware cache invalidation lines
+			continue
+		}
+
+		// Cap the batch if it exceeds your max pipeline processing limits
+		if currentAvailable-nextRead > limit {
+			currentAvailable = nextRead + limit
+		}
+
+		// Linear cache pre-fetching loop
+		for nextRead <= currentAvailable {
+			slot := nextRead & rb.mask
+			elementOffset := uintptr(slot) * unsafe.Sizeof(OrderEvent{})
+
+			// Zero-allocation, zero-check direct pointer reference
+			event := (*OrderEvent)(unsafe.Pointer(
+				uintptr(rb.arrayPtr) + elementOffset,
+			))
+
+			handler(event)
+			nextRead++
+		}
+
+		// Commit processing progress in one single instruction for the whole batch
+		atomic.StoreInt64(
+			&rb.ConsumerSequence.Value, nextRead-1,
+		)
+	}
 }
 
 ---
@@ -11020,7 +11616,15 @@ Flush delivers buffered writes to the underlying ReadWriteCloser.
 Copy defers this so capnp frames arrive in one Write to destinations that need it.
 */
 func (stream *Stream) Flush() error {
-	return stream.buffer.Flush()
+	if err := stream.buffer.Flush(); err != nil {
+		return err
+	}
+
+	if flusher, ok := stream.closer.(interface{ Flush() error }); ok {
+		return flusher.Flush()
+	}
+
+	return nil
 }
 
 func (stream *Stream) Close() error {
@@ -11235,6 +11839,7 @@ File: /utils.go
 package datura
 
 import (
+	"crypto/ecdh"
 	"strings"
 	"time"
 
@@ -11255,7 +11860,16 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 		)
 	}
 
+	publicKey, publicKeyErr := artifact.PublicKey()
 	encryptedKey, err := artifact.EncryptedKey()
+
+	if publicKeyErr == nil && len(publicKey) > 0 && (err != nil || len(encryptedKey) == 0) {
+		return nil, errnie.Err(
+			errnie.Validation,
+			"sealed payload requires DecryptPayloadWithKey",
+			nil,
+		)
+	}
 
 	if err != nil {
 		payload, payloadErr := artifact.Payload()
@@ -11288,6 +11902,48 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 	cryptoSuite := NewCryptoSuite()
 
 	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+}
+
+func (artifact *Artifact) DecryptPayloadWithKey(privateKey *ecdh.PrivateKey) ([]byte, error) {
+	if artifact == nil || !artifact.HasPayload() {
+		return nil, errnie.Err(
+			errnie.Validation,
+			"artifact is nil or has no payload",
+			nil,
+		)
+	}
+
+	publicKey, err := artifact.PublicKey()
+	if err != nil || len(publicKey) == 0 {
+		return nil, errnie.Err(
+			errnie.Validation,
+			"artifact has no sealed payload public key",
+			err,
+		)
+	}
+
+	encryptedKey, keyErr := artifact.EncryptedKey()
+	if keyErr == nil && len(encryptedKey) > 0 {
+		return nil, errnie.Err(
+			errnie.Validation,
+			"legacy encrypted-key payload is not sealed payload",
+			nil,
+		)
+	}
+
+	encryptedPayload, err := artifact.Payload()
+	if err != nil {
+		return nil, errnie.Err(errnie.Validation, "sealed payload unavailable", err)
+	}
+
+	cryptoSuite := NewCryptoSuite()
+
+	return cryptoSuite.OpenSealedPayload(
+		encryptedPayload,
+		publicKey,
+		privateKey,
+		artifact.payloadAAD(),
+	)
 }
 
 /*

@@ -1,55 +1,15 @@
 package structure
 
 import (
-	"io"
 	"testing"
 	"time"
 
-	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura"
 )
-
-func TestClockRing_ReadWrite(t *testing.T) {
-	Convey("Given a click clock with a bound artifact", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
-
-		source := datura.Acquire("clock", datura.Artifact_Type_json)
-		So(source, ShouldNotBeNil)
-
-		slot := ClockSlot[float64]{Payload: 1.5}
-		payload, err := sonic.Marshal(slot)
-		So(err, ShouldBeNil)
-		source.WithPayload(payload)
-
-		wire := source.Pack()
-		written, err := clock.Write(wire)
-
-		Convey("Write should store through the second hand", func() {
-			So(err, ShouldBeNil)
-			So(written, ShouldEqual, len(wire))
-		})
-
-		buffer := make([]byte, 4096)
-		readCount, err := clock.Read(buffer)
-
-		Convey("Read should marshal through the second hand", func() {
-			So(err, ShouldEqual, io.EOF)
-			So(readCount, ShouldBeGreaterThan, 0)
-
-			decoded := datura.Acquire("clock", datura.Artifact_Type_json)
-			_, err := decoded.Unpack(buffer[:readCount])
-			So(err, ShouldBeNil)
-
-			out := decoded.DecryptPayload()
-			So(string(out), ShouldContainSubstring, "1.5")
-		})
-	})
-}
 
 func TestClockRing_ObserveSecond(t *testing.T) {
 	Convey("Given a default click clock", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+		clock := NewClockRing[float64](10, 100, 1000)
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
 		Convey("It should cascade to the little hand after one second lap", func() {
@@ -71,7 +31,7 @@ func TestClockRing_ObserveSecond(t *testing.T) {
 
 func TestClockRing_AdvanceVirtual(t *testing.T) {
 	Convey("Given one fresh second-hand observation", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+		clock := NewClockRing[float64](10, 100, 1000)
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
 		_, err := clock.ObserveSecond(start, 0)
@@ -93,7 +53,7 @@ func TestClockRing_AdvanceVirtual(t *testing.T) {
 
 func TestClockTrack_AdvanceVirtual(t *testing.T) {
 	Convey("Given a thin stream with one compression reading", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+		clock := NewClockRing[float64](10, 100, 1000)
 
 		track, err := NewClockTrack(clock)
 
@@ -130,7 +90,7 @@ func TestClockTrack_AdvanceVirtual(t *testing.T) {
 
 func TestClockRing_Ring(t *testing.T) {
 	Convey("Given a click clock as Ring[ClockSlot]", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+		clock := NewClockRing[float64](10, 100, 1000)
 		ring := NewRing(clock)
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
@@ -148,7 +108,7 @@ func TestClockRing_Ring(t *testing.T) {
 
 func TestClockRing_Freshness(t *testing.T) {
 	Convey("Given a fresh little-hand observation", t, func() {
-		clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+		clock := NewClockRing[float64](10, 100, 1000)
 		start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
 		_, err := clock.ObserveLittle(start)
@@ -163,41 +123,8 @@ func TestClockRing_Freshness(t *testing.T) {
 	})
 }
 
-func BenchmarkClockRing_ReadWrite(t *testing.B) {
-	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
-
-	source := datura.Acquire("clock", datura.Artifact_Type_json)
-
-	if source == nil {
-		t.Fatal("Acquire returned nil")
-	}
-
-	payload, err := sonic.Marshal(1.5)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	source.WithPayload(payload)
-	wire := source.Pack()
-	buffer := make([]byte, 4096)
-
-	t.ReportAllocs()
-	t.ResetTimer()
-
-	for t.Loop() {
-		if _, err := clock.Write(wire); err != nil {
-			t.Fatal(err)
-		}
-
-		if _, err := clock.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
-			t.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkClockRing_AdvanceVirtual(t *testing.B) {
-	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+	clock := NewClockRing[float64](10, 100, 1000)
 
 	start := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
@@ -217,7 +144,7 @@ func BenchmarkClockRing_AdvanceVirtual(t *testing.B) {
 }
 
 func BenchmarkClockTrack_ObserveSecond(t *testing.B) {
-	clock := NewClockRing[float64](10, 100, 1000, datura.Acquire("clock", datura.Artifact_Type_json))
+	clock := NewClockRing[float64](10, 100, 1000)
 
 	track, err := NewClockTrack(clock)
 
