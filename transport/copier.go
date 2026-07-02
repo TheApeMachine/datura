@@ -1,25 +1,15 @@
 package transport
 
 import (
+	"bytes"
+	"errors"
 	"io"
-	"sync"
-
-	"github.com/smallnest/ringbuffer"
 )
 
-var copierPool = sync.Pool{
-	New: func() any {
-		return ringbuffer.New(32 * 1024)
-	},
-}
+const copyBufferSize = 32 * 1024
 
 func Copy(destination io.Writer, origin io.Reader) (n int64, err error) {
-	rb := copierPool.Get().(*ringbuffer.RingBuffer)
-	rb.Reset()
-
 	defer func() {
-		copierPool.Put(rb)
-
 		if stream, ok := destination.(*Stream); ok {
 			if flushErr := stream.Flush(); flushErr != nil && err == nil {
 				err = flushErr
@@ -27,9 +17,60 @@ func Copy(destination io.Writer, origin io.Reader) (n int64, err error) {
 		}
 	}()
 
-	if n, err = rb.Copy(destination, origin); n == 0 && err == nil {
+	frame, err := readFrame(origin)
+
+	if err != nil {
+		return 0, err
+	}
+
+	if len(frame) == 0 {
 		return 0, io.EOF
 	}
 
-	return n, err
+	written, err := destination.Write(frame)
+
+	return int64(written), err
+}
+
+func readFrame(origin io.Reader) ([]byte, error) {
+	size := copyBufferSize
+
+	for {
+		frame, err := readFrameWithBuffer(origin, size)
+
+		if errors.Is(err, io.ErrShortBuffer) {
+			size *= 2
+
+			continue
+		}
+
+		return frame, err
+	}
+}
+
+func readFrameWithBuffer(origin io.Reader, size int) ([]byte, error) {
+	var frame bytes.Buffer
+	buffer := make([]byte, size)
+
+	for {
+		read, err := origin.Read(buffer)
+
+		if errors.Is(err, io.ErrShortBuffer) {
+			return nil, err
+		}
+
+		if read > 0 {
+			frame.Write(buffer[:read])
+		}
+
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, io.EOF) {
+			return frame.Bytes(), nil
+		}
+
+		return frame.Bytes(), err
+	}
 }

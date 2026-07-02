@@ -24,6 +24,7 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		return strings.Contains(message, "value not exists") ||
 			strings.Contains(message, "Syntax error") ||
 			strings.Contains(message, "no encrypted payload") ||
+			strings.Contains(message, "payload unavailable") ||
 			strings.Contains(message, "encrypted payload unavailable") ||
 			strings.Contains(message, "encrypted key unavailable") ||
 			strings.Contains(message, "read traversal limit reached")
@@ -133,6 +134,10 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		return typed
 	}
 
+	if typed, ok := slicePeek[T](value); ok {
+		return typed
+	}
+
 	return zero
 }
 
@@ -167,18 +172,65 @@ func numericPeek[T any](value any) (T, bool) {
 	return zero, false
 }
 
-func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
-	root := errnie.Does(func() (ast.Node, error) {
-		return sonic.Get(errnie.Does(func() ([]byte, error) {
-			return artifact.Attributes()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
-		}).Value())
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
-	}).Value()
+func slicePeek[T any](value any) (T, bool) {
+	var zero T
 
-	if !root.Exists() {
+	items, ok := value.([]any)
+
+	if !ok {
+		return zero, false
+	}
+
+	switch any(zero).(type) {
+	case []string:
+		values := make([]string, len(items))
+
+		for index, item := range items {
+			typed, ok := item.(string)
+
+			if !ok {
+				return zero, false
+			}
+
+			values[index] = typed
+		}
+
+		return any(values).(T), true
+	case []float64:
+		values := make([]float64, len(items))
+
+		for index, item := range items {
+			switch typed := item.(type) {
+			case float64:
+				values[index] = typed
+			case int:
+				values[index] = float64(typed)
+			default:
+				return zero, false
+			}
+		}
+
+		return any(values).(T), true
+	}
+
+	return zero, false
+}
+
+func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
+	var root ast.Node
+
+	attributes, err := artifact.Attributes()
+
+	if err == nil {
+		attributes = bytes.TrimSpace(attributes)
+	}
+
+	if err != nil || len(attributes) == 0 {
+		root = ast.NewObject(nil)
+	} else if parsed, parseErr := sonic.Get(attributes); parseErr == nil {
+		root = parsed
+	} else {
+		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", parseErr))
 		root = ast.NewObject(nil)
 	}
 

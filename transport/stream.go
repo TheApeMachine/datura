@@ -1,37 +1,33 @@
 package transport
 
 import (
-	"bufio"
+	"bytes"
 	"io"
 )
 
 /*
-Stream buffers an io.ReadWriteCloser with bufio for chunked streaming.
+Stream buffers writes to an io.ReadWriteCloser until Flush.
 */
 type Stream struct {
-	buffer *bufio.ReadWriter
-	closer io.Closer
+	writer bytes.Buffer
+	closer io.ReadWriteCloser
 }
 
 /*
-NewStream wraps rwc with bufio for use in Copy, FlipFlop, Pipeline, and Number.
+NewStream wraps rwc for use in Copy, FlipFlop, Pipeline, and Number.
 */
 func NewStream(rwc io.ReadWriteCloser) *Stream {
 	return &Stream{
-		buffer: bufio.NewReadWriter(
-			bufio.NewReader(rwc),
-			bufio.NewWriter(rwc),
-		),
 		closer: rwc,
 	}
 }
 
 func (stream *Stream) Read(p []byte) (n int, err error) {
-	return stream.buffer.Read(p)
+	return stream.closer.Read(p)
 }
 
 func (stream *Stream) Write(p []byte) (n int, err error) {
-	return stream.buffer.Write(p)
+	return stream.writer.Write(p)
 }
 
 /*
@@ -39,8 +35,12 @@ Flush delivers buffered writes to the underlying ReadWriteCloser.
 Copy defers this so capnp frames arrive in one Write to destinations that need it.
 */
 func (stream *Stream) Flush() error {
-	if err := stream.buffer.Flush(); err != nil {
-		return err
+	if stream.writer.Len() > 0 {
+		if _, err := stream.closer.Write(stream.writer.Bytes()); err != nil {
+			return err
+		}
+
+		stream.writer.Reset()
 	}
 
 	if flusher, ok := stream.closer.(interface{ Flush() error }); ok {
@@ -51,7 +51,7 @@ func (stream *Stream) Flush() error {
 }
 
 func (stream *Stream) Close() error {
-	if err := stream.buffer.Flush(); err != nil {
+	if err := stream.Flush(); err != nil {
 		return err
 	}
 

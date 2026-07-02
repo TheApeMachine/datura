@@ -21,6 +21,19 @@ func TestPeek(t *testing.T) {
 		})
 	})
 
+	Convey("Given attributes without a payload", t, func() {
+		artifact := Acquire("peek-attributes-only", Artifact_Type_json).
+			WithAttributes(Map[any]{"inputs": []string{"s0", "s1"}})
+
+		Convey("It should read JSON-backed string slices", func() {
+			So(Peek[[]string](artifact, "inputs"), ShouldResemble, []string{"s0", "s1"})
+		})
+
+		Convey("It should return zero for missing optional payload keys", func() {
+			So(Peek[[]float64](artifact, "categoryIndexes"), ShouldBeEmpty)
+		})
+	})
+
 	Convey("Given an artifact with only an encrypted payload", t, func() {
 		envelope := Acquire("peek-payload", Artifact_Type_json).
 			WithPayload([]byte(`{"method":"add_order","params":{"symbol":"BTC/USD"}}`))
@@ -81,6 +94,14 @@ func TestPoke(t *testing.T) {
 		Convey("It should deep-set nested paths with auto-created containers", func() {
 			artifact.Poke(1, "transforms", "cancelBid")
 			So(Peek[float64](artifact, "transforms", "cancelBid"), ShouldEqual, 1)
+		})
+
+		Convey("It should treat a missing attributes buffer as an empty object", func() {
+			So(artifact.SetAttributes(nil), ShouldBeNil)
+
+			artifact.Poke("output", "root")
+
+			So(Peek[string](artifact, "root"), ShouldEqual, "output")
 		})
 	})
 

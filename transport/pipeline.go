@@ -62,6 +62,10 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 					return 0, io.EOF
 				}
 
+				if errors.Is(err, io.ErrShortBuffer) {
+					return 0, err
+				}
+
 				if errors.Is(err, io.ErrNoProgress) && nn == 0 {
 					pipeline.processed = false
 					return 0, io.EOF
@@ -84,6 +88,10 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 	if err != nil {
 		if err == io.EOF {
 			pipeline.processed = false
+			return n, err
+		}
+
+		if errors.Is(err, io.ErrShortBuffer) {
 			return n, err
 		}
 

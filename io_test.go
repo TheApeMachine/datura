@@ -3,6 +3,7 @@ package datura
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -146,6 +147,76 @@ func TestRWCIntergrtion(t *testing.T) {
 
 				Convey("It should contain the new data", func() {
 					So(Peek[string](source, "output"), ShouldEqual, "test")
+				})
+			})
+		})
+	})
+}
+
+func TestRWCStreamLargeArtifactPipelineIntegration(t *testing.T) {
+	Convey("Setup", t, func() {
+		source := Acquire(
+			"test-source", APPJSON,
+		).WithRole(
+			"source-role",
+		).WithScope(
+			"source-scope",
+		).WithPayload(Map[any]{
+			"answer": 42,
+			"large":  strings.Repeat("x", 128*1024),
+		}.Marshal())
+
+		Convey("Given a large Artifact wrapped in an RWCStream", func() {
+			stream := NewRWCStream(source)
+			modb := &Compute{
+				artifact: Acquire("test", APPJSON),
+			}
+			pipeline := transport.NewPipeline(modb)
+
+			Convey("When FlipFlopping through a pipeline stage that unpacks inbound state", func() {
+				err := transport.NewFlipFlop(stream, pipeline)
+				So(err, ShouldBeNil)
+
+				Convey("It should preserve the complete artifact frame", func() {
+					So(Peek[string](source, "output"), ShouldEqual, "test")
+					So(Peek[string](source, "large"), ShouldEqual, strings.Repeat("x", 128*1024))
+				})
+			})
+		})
+	})
+}
+
+func TestRWCStreamLargeArtifactTwoStagePipelineIntegration(t *testing.T) {
+	Convey("Setup", t, func() {
+		large := strings.Repeat("x", 128*1024)
+		source := Acquire(
+			"test-source", APPJSON,
+		).WithRole(
+			"source-role",
+		).WithScope(
+			"source-scope",
+		).WithPayload(Map[any]{
+			"answer": 42,
+			"large":  large,
+		}.Marshal())
+
+		Convey("Given a large Artifact and a two-stage pipeline", func() {
+			stream := NewRWCStream(source)
+			first := &Compute{
+				artifact: Acquire("first", APPJSON),
+			}
+			second := &Compute{
+				artifact: Acquire("second", APPJSON),
+			}
+			pipeline := transport.NewPipeline(first, second)
+
+			Convey("When FlipFlopping through both unpacking stages", func() {
+				err := transport.NewFlipFlop(stream, pipeline)
+				So(err, ShouldBeNil)
+
+				Convey("It should preserve the complete artifact frame through every stage", func() {
+					So(Peek[string](source, "output"), ShouldEqual, "test")
+					So(Peek[string](source, "large"), ShouldEqual, large)
 				})
 			})
 		})

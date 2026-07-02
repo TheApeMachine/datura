@@ -109,19 +109,13 @@ func (artifact *Artifact) Clone() (*Artifact, error) {
 		))
 	}
 
-	cloned, err := cloneDecodedArtifact(*artifact)
-
-	if err == nil {
-		return cloned, nil
-	}
-
 	wire, err := artifact.Message().MarshalPacked()
 
 	if err != nil {
 		return nil, err
 	}
 
-	cloned = &Artifact{}
+	cloned := &Artifact{}
 
 	if _, err = cloned.Unpack(wire); err != nil {
 		return nil, err

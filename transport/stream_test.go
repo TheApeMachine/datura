@@ -1,11 +1,27 @@
 package transport
 
 import (
+	"bytes"
 	"io"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+type writeCountingBuffer struct {
+	bytes.Buffer
+	writes int
+}
+
+func (buffer *writeCountingBuffer) Write(payload []byte) (int, error) {
+	buffer.writes++
+
+	return buffer.Buffer.Write(payload)
+}
+
+func (buffer *writeCountingBuffer) Close() error {
+	return nil
+}
 
 func TestNewStream(t *testing.T) {
 	Convey("Given a stage without hooks", t, func() {
@@ -46,6 +62,26 @@ func TestStreamWrite(t *testing.T) {
 			So(n, ShouldEqual, len(payload))
 			So(stream.Flush(), ShouldBeNil)
 			So(pipeline.String(), ShouldEqual, "written")
+		})
+	})
+}
+
+func TestStreamWriteFlushesOneFrame(t *testing.T) {
+	Convey("Given a stream receiving a frame larger than bufio's default buffer", t, func() {
+		pipeline := &writeCountingBuffer{}
+		stream := NewStream(pipeline)
+		payload := bytes.Repeat([]byte("x"), 64*1024)
+
+		Convey("When the stream is flushed", func() {
+			n, err := stream.Write(payload)
+			So(err, ShouldBeNil)
+			So(n, ShouldEqual, len(payload))
+			So(stream.Flush(), ShouldBeNil)
+
+			Convey("Then the wrapped stage should receive one complete frame", func() {
+				So(pipeline.writes, ShouldEqual, 1)
+				So(pipeline.Bytes(), ShouldResemble, payload)
+			})
 		})
 	})
 }
