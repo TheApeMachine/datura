@@ -455,10 +455,10 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 		return state.Err()
 	}
 
-	diffs := n.merkleTree.GetDiff(NewMerkleTree())
+	leaves := n.merkleTree.Leaves()
 
 	entries := guardValue(state, func() (SyncEntry_List, error) {
-		return diff.NewEntries(int32(len(diffs)))
+		return diff.NewEntries(int32(len(leaves)))
 	})
 
 	if state.Failed() {
@@ -467,13 +467,13 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 
 	fastest := n.forest.getFastestTree()
 
-	for i, d := range diffs {
+	for i, leaf := range leaves {
 		entry := entries.At(i)
-		entry.SetKey(d.Key)
+		entry.SetKey(leaf.Key)
 
-		value := d.Value
+		value := leaf.Value
 		if fastest != nil {
-			if forestVal, ok := fastest.Get(d.Key); ok {
+			if forestVal, ok := fastest.Get(leaf.Key); ok {
 				value = forestVal
 			}
 		}

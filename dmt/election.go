@@ -220,10 +220,10 @@ func (election *Election) sendHeartbeats() {
 }
 
 func (election *Election) stepDown(newTerm uint64) {
-	election.stepDownLocked(newTerm)
+	election.becomeFollower(newTerm)
 }
 
-func (election *Election) stepDownLocked(newTerm uint64) {
+func (election *Election) becomeFollower(newTerm uint64) {
 	election.role.Store(uint32(Follower))
 	election.term.Store(newTerm)
 	election.votedFor.Store(0)
@@ -338,7 +338,7 @@ func (election *Election) handleVoteRequest(
 	currentTerm := election.term.Load()
 
 	if term > currentTerm {
-		election.stepDownLocked(term)
+		election.becomeFollower(term)
 		currentTerm = term
 	}
 
@@ -366,7 +366,7 @@ func (election *Election) handleHeartbeat(term uint64, leaderId string) bool {
 	currentTerm := election.term.Load()
 
 	if term > currentTerm {
-		election.stepDownLocked(term)
+		election.becomeFollower(term)
 
 		return true
 	}

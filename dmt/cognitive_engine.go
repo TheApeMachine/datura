@@ -155,15 +155,19 @@ func SelectStochasticToken(candidates []CandidateToken, temperature float64) []b
 		return highestScoreCandidate(candidates).Token
 	}
 
-	scoreFloor := positiveScoreFloor(candidates)
-	effectiveTemperature := math.Max(temperature, scoreFloor)
+	maxScore := candidates[0].Score
+
+	for _, candidate := range candidates[1:] {
+		if candidate.Score > maxScore {
+			maxScore = candidate.Score
+		}
+	}
 
 	exponentialScores := make([]float64, len(candidates))
 	totalMass := 0.0
 
 	for index, candidate := range candidates {
-		scaledLogit := math.Log(math.Max(candidate.Score, scoreFloor)) / effectiveTemperature
-		exponentialScores[index] = math.Exp(scaledLogit)
+		exponentialScores[index] = math.Exp((candidate.Score - maxScore) / temperature)
 		totalMass += exponentialScores[index]
 	}
 
@@ -403,24 +407,4 @@ func highestScoreCandidate(candidates []CandidateToken) CandidateToken {
 	}
 
 	return bestCandidate
-}
-
-func positiveScoreFloor(candidates []CandidateToken) float64 {
-	floor := math.MaxFloat64
-
-	for _, candidate := range candidates {
-		if candidate.Score <= 0 {
-			continue
-		}
-
-		if candidate.Score < floor {
-			floor = candidate.Score
-		}
-	}
-
-	if floor == math.MaxFloat64 {
-		return math.SmallestNonzeroFloat64
-	}
-
-	return floor
 }
