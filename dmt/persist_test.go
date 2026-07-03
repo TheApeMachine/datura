@@ -100,18 +100,42 @@ func TestLoadLastState(t *testing.T) {
 }
 
 func TestReplayRejectsCorruptWAL(t *testing.T) {
-	Convey("Given a truncated WAL record", t, func() {
+	Convey("Given a WAL with a torn final record", t, func() {
 		tmpDir := t.TempDir()
-		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
-		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), []byte{opInsert, 1, 2, 3}, 0644), ShouldBeNil)
 
 		store, err := NewPersistentStore(tmpDir)
-		if store != nil {
-			defer store.Close()
-		}
+		So(err, ShouldBeNil)
 
-		Convey("NewPersistentStore should reject it instead of treating it as EOF", func() {
-			So(err, ShouldNotBeNil)
+		So(store.LogInsert([]byte("live"), []byte("value"), 2, 7), ShouldBeNil)
+		So(store.Close(), ShouldBeNil)
+
+		walPath := filepath.Join(tmpDir, "wal.log")
+		complete, err := os.Stat(walPath)
+		So(err, ShouldBeNil)
+		file, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0644)
+		So(err, ShouldBeNil)
+		_, err = file.Write([]byte{opInsert, 1, 2, 3})
+		So(err, ShouldBeNil)
+		So(file.Close(), ShouldBeNil)
+
+		Convey("NewPersistentStore should replay complete records and truncate the torn tail", func() {
+			reopened, err := NewPersistentStore(tmpDir)
+			So(err, ShouldBeNil)
+			defer reopened.Close()
+
+			term, index := reopened.GetLastState()
+			So(term, ShouldEqual, uint64(2))
+			So(index, ShouldEqual, uint64(7))
+
+			entries, err := reopened.Replay()
+			So(err, ShouldBeNil)
+			So(len(entries), ShouldEqual, 1)
+			So(string(entries[0].Key), ShouldEqual, "live")
+			So(string(entries[0].Value), ShouldEqual, "value")
+
+			truncated, err := os.Stat(walPath)
+			So(err, ShouldBeNil)
+			So(truncated.Size(), ShouldEqual, complete.Size())
 		})
 	})
 

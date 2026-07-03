@@ -336,7 +336,13 @@ func (ring *SPSCRing[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !ring.Push(datura.As[T](ring.artifact)) {
+	value, err := datura.As[T](ring.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !ring.Push(value) {
 		return written, errors.New("structure: SPSCRing Push failed")
 	}
 
@@ -581,7 +587,13 @@ func (navigator *spscNavigator[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !navigator.Push(datura.As[T](navigator.parent.artifact)) {
+	value, err := datura.As[T](navigator.parent.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !navigator.Push(value) {
 		return written, errors.New("structure: spscNavigator Push failed")
 	}
 

@@ -46,6 +46,7 @@ type Graph struct {
 	registry  io.ReadWriteCloser
 	nodes     map[string]*Node
 	edges     map[string][]string
+	edgeOrder []Edge
 	processed bool
 }
 
@@ -66,9 +67,10 @@ Returns:
 */
 func NewGraph(opts ...GraphOption) *Graph {
 	graph := &Graph{
-		registry: nil,
-		nodes:    make(map[string]*Node),
-		edges:    make(map[string][]string),
+		registry:  nil,
+		nodes:     make(map[string]*Node),
+		edges:     make(map[string][]string),
+		edgeOrder: make([]Edge, 0),
 	}
 
 	for _, opt := range opts {
@@ -95,19 +97,19 @@ func (graph *Graph) Read(p []byte) (n int, err error) {
 	}
 
 	if !graph.processed {
-		// Process through all edges in the graph
-		for from, targets := range graph.edges {
-			if node, ok := graph.nodes[from]; ok {
-				errnie.Info("graph.Read", "from", node.ID)
-				// Copy from source node to all target nodes
-				for _, to := range targets {
-					if targetNode, ok := graph.nodes[to]; ok {
-						errnie.Info("graph.Read", "to", targetNode.ID)
-						if _, err = io.Copy(targetNode.Component, node.Component); err != nil {
-							return 0, errnie.Error(err)
-						}
-					}
-				}
+		for _, edge := range graph.edgeOrder {
+			node, hasSource := graph.nodes[edge.From]
+			targetNode, hasTarget := graph.nodes[edge.To]
+
+			if !hasSource || !hasTarget {
+				continue
+			}
+
+			errnie.Info("graph.Read", "from", node.ID)
+			errnie.Info("graph.Read", "to", targetNode.ID)
+
+			if _, err = Copy(targetNode.Component, node.Component); err != nil {
+				return 0, errnie.Error(err)
 			}
 		}
 
@@ -192,6 +194,7 @@ Parameters:
 func WithEdge(edge *Edge) GraphOption {
 	return func(graph *Graph) {
 		graph.edges[edge.From] = append(graph.edges[edge.From], edge.To)
+		graph.edgeOrder = append(graph.edgeOrder, *edge)
 	}
 }
 

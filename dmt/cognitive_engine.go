@@ -354,13 +354,16 @@ func (tree *Tree) buildSensoryMutations(sequence []byte) []learnMutation {
 		probability := 1.0
 
 		if len(parentPath) > 0 {
-			denominator := float64(parentState.Count + nextCount)
+			denominator := float64(parentState.Count)
 
 			if denominator <= 0 {
 				denominator = float64(nextCount)
 			}
 
 			probability = float64(nextCount) / denominator
+			if probability > 1.0 {
+				probability = 1.0
+			}
 		}
 
 		next := CognitiveState{

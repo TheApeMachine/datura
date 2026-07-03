@@ -51,19 +51,11 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 		return payload, nil
 	}
 
-	if len(encryptedKey) < aesKeyBytes {
-		return nil, errnie.Err(errnie.Validation, "encrypted key too short", nil)
-	}
-
-	encryptedPayload, err := artifact.Payload()
-
-	if err != nil {
-		return nil, errnie.Err(errnie.Validation, "encrypted payload unavailable", err)
-	}
-
-	cryptoSuite := NewCryptoSuite()
-
-	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+	return nil, errnie.Err(
+		errnie.Validation,
+		"legacy encrypted-key payload is unsupported",
+		nil,
+	)
 }
 
 func (artifact *Artifact) DecryptPayloadWithKey(privateKey *ecdh.PrivateKey) ([]byte, error) {

@@ -43,3 +43,18 @@ func TestClone(t *testing.T) {
 		})
 	})
 }
+
+func TestAs(t *testing.T) {
+	Convey("Given an artifact with malformed payload", t, func() {
+		artifact := Acquire("decode", APPJSON).WithPayload([]byte(`{`))
+
+		Convey("When converting into a typed value", func() {
+			value, err := As[map[string]any](artifact)
+
+			Convey("Then the decode error should be returned", func() {
+				So(err, ShouldNotBeNil)
+				So(value, ShouldBeNil)
+			})
+		})
+	})
+}

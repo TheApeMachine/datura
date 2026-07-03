@@ -64,6 +64,25 @@ func TestSelectStochasticToken(t *testing.T) {
 	})
 }
 
+func TestTrainSensorySequenceProbability(t *testing.T) {
+	Convey("Given a sensory sequence observed once", t, func() {
+		tree := NewTree("")
+
+		tree.TrainSensorySequence([]byte("blue_cab"))
+
+		Convey("When reading child probability", func() {
+			parent := tree.GetSensoryWeight([]byte("blue"))
+			child := tree.GetSensoryWeight([]byte("blue_cab"))
+
+			Convey("Then it should be child count over parent count", func() {
+				So(parent.Count, ShouldEqual, uint64(1))
+				So(child.Count, ShouldEqual, uint64(1))
+				So(child.Probability, ShouldEqual, 1.0)
+			})
+		})
+	})
+}
+
 func TestExecuteBeamSearch(t *testing.T) {
 	Convey("Given trained sensory branches", t, func() {
 		tree := NewTree("")

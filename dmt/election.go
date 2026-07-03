@@ -52,6 +52,8 @@ type Election struct {
 	votesReceived  atomic.Uint32
 	votesNeeded    atomic.Uint32
 	timerMu        sync.Mutex
+	votesMu        sync.Mutex
+	voters         map[uint64]struct{}
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	voteRing       *structure.MPMCRing[uint64]
@@ -120,7 +122,14 @@ func (election *Election) tick(jobCtx context.Context) {
 func (election *Election) startElection() {
 	election.role.Store(uint32(Candidate))
 	currentTerm := election.term.Add(1)
-	election.votedFor.Store(hashNodeID(election.node.config.NodeID))
+	self := hashNodeID(election.node.config.NodeID)
+	election.votedFor.Store(self)
+
+	election.votesMu.Lock()
+	election.voters = map[uint64]struct{}{
+		self: {},
+	}
+	election.votesMu.Unlock()
 
 	election.node.metrics.SetLeader(false)
 
@@ -298,6 +307,17 @@ func (election *Election) drainVotes() {
 		if election.getState() != Candidate {
 			return
 		}
+
+		election.votesMu.Lock()
+		if election.voters == nil {
+			election.voters = map[uint64]struct{}{}
+		}
+		if _, seen := election.voters[voterID]; seen {
+			election.votesMu.Unlock()
+			continue
+		}
+		election.voters[voterID] = struct{}{}
+		election.votesMu.Unlock()
 
 		received := election.votesReceived.Add(1)
 

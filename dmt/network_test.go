@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"capnproto.org/go/capnp/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -131,6 +132,49 @@ func TestNetworkSync(t *testing.T) {
 			Convey("Then data should be synced to second node", func() {
 				exists := node2.merkleTree.Verify([]byte("key1"), []byte("value1"))
 				So(exists, ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestNetworkApplyFilteredSyncEntriesDoesNotAdvanceElectionLog(t *testing.T) {
+	Convey("Given a network node with existing Raft log state", t, func() {
+		forest, err := NewForest(ForestConfig{})
+		So(err, ShouldBeNil)
+		defer forest.Close()
+
+		node, err := NewNetworkNode(NetworkConfig{
+			ListenAddr:   "127.0.0.1:0",
+			NodeID:       "sync-node",
+			SyncInterval: time.Second,
+		}, forest)
+		So(err, ShouldBeNil)
+		defer node.Close()
+
+		node.election.updateLogState(4, 2)
+
+		_, segment, err := capnp.NewMessage(capnp.SingleSegment(nil))
+		So(err, ShouldBeNil)
+
+		entries, err := NewSyncEntry_List(segment, 1)
+		So(err, ShouldBeNil)
+
+		entry := entries.At(0)
+		So(entry.SetKey([]byte("synced-key")), ShouldBeNil)
+		So(entry.SetValue([]byte("synced-value")), ShouldBeNil)
+		entry.SetTerm(99)
+		entry.SetIndex(999)
+
+		Convey("When applying sync entries with fabricated log metadata", func() {
+			node.applyFilteredSyncEntries(entries, nil)
+
+			Convey("Then state should sync without changing Raft log state", func() {
+				value, ok := forest.Get([]byte("synced-key"))
+				So(ok, ShouldBeTrue)
+				So(string(value), ShouldEqual, "synced-value")
+				So(node.merkleTree.Verify([]byte("synced-key"), []byte("synced-value")), ShouldBeTrue)
+				So(node.election.getLastLogIndex(), ShouldEqual, uint64(4))
+				So(node.election.getLastLogTerm(), ShouldEqual, uint64(2))
 			})
 		})
 	})

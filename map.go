@@ -1,8 +1,6 @@
 package datura
 
 import (
-	"encoding/json"
-
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/theapemachine/errnie"
@@ -115,11 +113,6 @@ func (artifact *Artifact) MergeOutputs(values map[string]any) {
 
 func (artifact *Artifact) payloadMap() Map[any] {
 	payload := artifact.DecryptPayload()
-
-	if !json.Valid(payload) {
-		return Map[any]{}
-	}
-
 	body := Map[any]{}
 
 	if sonic.Unmarshal(payload, &body) != nil {

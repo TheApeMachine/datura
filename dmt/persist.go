@@ -380,24 +380,38 @@ into the tree. Also restores lastTerm and lastIndex.
 func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	ps.state.Reset()
 
-	file := guardValue(ps.state, func() (*os.File, error) {
-		fileHandle, err := os.Open(ps.walPath)
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+	file, err := os.Open(ps.walPath)
 
-		return fileHandle, err
-	})
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 
-	if ps.state.Failed() || file == nil {
-		return nil, ps.state.Err()
+	if err != nil {
+		return nil, ps.markFatal(err)
 	}
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
 	var entries []WALEntry
+	var offset int64
+
+	readRecordBytes := func(recordStart int64, target []byte) (bool, error) {
+		read, err := io.ReadFull(reader, target)
+		offset += int64(read)
+
+		if err == nil {
+			return false, nil
+		}
+
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return true, os.Truncate(ps.walPath, recordStart)
+		}
+
+		return false, err
+	}
 
 	for {
+		recordStart := offset
 		op, err := reader.ReadByte()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -406,19 +420,18 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 
 			return entries, ps.markFatal(err)
 		}
+		offset++
 
 		switch op {
 		case opInsert:
 			var header [24]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, header[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, header[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(header[0:8])
@@ -435,18 +448,22 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			}
 
 			key := make([]byte, keyLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, key)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, key)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			value := make([]byte, valLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, value)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, value)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			entries = append(entries, WALEntry{
 				Op:    opInsert,
@@ -462,14 +479,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opDelete:
 			var header [20]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, header[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, header[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(header[0:8])
@@ -481,11 +496,13 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			}
 
 			key := make([]byte, keyLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, key)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, key)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			entries = append(entries, WALEntry{
 				Op:    opDelete,
@@ -500,14 +517,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opTermUpdate:
 			var termBuf [8]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, termBuf[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, termBuf[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			ps.lastTerm.Store(binary.LittleEndian.Uint64(termBuf[:]))
@@ -515,14 +530,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opSnapshot:
 			var snapshotHeader [16]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, snapshotHeader[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, snapshotHeader[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(snapshotHeader[0:8])
@@ -533,10 +546,6 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		default:
 			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
 		}
-	}
-
-	if ps.state.Failed() {
-		return entries, ps.markFatal(ps.state.Err())
 	}
 
 	return entries, nil
@@ -572,7 +581,7 @@ func (ps *PersistentStore) CreateSnapshot(
 		return nil
 	}
 
-	err := ps.persistWal(func() error {
+	err := ps.runWal("snapshot", func() error {
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
@@ -735,23 +744,19 @@ func (ps *PersistentStore) TruncateWAL(
 
 func (ps *PersistentStore) runWal(op string, fn func() error) error {
 	if ps.pool == nil {
-		return ps.persistWal(fn)
+		return fn()
 	}
 
 	sequence := ps.walSeq.Add(1)
 	jobID := "dmt/persist/" + op + "/" + strconv.FormatUint(sequence, 10)
 
 	wait := ps.pool.Schedule(jobID, func(ctx context.Context) (any, error) {
-		return nil, ps.persistWal(fn)
+		return nil, fn()
 	})
 
 	_, err := wait.Get(ps.ctx)
 
 	return err
-}
-
-func (ps *PersistentStore) persistWal(fn func() error) error {
-	return fn()
 }
 
 func writeFull(writer io.Writer, data []byte) error {

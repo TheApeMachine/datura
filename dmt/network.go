@@ -357,8 +357,6 @@ func (n *NetworkNode) syncWithPeers() {
 				entry := entries.At(i)
 				key := guardValue(state, entry.Key)
 				value := guardValue(state, entry.Value)
-				entryTerm := entry.Term()
-				entryIndex := entry.Index()
 
 				if state.Failed() {
 					continue
@@ -369,7 +367,6 @@ func (n *NetworkNode) syncWithPeers() {
 				totalBytes += len(key) + len(value)
 				n.forest.Insert(key, value)
 				n.merkleTree.Insert(key, value)
-				n.election.updateLogState(entryIndex, entryTerm)
 			}
 
 			if entries.Len() > 0 {
@@ -473,8 +470,6 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 	for i, d := range diffs {
 		entry := entries.At(i)
 		entry.SetKey(d.Key)
-		entry.SetTerm(n.election.getCurrentTerm())
-		entry.SetIndex(n.election.getLastLogIndex() + uint64(i) + 1)
 
 		value := d.Value
 		if fastest != nil {
@@ -773,12 +768,9 @@ func (n *NetworkNode) applyFilteredSyncEntries(
 		}
 
 		value = append([]byte(nil), value...)
-		entryTerm := entry.Term()
-		entryIndex := entry.Index()
 
 		n.forest.Insert(key, value)
 		n.merkleTree.Insert(key, value)
-		n.election.updateLogState(entryIndex, entryTerm)
 	}
 
 	if entries.Len() > 0 {

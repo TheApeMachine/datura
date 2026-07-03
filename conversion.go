@@ -8,14 +8,20 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
-func As[T any](artifact *Artifact) T {
+func As[T any](artifact *Artifact) (T, error) {
 	var v T
 
-	if err := artifact.To(&v); err != nil {
-		return v
+	if artifact == nil {
+		return v, errnie.Error(errnie.Err(
+			errnie.Validation, "artifact conversion failed", nil,
+		))
 	}
 
-	return v
+	if err := artifact.To(&v); err != nil {
+		return v, err
+	}
+
+	return v, nil
 }
 
 /*
@@ -109,19 +115,7 @@ func (artifact *Artifact) Clone() (*Artifact, error) {
 		))
 	}
 
-	wire, err := artifact.Message().MarshalPacked()
-
-	if err != nil {
-		return nil, err
-	}
-
-	cloned := &Artifact{}
-
-	if _, err = cloned.Unpack(wire); err != nil {
-		return nil, err
-	}
-
-	return cloned, nil
+	return cloneDecodedArtifact(*artifact)
 }
 
 func cloneDecodedArtifact(source Artifact) (*Artifact, error) {

@@ -156,13 +156,16 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		probability := 1.0
 
 		if len(parentPath) > 0 {
-			denominator := float64(parent.Count + 1)
+			denominator := float64(parent.Count)
 
 			if denominator <= 0 {
 				denominator = float64(nextCount)
 			}
 
 			probability = float64(nextCount) / denominator
+			if probability > 1.0 {
+				probability = 1.0
+			}
 		}
 
 		next := PackedWeight{

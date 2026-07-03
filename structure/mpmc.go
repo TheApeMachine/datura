@@ -355,7 +355,13 @@ func (ring *MPMCRing[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !ring.Push(datura.As[T](ring.artifact)) {
+	value, err := datura.As[T](ring.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !ring.Push(value) {
 		return written, errors.New("structure: MPMCRing Push failed")
 	}
 
@@ -632,7 +638,13 @@ func (navigator *mpmcNavigator[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !navigator.Push(datura.As[T](navigator.parent.artifact)) {
+	value, err := datura.As[T](navigator.parent.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !navigator.Push(value) {
 		return written, errors.New("structure: mpmcNavigator Push failed")
 	}
 
@@ -651,15 +663,4 @@ Error returns parent.Error when navigator and parent are valid.
 */
 func (navigator *mpmcNavigator[T]) Error() error {
 	return navigator.parent.Error()
-}
-
-/*
-max returns the larger of left and right.
-*/
-func max(left, right int) int {
-	if left > right {
-		return left
-	}
-
-	return right
 }
