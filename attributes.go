@@ -2,7 +2,6 @@ package datura
 
 import (
 	"bytes"
-	"encoding/json"
 	"math"
 	"strings"
 
@@ -80,10 +79,6 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		content = bytes.TrimSpace(content)
 
 		if len(content) == 0 {
-			continue
-		}
-
-		if !json.Valid(content) {
 			continue
 		}
 

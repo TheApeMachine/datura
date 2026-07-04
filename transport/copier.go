@@ -4,9 +4,16 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sync"
 )
 
 const copyBufferSize = 32 * 1024
+
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, copyBufferSize)
+	},
+}
 
 func Copy(destination io.Writer, origin io.Reader) (n int64, err error) {
 	defer func() {
@@ -50,7 +57,12 @@ func readFrame(origin io.Reader) ([]byte, error) {
 
 func readFrameWithBuffer(origin io.Reader, size int) ([]byte, error) {
 	var frame bytes.Buffer
-	buffer := make([]byte, size)
+	buffer := copyBufferPool.Get().([]byte)
+	if cap(buffer) < size {
+		buffer = make([]byte, size)
+	}
+	buffer = buffer[:size]
+	defer copyBufferPool.Put(buffer[:copyBufferSize])
 
 	for {
 		read, err := origin.Read(buffer)

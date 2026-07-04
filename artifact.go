@@ -299,6 +299,12 @@ func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
 		return nil
 	}
 
+	if artifact.HasPayload() {
+		if errnie.Error(artifact.compactPayloadEnvelope()) != nil {
+			return nil
+		}
+	}
+
 	if errnie.Error(artifact.SetPayload(append([]byte(nil), payload...))) != nil {
 		return nil
 	}
@@ -307,6 +313,83 @@ func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
 	errnie.Error(artifact.SetPublicKey(nil))
 
 	return artifact
+}
+
+func (artifact *Artifact) compactPayloadEnvelope() error {
+	_, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
+
+	if err != nil {
+		return errnie.Error(errnie.Err(
+			errnie.Validation, "artifact payload envelope compact failed", err,
+		))
+	}
+
+	fresh, err := NewRootArtifact(seg)
+
+	if err != nil {
+		return errnie.Error(errnie.Err(
+			errnie.Validation, "artifact payload envelope compact failed", err,
+		))
+	}
+
+	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+		errnie.Error(fresh.SetUuid(append([]byte(nil), uuidBytes...)))
+	}
+
+	if checksum, err := artifact.Checksum(); err == nil && len(checksum) > 0 {
+		errnie.Error(fresh.SetChecksum(append([]byte(nil), checksum...)))
+	}
+
+	fresh.SetTimestamp(artifact.Timestamp())
+
+	if artifact.HasError() {
+		if artifactError, err := artifact.Error(); err == nil && artifactError.IsValid() {
+			errnie.Error(fresh.SetError(artifactError))
+		}
+	}
+
+	if pseudonym, err := artifact.Pseudonym(); err == nil && len(pseudonym) > 0 {
+		errnie.Error(fresh.SetPseudonym(append([]byte(nil), pseudonym...)))
+	}
+
+	if merkleRoot, err := artifact.MerkleRoot(); err == nil && len(merkleRoot) > 0 {
+		errnie.Error(fresh.SetMerkleRoot(append([]byte(nil), merkleRoot...)))
+	}
+
+	fresh.SetType(artifact.Type())
+
+	if origin, err := artifact.Origin(); err == nil && origin != "" {
+		errnie.Error(fresh.SetOrigin(origin))
+	}
+
+	if destination, err := artifact.Destination(); err == nil && destination != "" {
+		errnie.Error(fresh.SetDestination(destination))
+	}
+
+	if role, err := artifact.Role(); err == nil && role != "" {
+		errnie.Error(fresh.SetRole(role))
+	}
+
+	if scope, err := artifact.Scope(); err == nil && scope != "" {
+		errnie.Error(fresh.SetScope(scope))
+	}
+
+	if attributes, err := artifact.Attributes(); err == nil && len(attributes) > 0 {
+		errnie.Error(fresh.SetAttributes(append([]byte(nil), attributes...)))
+	}
+
+	if artifact.HasApprovals() {
+		if approvals, err := artifact.Approvals(); err == nil {
+			errnie.Error(fresh.SetApprovals(approvals))
+		}
+	}
+
+	if signature, err := artifact.Signature(); err == nil && len(signature) > 0 {
+		errnie.Error(fresh.SetSignature(append([]byte(nil), signature...)))
+	}
+
+	*artifact = fresh
+	return nil
 }
 
 func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
