@@ -121,8 +121,26 @@ func TestListRingDo(t *testing.T) {
 			seen = append(seen, value)
 		})
 
-		Convey("Do should visit every element starting at the cursor", func() {
+		Convey("Do should visit every element starting at the first position", func() {
 			So(seen, ShouldResemble, []int{1, 2, 3})
+		})
+	})
+}
+
+func TestListRingDoStartsAtFirstWrittenPosition(t *testing.T) {
+	Convey("Given a partially-filled ListRing after the cursor advanced", t, func() {
+		ring := NewListRing[int](3)
+		So(ring.Push(1), ShouldBeTrue)
+		So(ring.Push(2), ShouldBeTrue)
+
+		seen := make([]int, 0, 3)
+
+		ring.Do(func(value int) {
+			seen = append(seen, value)
+		})
+
+		Convey("Do should rewind to the first logical position before visiting", func() {
+			So(seen, ShouldResemble, []int{1, 2, 0})
 		})
 	})
 }

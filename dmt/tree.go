@@ -48,8 +48,6 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 	return iradix.New[[]byte]()
 }
 
-
-
 const treeOpSampleMask = uint64(63)
 
 func (tree *Tree) beginOp() (started time.Time, track bool) {
@@ -303,14 +301,22 @@ func (tree *Tree) InsertArtifact(
 	prefix []byte,
 	artifact *datura.Artifact,
 ) (*Tree, bool, error) {
-	if tree == nil || artifact == nil || len(prefix) == 0 {
-		return tree, false, nil
+	if tree == nil {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: nil tree", nil)
+	}
+
+	if artifact == nil {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: nil artifact", nil)
+	}
+
+	if len(prefix) == 0 {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: empty artifact prefix", nil)
 	}
 
 	wire := artifact.Pack()
 
 	if len(wire) == 0 {
-		return tree, false, nil
+		return tree, false, errnie.Err(errnie.Validation, "dmt: empty packed artifact", nil)
 	}
 
 	return tree.Insert(prefix, wire)
@@ -361,5 +367,3 @@ func (tree *Tree) Close() error {
 
 	return tree.state.Err()
 }
-
-

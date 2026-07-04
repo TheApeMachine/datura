@@ -391,6 +391,36 @@ func TestInsertArtifact(testingTB *testing.T) {
 	})
 }
 
+func TestInsertArtifactValidation(testingTB *testing.T) {
+	Convey("Given invalid artifact insert inputs", testingTB, func() {
+		tree := NewTree("")
+		artifact := datura.Acquire("test", datura.APPJSON).
+			WithRole("ticker").
+			WithPayload([]byte(`{"channel":"ticker"}`))
+
+		Convey("It should reject a nil tree", func() {
+			_, ok, err := (*Tree)(nil).InsertArtifact(artifact.Prefix(), artifact)
+
+			So(ok, ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("It should reject a nil artifact", func() {
+			_, ok, err := tree.InsertArtifact([]byte("ticker"), nil)
+
+			So(ok, ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("It should reject an empty prefix", func() {
+			_, ok, err := tree.InsertArtifact(nil, artifact)
+
+			So(ok, ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
 func TestWithCognition(testingTB *testing.T) {
 	Convey("Given a trained context path", testingTB, func() {
 		tree := NewTree("")

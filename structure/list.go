@@ -33,6 +33,8 @@ must be positive.
 */
 type ListRing[T any] struct {
 	cursor *ListRingNode[T]
+	first  *ListRingNode[T]
+	writes int
 }
 
 /*
@@ -56,7 +58,10 @@ func NewListRing[T any](elementCount int) *ListRing[T] {
 	tail.next = head
 	head.prev = tail
 
-	return &ListRing[T]{cursor: head}
+	return &ListRing[T]{
+		cursor: head,
+		first:  head,
+	}
 }
 
 /*
@@ -69,11 +74,19 @@ by the ListRing struct; callers do not need to call Select after Push.
 func (ring *ListRing[T]) Push(value T) bool {
 	if ring.cursor.next == nil {
 		ring.cursor.init()
+		ring.first = ring.cursor
 	}
 
+	capacity := ring.Len()
 	ring.cursor.Value = value
 	ring.cursor = ring.cursor.next
 
+	if ring.writes < capacity {
+		ring.writes++
+		return true
+	}
+
+	ring.first = ring.cursor
 	return true
 }
 
@@ -99,6 +112,8 @@ nodes as the receiver.
 func (ring *ListRing[T]) Select(step int) Ring[T] {
 	return &ListRing[T]{
 		cursor: ring.move(step),
+		first:  ring.first,
+		writes: ring.writes,
 	}
 }
 
@@ -193,6 +208,8 @@ func (ring *ListRing[T]) Slice(count int) Ring[T] {
 
 	return &ListRing[T]{
 		cursor: removed,
+		first:  removed,
+		writes: count,
 	}
 }
 
@@ -214,19 +231,25 @@ func (ring *ListRing[T]) Len() int {
 }
 
 /*
-Do calls visitor on each Value in forward order, starting at the cursor and
-walking next until the cursor is reached again.
+Do calls visitor on each Value in forward order, starting at the logical first
+position and walking next until that first position is reached again.
 
 Behavior is undefined if visitor mutates the ring structure (links or cursor).
 */
 func (ring *ListRing[T]) Do(visitor func(T)) {
-	visitor(ring.cursor.Value)
+	first := ring.first
 
-	if ring.cursor.next == nil {
+	if first == nil {
+		first = ring.cursor
+	}
+
+	visitor(first.Value)
+
+	if first.next == nil {
 		return
 	}
 
-	for walk := ring.cursor.next; walk != ring.cursor; walk = walk.next {
+	for walk := first.next; walk != first; walk = walk.next {
 		visitor(walk.Value)
 	}
 }

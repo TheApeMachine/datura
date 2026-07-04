@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -111,6 +112,34 @@ func TestWithPayload(testingTB *testing.T) {
 	})
 }
 
+func TestWithErrorKeepsJSONPayload(t *testing.T) {
+	Convey("Given a JSON artifact with an error", t, func() {
+		artifact := Acquire("error-test", Artifact_Type_json).
+			WithError(fmt.Errorf("bad frame"))
+
+		Convey("It should expose the error as JSON data", func() {
+			So(Peek[string](artifact, "error"), ShouldEqual, "bad frame")
+			So(strings.HasPrefix(string(artifact.DecryptPayload()), "{"), ShouldBeTrue)
+		})
+	})
+}
+
+func TestPrefixDoesNotInventMissingType(t *testing.T) {
+	Convey("Given an artifact without a type", t, func() {
+		artifact := Acquire("prefix-test", Artifact_Type_json).
+			WithRole("ticker").
+			WithScope("BTC/USD")
+		artifact.SetType(0)
+
+		Convey("It should not append a default json extension", func() {
+			prefix := string(artifact.Prefix())
+
+			So(strings.HasSuffix(prefix, ".json"), ShouldBeFalse)
+			So(strings.Contains(prefix, "."), ShouldBeFalse)
+		})
+	})
+}
+
 func TestWithPayloadOverwriteDoesNotGrowTraversal(testingTB *testing.T) {
 	Convey("Given a long-lived artifact used as a stage payload buffer", testingTB, func() {
 		artifact := Acquire("payload-overwrite", Artifact_Type_json).
@@ -154,12 +183,12 @@ func TestRelease(t *testing.T) {
 }
 
 func BenchmarkDecryptPayload(b *testing.B) {
-	artifact := Acquire("decrypt-bench", Artifact_Type_json).
-		WithPayload([]byte(`{"method":"add_order","params":{"symbol":"BTC/USD"}}`))
-
-	b.ResetTimer()
+	b.ReportAllocs()
 
 	for b.Loop() {
+		artifact := Acquire("decrypt-bench", Artifact_Type_json).
+			WithPayload([]byte(`{"method":"add_order","params":{"symbol":"BTC/USD"}}`))
+
 		if len(artifact.DecryptPayload()) == 0 {
 			b.Fatal("expected decrypted payload")
 		}

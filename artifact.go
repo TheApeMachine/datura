@@ -135,22 +135,11 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	}
 
 	if !slices.Contains(schemas, "type") {
-		out += "."
-
 		artifactType := artifact.Type()
 
 		if artifactType != 0 {
+			out += "."
 			out += artifactType.String()
-
-			return []byte(out)
-		}
-	}
-
-	if !slices.Contains(schemas, "uuid") {
-		uuidBytes, uuidErr := artifact.Uuid()
-
-		if uuidErr == nil && len(uuidBytes) > 0 {
-			out += "json"
 		}
 	}
 
@@ -481,6 +470,15 @@ func (artifact *Artifact) Marshal() []byte {
 }
 
 func (artifact *Artifact) WithError(err error) *Artifact {
-	artifact.WithPayload([]byte(err.Error()))
+	if err == nil {
+		return artifact
+	}
+
+	artifact.WithPayload(Map[any]{
+		"error": err.Error(),
+	}.Marshal())
+	artifact.Poke("error", "root")
+	artifact.Poke([]string{"error"}, "inputs")
+
 	return artifact
 }

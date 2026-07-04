@@ -82,6 +82,47 @@ func TestPeek(t *testing.T) {
 	})
 }
 
+func TestLookupRegion(t *testing.T) {
+	Convey("Given an artifact with attributes and payload", t, func() {
+		artifact := Acquire("lookup-test", Artifact_Type_json).
+			WithAttributes(Map[any]{"value": "attribute"}).
+			WithPayload([]byte(`{"value":"payload","count":3}`))
+
+		Convey("It should read only the requested region", func() {
+			attributeValue, attributeOK, attributeErr := LookupAttribute[string](artifact, "value")
+			payloadValue, payloadOK, payloadErr := LookupPayload[string](artifact, "value")
+
+			So(attributeErr, ShouldBeNil)
+			So(payloadErr, ShouldBeNil)
+			So(attributeOK, ShouldBeTrue)
+			So(payloadOK, ShouldBeTrue)
+			So(attributeValue, ShouldEqual, "attribute")
+			So(payloadValue, ShouldEqual, "payload")
+		})
+
+		Convey("It should report wrong types instead of returning zero", func() {
+			value, ok, err := LookupPayload[string](artifact, "count")
+
+			So(value, ShouldEqual, "")
+			So(ok, ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+		})
+	})
+
+	Convey("Given malformed payload JSON", t, func() {
+		artifact := Acquire("lookup-bad-json", Artifact_Type_json).
+			WithPayload([]byte(`{`))
+
+		Convey("It should return the parse error", func() {
+			value, ok, err := LookupPayload[string](artifact, "value")
+
+			So(value, ShouldEqual, "")
+			So(ok, ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
 func TestPoke(t *testing.T) {
 	Convey("Given an artifact without attributes", t, func() {
 		artifact := Acquire("poke-test", Artifact_Type_json)
@@ -182,12 +223,12 @@ func TestWithAttributesAsPayload(t *testing.T) {
 }
 
 func BenchmarkPeek(b *testing.B) {
-	artifact := Acquire("peek-bench", Artifact_Type_json).
-		WithAttributes(Map[any]{"output": "processed"})
-
-	b.ResetTimer()
+	b.ReportAllocs()
 
 	for b.Loop() {
+		artifact := Acquire("peek-bench", Artifact_Type_json).
+			WithAttributes(Map[any]{"output": "processed"})
+
 		if Peek[string](artifact, "output") != "processed" {
 			b.Fatal("unexpected peek value")
 		}

@@ -2,6 +2,7 @@ package datura
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"strings"
 
@@ -134,6 +135,106 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 	}
 
 	return zero
+}
+
+func LookupAttribute[T any](artifact *Artifact, path ...any) (T, bool, error) {
+	return lookupRegion[T](artifact, "attributes", path...)
+}
+
+func LookupPayload[T any](artifact *Artifact, path ...any) (T, bool, error) {
+	return lookupRegion[T](artifact, "payload", path...)
+}
+
+func lookupRegion[T any](
+	artifact *Artifact,
+	region string,
+	path ...any,
+) (T, bool, error) {
+	var zero T
+
+	if artifact == nil {
+		return zero, false, errnie.Err(errnie.Validation, "datura: nil artifact", nil)
+	}
+
+	content, err := lookupRegionBytes(artifact, region)
+	if err != nil {
+		if lookupMissing(err) {
+			return zero, false, nil
+		}
+
+		return zero, false, err
+	}
+
+	content = bytes.TrimSpace(content)
+	if len(content) == 0 {
+		return zero, false, nil
+	}
+
+	root, err := sonic.Get(content, path...)
+	if err != nil {
+		if lookupMissing(err) {
+			return zero, false, nil
+		}
+
+		return zero, false, err
+	}
+
+	if !root.Exists() {
+		return zero, false, nil
+	}
+
+	value, err := root.Interface()
+	if err != nil {
+		return zero, false, err
+	}
+
+	if typed, ok := convertLookup[T](value); ok {
+		return typed, true, nil
+	}
+
+	return zero, false, errnie.Err(
+		errnie.Validation,
+		fmt.Sprintf("datura: %s path has unexpected type", region),
+		nil,
+	)
+}
+
+func lookupRegionBytes(artifact *Artifact, region string) ([]byte, error) {
+	switch region {
+	case "attributes":
+		return artifact.Attributes()
+	case "payload":
+		return artifact.decryptPayload()
+	default:
+		return nil, errnie.Err(errnie.Validation, "datura: unknown lookup region", nil)
+	}
+}
+
+func lookupMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+
+	return strings.Contains(message, "value not exists") ||
+		strings.Contains(message, "no encrypted payload") ||
+		strings.Contains(message, "payload unavailable") ||
+		strings.Contains(message, "encrypted payload unavailable") ||
+		strings.Contains(message, "encrypted key unavailable") ||
+		strings.Contains(message, "read traversal limit reached")
+}
+
+func convertLookup[T any](value any) (T, bool) {
+	if typed, ok := value.(T); ok {
+		return typed, true
+	}
+
+	if typed, ok := numericPeek[T](value); ok {
+		return typed, true
+	}
+
+	return slicePeek[T](value)
 }
 
 func numericPeek[T any](value any) (T, bool) {

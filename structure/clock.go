@@ -328,7 +328,7 @@ func (clock *ClockRing[T]) Len() int {
 }
 
 /*
-Do visits every second-hand slot in cursor order.
+Do visits every second-hand slot in second-hand logical order.
 */
 func (clock *ClockRing[T]) Do(visitor func(ClockSlot[T])) {
 	if clock == nil || clock.SecondHand == nil {
