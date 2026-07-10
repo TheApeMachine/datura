@@ -1,22 +1,18 @@
 package structure
 
 import (
-	"io"
 	"testing"
 
-	"github.com/bytedance/sonic"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura"
 )
 
 type spscFrame [128]uint64
 
 func TestNewSPSCRing(t *testing.T) {
 	Convey("Given a power-of-two capacity", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](8, false, nil)
+		ring := NewSPSCRing[*spscFrame](8, false)
 
 		Convey("NewSPSCRing should return a usable ring and no validation error", func() {
-			So(err, ShouldBeNil)
 			So(ring, ShouldNotBeNil)
 			So(ring.Len(), ShouldEqual, 0)
 			So(ring.Empty(), ShouldBeTrue)
@@ -24,31 +20,27 @@ func TestNewSPSCRing(t *testing.T) {
 	})
 
 	Convey("Given capacity one", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](1, false, nil)
+		ring := NewSPSCRing[*spscFrame](1, false)
 
 		Convey("NewSPSCRing should accept it as the smallest valid ring", func() {
-			So(err, ShouldBeNil)
 			So(ring, ShouldNotBeNil)
 		})
 	})
 
 	Convey("Given zero or non-power-of-two capacity", t, func() {
-		zero, zeroErr := NewSPSCRing[*spscFrame](0, false, nil)
-		three, threeErr := NewSPSCRing[*spscFrame](3, false, nil)
+		zero := NewSPSCRing[*spscFrame](0, false)
+		three := NewSPSCRing[*spscFrame](3, false)
 
 		Convey("NewSPSCRing should reject invalid capacities", func() {
 			So(zero, ShouldBeNil)
-			So(zeroErr, ShouldNotBeNil)
 			So(three, ShouldBeNil)
-			So(threeErr, ShouldNotBeNil)
 		})
 	})
 }
 
 func TestSPSCRingPush(t *testing.T) {
 	Convey("Given a small SPSCRing", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](8, false, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](8, false)
 
 		var first, second, third spscFrame
 
@@ -68,8 +60,7 @@ func TestSPSCRingPush(t *testing.T) {
 	})
 
 	Convey("Given a capacity-1 SPSCRing that drops oldest on full", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](1, true, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](1, true)
 
 		var first, second spscFrame
 
@@ -81,8 +72,7 @@ func TestSPSCRingPush(t *testing.T) {
 	})
 
 	Convey("Given a capacity-2 SPSCRing filled without popping", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](2, false, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](2, false)
 
 		var first, second, third spscFrame
 
@@ -102,50 +92,9 @@ func TestSPSCRingPush(t *testing.T) {
 	})
 }
 
-func TestSPSCRingReadWrite(t *testing.T) {
-	Convey("Given an SPSCRing with a bound artifact", t, func() {
-		ring, err := NewSPSCRing[int](4, false, datura.Acquire("spsc", datura.Artifact_Type_json))
-		So(err, ShouldBeNil)
-
-		source := datura.Acquire("spsc", datura.Artifact_Type_json)
-		So(source, ShouldNotBeNil)
-
-		payload, marshalErr := sonic.Marshal(9)
-		So(marshalErr, ShouldBeNil)
-		source.WithPayload(payload)
-
-		wire := source.Pack()
-
-		written, err := ring.Write(wire)
-
-		Convey("Write should enqueue the decoded value", func() {
-			So(err, ShouldBeNil)
-			So(written, ShouldEqual, len(wire))
-			So(ring.Len(), ShouldEqual, 1)
-		})
-
-		buffer := make([]byte, 4096)
-		readCount, readErr := ring.Read(buffer)
-
-		Convey("Read should dequeue and marshal through the artifact", func() {
-			So(readErr, ShouldEqual, io.EOF)
-			So(readCount, ShouldBeGreaterThan, 0)
-			So(ring.Len(), ShouldEqual, 0)
-
-			decoded := datura.Acquire("spsc", datura.Artifact_Type_json)
-			_, writeErr := decoded.Unpack(buffer[:readCount])
-			So(writeErr, ShouldBeNil)
-
-			out := decoded.DecryptPayload()
-			So(string(out), ShouldEqual, "9")
-		})
-	})
-}
-
 func TestSPSCRingClose(t *testing.T) {
 	Convey("Given an SPSCRing with queued values", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](4, false, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](4, false)
 
 		var first, second spscFrame
 
@@ -162,8 +111,7 @@ func TestSPSCRingClose(t *testing.T) {
 
 func TestSPSCRingSelectMergeSlice(t *testing.T) {
 	Convey("Given an SPSCRing with queued values", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](4, false, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](4, false)
 
 		var first, second spscFrame
 
@@ -186,8 +134,7 @@ func TestSPSCRingSelectMergeSlice(t *testing.T) {
 		})
 
 		Convey("Merge should grow and absorb another ring", func() {
-			other, err := NewSPSCRing[*spscFrame](2, false, nil)
-			So(err, ShouldBeNil)
+			other := NewSPSCRing[*spscFrame](2, false)
 
 			var third spscFrame
 
@@ -200,8 +147,7 @@ func TestSPSCRingSelectMergeSlice(t *testing.T) {
 
 func TestSPSCRingImplementsRing(t *testing.T) {
 	Convey("Given an SPSCRing assigned to Ring", t, func() {
-		ring, err := NewSPSCRing[*spscFrame](4, false, nil)
-		So(err, ShouldBeNil)
+		ring := NewSPSCRing[*spscFrame](4, false)
 
 		var asRing Ring[*spscFrame] = ring
 
@@ -214,49 +160,8 @@ func TestSPSCRingImplementsRing(t *testing.T) {
 	})
 }
 
-func BenchmarkSPSCRingReadWrite(b *testing.B) {
-	ring, err := NewSPSCRing[int](1024, false, datura.Acquire("spsc", datura.Artifact_Type_json))
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	source := datura.Acquire("spsc", datura.Artifact_Type_json)
-
-	if source == nil {
-		b.Fatal("Acquire returned nil")
-	}
-
-	payload, err := sonic.Marshal(9)
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	source.WithPayload(payload)
-	wire := source.Pack()
-	buffer := make([]byte, 4096)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for b.Loop() {
-		if _, err := ring.Write(wire); err != nil {
-			b.Fatal(err)
-		}
-
-		if _, err := ring.Read(buffer); err != io.EOF && err != io.ErrShortBuffer {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkSPSCRingPush(b *testing.B) {
-	ring, err := NewSPSCRing[*spscFrame](1024, false, nil)
-
-	if err != nil {
-		b.Fatal(err)
-	}
+	ring := NewSPSCRing[*spscFrame](1024, false)
 
 	var blob spscFrame
 

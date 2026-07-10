@@ -2,12 +2,9 @@ package structure
 
 import (
 	"errors"
-	"io"
 	"math/bits"
 	"sync/atomic"
 
-	"github.com/bytedance/sonic"
-	"github.com/theapemachine/datura"
 	"github.com/theapemachine/errnie"
 )
 
@@ -29,7 +26,6 @@ type SPSCRing[T any] struct {
 	tail             atomic.Uint64
 	dropOldestOnFull bool
 	err              error
-	artifact         *datura.Artifact
 }
 
 /*
@@ -43,26 +39,28 @@ failing.
 func NewSPSCRing[T any](
 	capacity int,
 	dropOldestOnFull bool,
-	artifact *datura.Artifact,
-) (*SPSCRing[T], error) {
+) *SPSCRing[T] {
 	if capacity < 1 || (capacity&(capacity-1)) != 0 {
-		return nil, errnie.Error(errnie.Err(
+		errnie.Error(errnie.Err(
 			errnie.Validation,
 			"SPSCRing capacity must be a positive power of two",
 			errors.New("SPSCRing capacity must be a positive power of two"),
 		))
+
+		return nil
 	}
 
 	ring := &SPSCRing[T]{
 		slots:            make([]atomic.Pointer[T], capacity),
 		mask:             uint64(capacity - 1),
 		dropOldestOnFull: dropOldestOnFull,
-		artifact:         artifact,
 	}
 
-	return ring, errnie.Error(errnie.Require(map[string]any{
+	errnie.Error(errnie.Require(map[string]any{
 		"slots": ring.slots,
 	}))
+
+	return ring
 }
 
 /*
@@ -187,13 +185,12 @@ func (ring *SPSCRing[T]) mergeSPSC(other *SPSCRing[T]) bool {
 	combined := ring.Len() + other.Len()
 
 	if combined > len(ring.slots) {
-		newRing, err := NewSPSCRing[T](
+		newRing := NewSPSCRing[T](
 			1<<uint(bits.Len(uint(max(combined, 2)))),
 			ring.dropOldestOnFull,
-			ring.artifact,
 		)
 
-		if err != nil {
+		if newRing == nil {
 			return false
 		}
 
@@ -242,13 +239,12 @@ func (ring *SPSCRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewSPSCRing[T](
+	sliced := NewSPSCRing[T](
 		1<<uint(bits.Len(uint(max(count, 2)))),
 		false,
-		ring.artifact,
 	)
 
-	if err != nil {
+	if sliced == nil {
 		return nil
 	}
 
@@ -284,69 +280,6 @@ func (ring *SPSCRing[T]) Do(visitor func(T)) {
 	for !ring.Empty() {
 		visitor(ring.Pop())
 	}
-}
-
-/*
-Read implements io.Reader. It Pop's one queued value and marshals it through the
-bound artifact.
-*/
-func (ring *SPSCRing[T]) Read(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, io.EOF
-	}
-
-	if ring.Empty() {
-		return 0, io.EOF
-	}
-
-	value := ring.Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if outbound == nil {
-		return 0, errors.New("structure: SPSCRing artifact acquire failed")
-	}
-
-	if scope, scopeErr := ring.artifact.Scope(); scopeErr == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p into the bound artifact and Push'es
-the decoded value.
-*/
-func (ring *SPSCRing[T]) Write(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, errors.New("structure: SPSCRing has no artifact")
-	}
-
-	written, err := ring.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	value, err := datura.As[T](ring.artifact)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !ring.Push(value) {
-		return written, errors.New("structure: SPSCRing Push failed")
-	}
-
-	return written, nil
 }
 
 /*
@@ -471,13 +404,12 @@ func (navigator *spscNavigator[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewSPSCRing[T](
+	sliced := NewSPSCRing[T](
 		1<<uint(bits.Len(uint(max(count, 2)))),
 		false,
-		navigator.parent.artifact,
 	)
 
-	if err != nil {
+	if sliced == nil {
 		return nil
 	}
 
@@ -535,69 +467,6 @@ func (navigator *spscNavigator[T]) Do(visitor func(T)) {
 
 		visitor(*value)
 	}
-}
-
-/*
-Read implements io.Reader. It reads the navigator slot through the parent
-artifact.
-*/
-func (navigator *spscNavigator[T]) Read(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, io.EOF
-	}
-
-	if navigator.Len() == 0 {
-		return 0, io.EOF
-	}
-
-	value := navigator.Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if outbound == nil {
-		return 0, errors.New("structure: spscNavigator artifact acquire failed")
-	}
-
-	if scope, scopeErr := navigator.parent.artifact.Scope(); scopeErr == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p through the parent artifact and
-stores at the navigator slot.
-*/
-func (navigator *spscNavigator[T]) Write(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, errors.New("structure: spscNavigator has no artifact")
-	}
-
-	written, err := navigator.parent.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	value, err := datura.As[T](navigator.parent.artifact)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !navigator.Push(value) {
-		return written, errors.New("structure: spscNavigator Push failed")
-	}
-
-	return written, nil
 }
 
 /*
