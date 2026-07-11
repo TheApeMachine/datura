@@ -24,6 +24,8 @@ type SPSCRing[T any] struct {
 	mask             uint64
 	head             atomic.Uint64
 	tail             atomic.Uint64
+	dropped          atomic.Uint64
+	rejected         atomic.Uint64
 	dropOldestOnFull bool
 	err              error
 }
@@ -78,10 +80,12 @@ func (ring *SPSCRing[T]) Push(value T) bool {
 		if head-tail >= uint64(len(ring.slots)) {
 			if ring.dropOldestOnFull {
 				ring.Pop()
+				ring.dropped.Add(1)
 
 				continue
 			}
 
+			ring.rejected.Add(1)
 			return false
 		}
 
@@ -137,6 +141,20 @@ polling; head and tail may change immediately after the call returns.
 */
 func (ring *SPSCRing[T]) Empty() bool {
 	return ring.tail.Load() >= ring.head.Load()
+}
+
+/*
+Dropped reports values explicitly evicted by drop-oldest overflow policy.
+*/
+func (ring *SPSCRing[T]) Dropped() uint64 {
+	return ring.dropped.Load()
+}
+
+/*
+Rejected reports pushes refused because a non-evicting ring was full.
+*/
+func (ring *SPSCRing[T]) Rejected() uint64 {
+	return ring.rejected.Load()
 }
 
 /*

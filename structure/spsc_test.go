@@ -68,6 +68,8 @@ func TestSPSCRingPush(t *testing.T) {
 			So(ring.Push(&first), ShouldBeTrue)
 			So(ring.Push(&second), ShouldBeTrue)
 			So(ring.Pop(), ShouldEqual, &second)
+			So(ring.Dropped(), ShouldEqual, 1)
+			So(ring.Rejected(), ShouldEqual, 0)
 		})
 	})
 
@@ -80,6 +82,7 @@ func TestSPSCRingPush(t *testing.T) {
 			So(ring.Push(&first), ShouldBeTrue)
 			So(ring.Push(&second), ShouldBeTrue)
 			So(ring.Push(&third), ShouldBeFalse)
+			So(ring.Rejected(), ShouldEqual, 1)
 		})
 
 		Convey("after one Pop another Push succeeds", func() {
