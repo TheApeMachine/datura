@@ -12,6 +12,7 @@ func (m Map[T]) Marshal() []byte {
 	payload, err := sonic.Marshal(m)
 
 	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "datura.Map: failed to marshal payload", err))
 		return nil
 	}
 
