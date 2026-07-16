@@ -158,29 +158,6 @@ func (track *clockTrack[K, T]) at(cut ClockCut) (ClockSlot[K, T], bool) {
 }
 
 /*
-overrun detects a captured ingress cut older than this track's retained history.
-The track existed by the cut, but every state eligible by ingress was replaced.
-*/
-func (track *clockTrack[K, T]) overrun(cut ClockCut) (uint64, bool) {
-	if track.count == 0 {
-		return 0, false
-	}
-
-	oldest := uint64(0)
-	track.values.Do(func(slot ClockSlot[K, T]) {
-		if slot.IngestSequence < track.first {
-			return
-		}
-
-		if oldest == 0 || slot.IngestSequence < oldest {
-			oldest = slot.IngestSequence
-		}
-	})
-
-	return oldest, track.first <= cut.Through && oldest > cut.Through
-}
-
-/*
 resequence offsets retained ingress identities after two disjoint clocks merge,
 while preserving track-local sequence and event-time order.
 */

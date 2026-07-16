@@ -116,13 +116,11 @@ func TestClockRing_FrameThrough(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(clock.Observe("BTC/USD", start, 2), ShouldBeNil)
 		So(clock.Observe("BTC/USD", start, 3), ShouldBeNil)
-		_, err = clock.FrameThrough(cut)
+		frame, err := clock.FrameThrough(cut)
 
-		Convey("It reports the track overrun instead of omitting the symbol", func() {
-			overrun, ok := err.(ClockOverrunError)
-			So(ok, ShouldBeTrue)
-			So(overrun.Track, ShouldEqual, "BTC/USD")
-			So(overrun.Oldest, ShouldEqual, 2)
+		Convey("It resumes from state still present in the retained window", func() {
+			So(err, ShouldBeNil)
+			So(frame.Tracks["BTC/USD"].Payload, ShouldEqual, 3)
 		})
 	})
 }
@@ -148,7 +146,7 @@ func TestClockRing_EventsAfter(t *testing.T) {
 		})
 	})
 
-	Convey("Given a consumer that fell behind a bounded timeline", t, func() {
+	Convey("Given a consumer whose cursor precedes the retained window", t, func() {
 		clock := newTestClock[string, int](2, 2)
 		start := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
 
@@ -158,13 +156,14 @@ func TestClockRing_EventsAfter(t *testing.T) {
 
 		cut, err := clock.Cut(start)
 		So(err, ShouldBeNil)
-		_, _, err = clock.EventsAfter(ClockCursor{}, cut)
+		events, next, err := clock.EventsAfter(ClockCursor{}, cut)
 
-		Convey("It reports the exact missing and oldest retained sequences", func() {
-			overrun, ok := err.(ClockOverrunError)
-			So(ok, ShouldBeTrue)
-			So(overrun.Expected, ShouldEqual, 1)
-			So(overrun.Oldest, ShouldEqual, 2)
+		Convey("It consumes the current window and advances from there", func() {
+			So(err, ShouldBeNil)
+			So(events, ShouldHaveLength, 2)
+			So(events[0].Payload, ShouldEqual, 1)
+			So(events[1].Payload, ShouldEqual, 2)
+			So(next.After, ShouldEqual, 3)
 		})
 	})
 }

@@ -24,38 +24,6 @@ type ClockCursor struct {
 }
 
 /*
-ClockOverrunError reports that a bounded timeline overwrote observations before
-a consumer advanced. Path-dependent callers must reset or resynchronize rather
-than silently measuring an incomplete event path.
-*/
-type ClockOverrunError struct {
-	Track    any
-	Expected uint64
-	Oldest   uint64
-}
-
-/*
-Error describes the exact missing ingress boundary so callers can make the
-overrun visible and choose a domain-specific recovery policy.
-*/
-func (err ClockOverrunError) Error() string {
-	if err.Track != nil {
-		return fmt.Sprintf(
-			"structure: clock track %v overrun at cut %d, oldest retained is %d",
-			err.Track,
-			err.Expected,
-			err.Oldest,
-		)
-	}
-
-	return fmt.Sprintf(
-		"structure: clock cursor overrun: expected sequence %d, oldest retained is %d",
-		err.Expected,
-		err.Oldest,
-	)
-}
-
-/*
 Cut captures the clock's current ingress high-water mark at the caller's chosen
 measurement time. The caller supplies time so replay and live operation share
 the same deterministic boundary mechanism.
@@ -84,8 +52,8 @@ func (clock *ClockRing[K, T]) Cut(at time.Time) (ClockCut, error) {
 
 /*
 FrameThrough returns one newest eligible state per populated track at a stable
-ingress cut. Event time chooses the state; ingress sequence prevents late
-arrivals from entering a measurement cycle after that cycle was captured.
+ingress cut. When a track has already cycled past that cut, it supplies its
+newest retained state at the requested event time instead of disappearing.
 */
 func (clock *ClockRing[K, T]) FrameThrough(
 	cut ClockCut,
@@ -131,19 +99,15 @@ func (clock *ClockRing[K, T]) frame(
 	for key, track := range clock.tracks {
 		slot, found := track.at(cut)
 
-		if found {
-			frame.Tracks[key] = slot
-			continue
+		if !found && track.first <= cut.Through {
+			slot, found = track.at(ClockCut{
+				Through: clock.sequence,
+				At:      cut.At,
+			})
 		}
 
-		oldest, overrun := track.overrun(cut)
-
-		if overrun {
-			return ClockFrame[K, T]{}, ClockOverrunError{
-				Track:    key,
-				Expected: cut.Through,
-				Oldest:   oldest,
-			}
+		if found {
+			frame.Tracks[key] = slot
 		}
 	}
 
@@ -151,9 +115,9 @@ func (clock *ClockRing[K, T]) frame(
 }
 
 /*
-EventsAfter returns every retained observation after cursor and through cut in
-global ingress order. It advances only the returned cursor value; the clock's
-bounded journal remains intact for other consumers.
+EventsAfter returns the retained observations after cursor and through cut in
+global ingress order. A cursor older than the retained window resumes at that
+window's first slot because overwritten history is no longer actionable.
 */
 func (clock *ClockRing[K, T]) EventsAfter(
 	cursor ClockCursor,
@@ -182,17 +146,21 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		return nil, cursor, nil
 	}
 
-	oldest := clock.sequence - uint64(clock.timelineSize) + 1
-	expected := cursor.After + 1
+	after := cursor.After
 
-	if clock.timelineSize > 0 && expected < oldest && cut.Through >= oldest {
-		return nil, cursor, ClockOverrunError{
-			Expected: expected,
-			Oldest:   oldest,
+	if clock.timelineSize > 0 {
+		oldest := clock.sequence - uint64(clock.timelineSize) + 1
+
+		if after < oldest-1 {
+			after = oldest - 1
 		}
 	}
 
-	capacity := int(cut.Through - cursor.After)
+	capacity := 0
+
+	if cut.Through > after {
+		capacity = int(cut.Through - after)
+	}
 
 	if capacity > clock.timelineSize {
 		capacity = clock.timelineSize
@@ -200,7 +168,7 @@ func (clock *ClockRing[K, T]) EventsAfter(
 
 	events := make([]ClockSlot[K, T], 0, capacity)
 	appendSlot := func(slot ClockSlot[K, T]) {
-		if slot.IngestSequence <= cursor.After || slot.IngestSequence > cut.Through {
+		if slot.IngestSequence <= after || slot.IngestSequence > cut.Through {
 			return
 		}
 
