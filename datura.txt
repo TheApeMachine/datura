@@ -42,6 +42,7 @@ Directory Structure:
     ├── stream_rpc.go
     ├── structure
     │   ├── clock.go
+    │   ├── clock_cursor.go
     │   ├── clock_track.go
     │   ├── list.go
     │   ├── mpmc.go
@@ -294,22 +295,11 @@ func (artifact *Artifact) Prefix(schemas ...string) []byte {
 	}
 
 	if !slices.Contains(schemas, "type") {
-		out += "."
-
 		artifactType := artifact.Type()
 
 		if artifactType != 0 {
+			out += "."
 			out += artifactType.String()
-
-			return []byte(out)
-		}
-	}
-
-	if !slices.Contains(schemas, "uuid") {
-		uuidBytes, uuidErr := artifact.Uuid()
-
-		if uuidErr == nil && len(uuidBytes) > 0 {
-			out += "json"
 		}
 	}
 
@@ -458,6 +448,12 @@ func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
 		return nil
 	}
 
+	if artifact.HasPayload() {
+		if errnie.Error(artifact.compactPayloadEnvelope()) != nil {
+			return nil
+		}
+	}
+
 	if errnie.Error(artifact.SetPayload(append([]byte(nil), payload...))) != nil {
 		return nil
 	}
@@ -466,6 +462,83 @@ func (artifact *Artifact) WithPlaintextPayload(payload []byte) *Artifact {
 	errnie.Error(artifact.SetPublicKey(nil))
 
 	return artifact
+}
+
+func (artifact *Artifact) compactPayloadEnvelope() error {
+	_, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
+
+	if err != nil {
+		return errnie.Error(errnie.Err(
+			errnie.Validation, "artifact payload envelope compact failed", err,
+		))
+	}
+
+	fresh, err := NewRootArtifact(seg)
+
+	if err != nil {
+		return errnie.Error(errnie.Err(
+			errnie.Validation, "artifact payload envelope compact failed", err,
+		))
+	}
+
+	if uuidBytes, err := artifact.Uuid(); err == nil && len(uuidBytes) > 0 {
+		errnie.Error(fresh.SetUuid(append([]byte(nil), uuidBytes...)))
+	}
+
+	if checksum, err := artifact.Checksum(); err == nil && len(checksum) > 0 {
+		errnie.Error(fresh.SetChecksum(append([]byte(nil), checksum...)))
+	}
+
+	fresh.SetTimestamp(artifact.Timestamp())
+
+	if artifact.HasError() {
+		if artifactError, err := artifact.Error(); err == nil && artifactError.IsValid() {
+			errnie.Error(fresh.SetError(artifactError))
+		}
+	}
+
+	if pseudonym, err := artifact.Pseudonym(); err == nil && len(pseudonym) > 0 {
+		errnie.Error(fresh.SetPseudonym(append([]byte(nil), pseudonym...)))
+	}
+
+	if merkleRoot, err := artifact.MerkleRoot(); err == nil && len(merkleRoot) > 0 {
+		errnie.Error(fresh.SetMerkleRoot(append([]byte(nil), merkleRoot...)))
+	}
+
+	fresh.SetType(artifact.Type())
+
+	if origin, err := artifact.Origin(); err == nil && origin != "" {
+		errnie.Error(fresh.SetOrigin(origin))
+	}
+
+	if destination, err := artifact.Destination(); err == nil && destination != "" {
+		errnie.Error(fresh.SetDestination(destination))
+	}
+
+	if role, err := artifact.Role(); err == nil && role != "" {
+		errnie.Error(fresh.SetRole(role))
+	}
+
+	if scope, err := artifact.Scope(); err == nil && scope != "" {
+		errnie.Error(fresh.SetScope(scope))
+	}
+
+	if attributes, err := artifact.Attributes(); err == nil && len(attributes) > 0 {
+		errnie.Error(fresh.SetAttributes(append([]byte(nil), attributes...)))
+	}
+
+	if artifact.HasApprovals() {
+		if approvals, err := artifact.Approvals(); err == nil {
+			errnie.Error(fresh.SetApprovals(approvals))
+		}
+	}
+
+	if signature, err := artifact.Signature(); err == nil && len(signature) > 0 {
+		errnie.Error(fresh.SetSignature(append([]byte(nil), signature...)))
+	}
+
+	*artifact = fresh
+	return nil
 }
 
 func (artifact *Artifact) WithAttributes(attributes Map[any]) *Artifact {
@@ -557,7 +630,16 @@ func (artifact *Artifact) Marshal() []byte {
 }
 
 func (artifact *Artifact) WithError(err error) *Artifact {
-	artifact.WithPayload([]byte(err.Error()))
+	if err == nil {
+		return artifact
+	}
+
+	artifact.WithPayload(Map[any]{
+		"error": err.Error(),
+	}.Marshal())
+	artifact.Poke("error", "root")
+	artifact.Poke([]string{"error"}, "inputs")
+
 	return artifact
 }
 
@@ -571,7 +653,7 @@ package datura
 
 import (
 	"bytes"
-	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -581,11 +663,7 @@ import (
 )
 
 func Peek[T any](artifact *Artifact, path ...any) T {
-	var (
-		zero T
-		root ast.Node
-		ok   bool
-	)
+	var zero T
 
 	if artifact == nil {
 		return zero
@@ -597,66 +675,42 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 		return strings.Contains(message, "value not exists") ||
 			strings.Contains(message, "Syntax error") ||
 			strings.Contains(message, "no encrypted payload") ||
+			strings.Contains(message, "payload unavailable") ||
 			strings.Contains(message, "encrypted payload unavailable") ||
 			strings.Contains(message, "encrypted key unavailable") ||
 			strings.Contains(message, "read traversal limit reached")
 	}
 
-	if len(path) > 0 && path[0] == "role" {
-		role := errnie.Does(func() (string, error) {
-			return artifact.Role()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
+	if len(path) > 0 {
+		var (
+			meta string
+			err  error
+		)
 
-		if role != "" {
-			if zero, ok = any(role).(T); ok {
-				return zero
+		switch path[0] {
+		case "role":
+			meta, err = artifact.Role()
+		case "scope":
+			meta, err = artifact.Scope()
+		case "origin":
+			meta, err = artifact.Origin()
+		case "destination":
+			meta, err = artifact.Destination()
+		}
+
+		if err != nil {
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+		}
+
+		if meta != "" {
+			if typed, ok := any(meta).(T); ok {
+				return typed
 			}
 		}
 	}
 
-	if len(path) > 0 && path[0] == "scope" {
-		scope := errnie.Does(func() (string, error) {
-			return artifact.Scope()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if scope != "" {
-			if zero, ok = any(scope).(T); ok {
-				return zero
-			}
-		}
-	}
-
-	if len(path) > 0 && path[0] == "origin" {
-		origin := errnie.Does(func() (string, error) {
-			return artifact.Origin()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if origin != "" {
-			if zero, ok = any(origin).(T); ok {
-				return zero
-			}
-		}
-	}
-
-	if len(path) > 0 && path[0] == "destination" {
-		destination := errnie.Does(func() (string, error) {
-			return artifact.Destination()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-		}).Value()
-
-		if destination != "" {
-			if zero, ok = any(destination).(T); ok {
-				return zero
-			}
-		}
-	}
+	var value any
+	found := false
 
 	for _, region := range []func() ([]byte, error){
 		artifact.Attributes, artifact.decryptPayload,
@@ -680,54 +734,158 @@ func Peek[T any](artifact *Artifact, path ...any) T {
 			continue
 		}
 
-		if len(path) > 0 && content[0] != '{' && content[0] != '[' {
-			continue
-		}
+		root, err := sonic.Get(content, path...)
 
-		if !json.Valid(content) {
-			continue
-		}
-
-		root = errnie.Does(func() (ast.Node, error) {
-			return sonic.Get(content, path...)
-		}).Or(func(err error) {
+		if err != nil {
 			if missing(err) {
-				return
+				continue
 			}
 
 			errnie.Error(errnie.Err(
 				errnie.Validation, err.Error(), err,
 			).With(artifact.Log()...))
-		}).Value()
 
-		if root.Exists() {
-			break
-		}
-	}
-
-	if !root.Exists() {
-		return zero
-	}
-
-	value := errnie.Does(func() (any, error) {
-		return root.Interface()
-	}).Or(func(err error) {
-		if missing(err) {
-			return
+			continue
 		}
 
-		errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
-	}).Value()
+		if !root.Exists() {
+			continue
+		}
 
-	if zero, ok = value.(T); ok {
+		value, err = root.Interface()
+
+		if err != nil {
+			if missing(err) {
+				continue
+			}
+
+			errnie.Error(errnie.Err(errnie.Validation, err.Error(), err))
+
+			continue
+		}
+
+		found = true
+
+		break
+	}
+
+	if !found {
 		return zero
 	}
 
-	if zero, ok = numericPeek[T](value); ok {
-		return zero
+	if typed, ok := value.(T); ok {
+		return typed
+	}
+
+	if typed, ok := numericPeek[T](value); ok {
+		return typed
+	}
+
+	if typed, ok := slicePeek[T](value); ok {
+		return typed
 	}
 
 	return zero
+}
+
+func LookupAttribute[T any](artifact *Artifact, path ...any) (T, bool, error) {
+	return lookupRegion[T](artifact, "attributes", path...)
+}
+
+func LookupPayload[T any](artifact *Artifact, path ...any) (T, bool, error) {
+	return lookupRegion[T](artifact, "payload", path...)
+}
+
+func lookupRegion[T any](
+	artifact *Artifact,
+	region string,
+	path ...any,
+) (T, bool, error) {
+	var zero T
+
+	if artifact == nil {
+		return zero, false, errnie.Err(errnie.Validation, "datura: nil artifact", nil)
+	}
+
+	content, err := lookupRegionBytes(artifact, region)
+	if err != nil {
+		if lookupMissing(err) {
+			return zero, false, nil
+		}
+
+		return zero, false, err
+	}
+
+	content = bytes.TrimSpace(content)
+	if len(content) == 0 {
+		return zero, false, nil
+	}
+
+	root, err := sonic.Get(content, path...)
+	if err != nil {
+		if lookupMissing(err) {
+			return zero, false, nil
+		}
+
+		return zero, false, err
+	}
+
+	if !root.Exists() {
+		return zero, false, nil
+	}
+
+	value, err := root.Interface()
+	if err != nil {
+		return zero, false, err
+	}
+
+	if typed, ok := convertLookup[T](value); ok {
+		return typed, true, nil
+	}
+
+	return zero, false, errnie.Err(
+		errnie.Validation,
+		fmt.Sprintf("datura: %s path has unexpected type", region),
+		nil,
+	)
+}
+
+func lookupRegionBytes(artifact *Artifact, region string) ([]byte, error) {
+	switch region {
+	case "attributes":
+		return artifact.Attributes()
+	case "payload":
+		return artifact.decryptPayload()
+	default:
+		return nil, errnie.Err(errnie.Validation, "datura: unknown lookup region", nil)
+	}
+}
+
+func lookupMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+
+	return strings.Contains(message, "value not exists") ||
+		strings.Contains(message, "no encrypted payload") ||
+		strings.Contains(message, "payload unavailable") ||
+		strings.Contains(message, "encrypted payload unavailable") ||
+		strings.Contains(message, "encrypted key unavailable") ||
+		strings.Contains(message, "read traversal limit reached")
+}
+
+func convertLookup[T any](value any) (T, bool) {
+	if typed, ok := value.(T); ok {
+		return typed, true
+	}
+
+	if typed, ok := numericPeek[T](value); ok {
+		return typed, true
+	}
+
+	return slicePeek[T](value)
 }
 
 func numericPeek[T any](value any) (T, bool) {
@@ -761,18 +919,65 @@ func numericPeek[T any](value any) (T, bool) {
 	return zero, false
 }
 
-func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
-	root := errnie.Does(func() (ast.Node, error) {
-		return sonic.Get(errnie.Does(func() ([]byte, error) {
-			return artifact.Attributes()
-		}).Or(func(err error) {
-			errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
-		}).Value())
-	}).Or(func(err error) {
-		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", err))
-	}).Value()
+func slicePeek[T any](value any) (T, bool) {
+	var zero T
 
-	if !root.Exists() {
+	items, ok := value.([]any)
+
+	if !ok {
+		return zero, false
+	}
+
+	switch any(zero).(type) {
+	case []string:
+		values := make([]string, len(items))
+
+		for index, item := range items {
+			typed, ok := item.(string)
+
+			if !ok {
+				return zero, false
+			}
+
+			values[index] = typed
+		}
+
+		return any(values).(T), true
+	case []float64:
+		values := make([]float64, len(items))
+
+		for index, item := range items {
+			switch typed := item.(type) {
+			case float64:
+				values[index] = typed
+			case int:
+				values[index] = float64(typed)
+			default:
+				return zero, false
+			}
+		}
+
+		return any(values).(T), true
+	}
+
+	return zero, false
+}
+
+func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
+	var root ast.Node
+
+	attributes, err := artifact.Attributes()
+
+	if err == nil {
+		attributes = bytes.TrimSpace(attributes)
+	}
+
+	if err != nil || len(attributes) == 0 {
+		root = ast.NewObject(nil)
+	} else if parsed, parseErr := sonic.Get(attributes); parseErr == nil {
+		root = parsed
+	} else {
+		errnie.Error(errnie.Err(errnie.Validation, "attribute peek failed", parseErr))
 		root = ast.NewObject(nil)
 	}
 
@@ -832,14 +1037,20 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
-func As[T any](artifact *Artifact) T {
+func As[T any](artifact *Artifact) (T, error) {
 	var v T
 
-	if err := artifact.To(&v); err != nil {
-		return v
+	if artifact == nil {
+		return v, errnie.Error(errnie.Err(
+			errnie.Validation, "artifact conversion failed", nil,
+		))
 	}
 
-	return v
+	if err := artifact.To(&v); err != nil {
+		return v, err
+	}
+
+	return v, nil
 }
 
 /*
@@ -850,13 +1061,11 @@ func (artifact *Artifact) To(v any) (err error) {
 	payload, err := artifact.decryptPayload()
 
 	if err != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
-
 		return err
 	}
 
-	if errnie.Error(sonic.Unmarshal(payload, v)) != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "payload unmarshalling failed", err))
+	if err := sonic.Unmarshal(payload, v); err != nil {
+		return err
 	}
 
 	return nil
@@ -905,25 +1114,19 @@ func (artifact *Artifact) Unpack(p []byte) (n int, err error) {
 	msg, err := capnp.UnmarshalPacked(p)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "payload unmarshalling failed", err,
-		))
+		return 0, err
 	}
 
 	decoded, err := ReadRootArtifact(msg)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "reading root artifact failed", err,
-		))
+		return 0, err
 	}
 
 	writable, err := cloneDecodedArtifact(decoded)
 
 	if err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.Validation, "copying root artifact failed", err,
-		))
+		return 0, err
 	}
 
 	*artifact = *writable
@@ -941,25 +1144,7 @@ func (artifact *Artifact) Clone() (*Artifact, error) {
 		))
 	}
 
-	cloned, err := cloneDecodedArtifact(*artifact)
-
-	if err == nil {
-		return cloned, nil
-	}
-
-	wire, err := artifact.Message().MarshalPacked()
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	cloned = &Artifact{}
-
-	if _, err = cloned.Unpack(wire); err != nil {
-		return nil, err
-	}
-
-	return cloned, nil
+	return cloneDecodedArtifact(*artifact)
 }
 
 func cloneDecodedArtifact(source Artifact) (*Artifact, error) {
@@ -1002,10 +1187,7 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
-const (
-	aesKeyBytes     = 32
-	p256PubKeyBytes = 65
-)
+const aesKeyBytes = 32
 
 var sealedPayloadSalt = []byte("datura sealed payload v1")
 
@@ -1030,108 +1212,6 @@ GenerateEphemeralKeyPair generates a new ECDH key pair for one-time use.
 */
 func (cryptoSuite *CryptoSuite) GenerateEphemeralKeyPair() (*ecdh.PrivateKey, error) {
 	return cryptoSuite.curve.GenerateKey(rand.Reader)
-}
-
-/*
-EncryptedPayloadSize returns the Cap'n Proto data field size for AES-GCM ciphertext.
-*/
-func (cryptoSuite *CryptoSuite) EncryptedPayloadSize(plaintextLen int) int {
-	block, err := aes.NewCipher(make([]byte, aesKeyBytes))
-
-	if err != nil {
-		return 12 + plaintextLen + 16
-	}
-
-	gcm, err := cipher.NewGCM(block)
-
-	if err != nil {
-		return 12 + plaintextLen + 16
-	}
-
-	return gcm.NonceSize() + plaintextLen + gcm.Overhead()
-}
-
-/*
-EncryptPayloadDirect encrypts a payload into pre-allocated destination slices.
-*/
-func (cryptoSuite *CryptoSuite) EncryptPayloadDirect(
-	dstPayload, dstKey, dstPubKey, payload []byte,
-) error {
-	ephemeralKey, err := cryptoSuite.GenerateEphemeralKeyPair()
-
-	if err != nil {
-		return errnie.Error(err, "ephemeral_key")
-	}
-
-	var aesKey [aesKeyBytes]byte
-
-	if _, err = rand.Read(aesKey[:]); err != nil {
-		return errnie.Error(err, "rand_aes")
-	}
-
-	block, err := aes.NewCipher(aesKey[:])
-
-	if err != nil {
-		return errnie.Error(err, "cipher")
-	}
-
-	gcm, err := cipher.NewGCM(block)
-
-	if err != nil {
-		return errnie.Error(err, "gcm")
-	}
-
-	nonceSize := gcm.NonceSize()
-	needed := nonceSize + len(payload) + gcm.Overhead()
-
-	if len(dstPayload) < needed {
-		return errnie.Error(errors.New("dstPayload too short"))
-	}
-
-	if len(dstKey) < aesKeyBytes {
-		return errnie.Error(errors.New("dstKey too short"))
-	}
-
-	pubKeyBytes := ephemeralKey.PublicKey().Bytes()
-
-	if len(dstPubKey) < len(pubKeyBytes) {
-		return errnie.Error(errors.New("dstPubKey too short"))
-	}
-
-	nonceBuf := dstPayload[:nonceSize]
-
-	if _, err = rand.Read(nonceBuf); err != nil {
-		return errnie.Error(err, "rand_nonce")
-	}
-
-	gcm.Seal(dstPayload[:nonceSize], nonceBuf, payload, nil)
-	copy(dstKey, aesKey[:])
-	copy(dstPubKey, pubKeyBytes)
-
-	return nil
-}
-
-/*
-EncryptPayload encrypts a payload using AES-GCM with an ephemeral key.
-*/
-func (cryptoSuite *CryptoSuite) EncryptPayload(payload []byte) ([]byte, []byte, []byte, error) {
-	cipherLen := cryptoSuite.EncryptedPayloadSize(len(payload))
-	encryptedPayload := make([]byte, cipherLen)
-	encryptedKey := make([]byte, aesKeyBytes)
-	ephemeralPubKey := make([]byte, p256PubKeyBytes)
-
-	err := cryptoSuite.EncryptPayloadDirect(
-		encryptedPayload,
-		encryptedKey,
-		ephemeralPubKey,
-		payload,
-	)
-
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return encryptedPayload, encryptedKey, ephemeralPubKey, nil
 }
 
 func (cryptoSuite *CryptoSuite) SealPayload(
@@ -1171,63 +1251,6 @@ func (cryptoSuite *CryptoSuite) SealPayload(
 	encryptedPayload = gcm.Seal(encryptedPayload, encryptedPayload, payload, aad)
 
 	return encryptedPayload, ephemeralKey.PublicKey().Bytes(), nil
-}
-
-/*
-DecryptPayloadDirect decrypts into dst when capacity allows, otherwise allocates.
-*/
-func (cryptoSuite *CryptoSuite) DecryptPayloadDirect(
-	dst, encryptedPayload, encryptedKey []byte,
-) ([]byte, error) {
-	payload, err := cryptoSuite.decryptPayloadDirect(dst, encryptedPayload, encryptedKey)
-
-	if err != nil {
-		return nil, errnie.Error(err)
-	}
-
-	return payload, nil
-}
-
-func (cryptoSuite *CryptoSuite) decryptPayloadDirect(
-	dst, encryptedPayload, encryptedKey []byte,
-) ([]byte, error) {
-	if len(encryptedKey) < aesKeyBytes {
-		return nil, errors.New("encrypted key too short")
-	}
-
-	block, err := aes.NewCipher(encryptedKey[:aesKeyBytes])
-
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := gcm.NonceSize()
-
-	if len(encryptedPayload) < nonceSize {
-		return nil, errors.New("ciphertext too short")
-	}
-
-	nonce := encryptedPayload[:nonceSize]
-	ciphertext := encryptedPayload[nonceSize:]
-
-	return gcm.Open(dst[:0], nonce, ciphertext, nil)
-}
-
-/*
-DecryptPayload decrypts a payload using the provided keys.
-*/
-func (cryptoSuite *CryptoSuite) DecryptPayload(
-	encryptedPayload, encryptedKey, ephemeralPubKey []byte,
-) ([]byte, error) {
-	_ = ephemeralPubKey
-
-	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
 }
 
 func (cryptoSuite *CryptoSuite) OpenSealedPayload(
@@ -2114,15 +2137,19 @@ func SelectStochasticToken(candidates []CandidateToken, temperature float64) []b
 		return highestScoreCandidate(candidates).Token
 	}
 
-	scoreFloor := positiveScoreFloor(candidates)
-	effectiveTemperature := math.Max(temperature, scoreFloor)
+	maxScore := candidates[0].Score
+
+	for _, candidate := range candidates[1:] {
+		if candidate.Score > maxScore {
+			maxScore = candidate.Score
+		}
+	}
 
 	exponentialScores := make([]float64, len(candidates))
 	totalMass := 0.0
 
 	for index, candidate := range candidates {
-		scaledLogit := math.Log(math.Max(candidate.Score, scoreFloor)) / effectiveTemperature
-		exponentialScores[index] = math.Exp(scaledLogit)
+		exponentialScores[index] = math.Exp((candidate.Score - maxScore) / temperature)
 		totalMass += exponentialScores[index]
 	}
 
@@ -2313,13 +2340,16 @@ func (tree *Tree) buildSensoryMutations(sequence []byte) []learnMutation {
 		probability := 1.0
 
 		if len(parentPath) > 0 {
-			denominator := float64(parentState.Count + nextCount)
+			denominator := float64(parentState.Count)
 
 			if denominator <= 0 {
 				denominator = float64(nextCount)
 			}
 
 			probability = float64(nextCount) / denominator
+			if probability > 1.0 {
+				probability = 1.0
+			}
 		}
 
 		next := CognitiveState{
@@ -2359,26 +2389,6 @@ func highestScoreCandidate(candidates []CandidateToken) CandidateToken {
 	}
 
 	return bestCandidate
-}
-
-func positiveScoreFloor(candidates []CandidateToken) float64 {
-	floor := math.MaxFloat64
-
-	for _, candidate := range candidates {
-		if candidate.Score <= 0 {
-			continue
-		}
-
-		if candidate.Score < floor {
-			floor = candidate.Score
-		}
-	}
-
-	if floor == math.MaxFloat64 {
-		return math.SmallestNonzeroFloat64
-	}
-
-	return floor
 }
 
 ---
@@ -2545,13 +2555,16 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		probability := 1.0
 
 		if len(parentPath) > 0 {
-			denominator := float64(parent.Count + 1)
+			denominator := float64(parent.Count)
 
 			if denominator <= 0 {
 				denominator = float64(nextCount)
 			}
 
 			probability = float64(nextCount) / denominator
+			if probability > 1.0 {
+				probability = 1.0
+			}
 		}
 
 		next := PackedWeight{
@@ -3273,6 +3286,8 @@ type Election struct {
 	votesReceived  atomic.Uint32
 	votesNeeded    atomic.Uint32
 	timerMu        sync.Mutex
+	votesMu        sync.Mutex
+	voters         map[uint64]struct{}
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	voteRing       *structure.MPMCRing[uint64]
@@ -3341,7 +3356,14 @@ func (election *Election) tick(jobCtx context.Context) {
 func (election *Election) startElection() {
 	election.role.Store(uint32(Candidate))
 	currentTerm := election.term.Add(1)
-	election.votedFor.Store(hashNodeID(election.node.config.NodeID))
+	self := hashNodeID(election.node.config.NodeID)
+	election.votedFor.Store(self)
+
+	election.votesMu.Lock()
+	election.voters = map[uint64]struct{}{
+		self: {},
+	}
+	election.votesMu.Unlock()
 
 	election.node.metrics.SetLeader(false)
 
@@ -3432,10 +3454,10 @@ func (election *Election) sendHeartbeats() {
 }
 
 func (election *Election) stepDown(newTerm uint64) {
-	election.stepDownLocked(newTerm)
+	election.becomeFollower(newTerm)
 }
 
-func (election *Election) stepDownLocked(newTerm uint64) {
+func (election *Election) becomeFollower(newTerm uint64) {
 	election.role.Store(uint32(Follower))
 	election.term.Store(newTerm)
 	election.votedFor.Store(0)
@@ -3520,6 +3542,17 @@ func (election *Election) drainVotes() {
 			return
 		}
 
+		election.votesMu.Lock()
+		if election.voters == nil {
+			election.voters = map[uint64]struct{}{}
+		}
+		if _, seen := election.voters[voterID]; seen {
+			election.votesMu.Unlock()
+			continue
+		}
+		election.voters[voterID] = struct{}{}
+		election.votesMu.Unlock()
+
 		received := election.votesReceived.Add(1)
 
 		if received >= election.votesNeeded.Load() {
@@ -3539,7 +3572,7 @@ func (election *Election) handleVoteRequest(
 	currentTerm := election.term.Load()
 
 	if term > currentTerm {
-		election.stepDownLocked(term)
+		election.becomeFollower(term)
 		currentTerm = term
 	}
 
@@ -3567,7 +3600,7 @@ func (election *Election) handleHeartbeat(term uint64, leaderId string) bool {
 	currentTerm := election.term.Load()
 
 	if term > currentTerm {
-		election.stepDownLocked(term)
+		election.becomeFollower(term)
 
 		return true
 	}
@@ -4393,14 +4426,7 @@ func (tree *MerkleTree) GetDiff(other *MerkleTree) []DiffEntry {
 	left := tree.loadSnapshot()
 	right := other.loadSnapshot()
 
-	if left.root == nil || right.root == nil {
-		return tree.fullDiff(left, right)
-	}
-
-	diffs := make([]DiffEntry, 0)
-	tree.diffNode(left.root, right.root, right, &diffs)
-
-	return diffs
+	return tree.fullDiff(left, right)
 }
 
 /*
@@ -4410,46 +4436,6 @@ type DiffEntry struct {
 	Key      []byte
 	Value    []byte
 	Modified bool
-}
-
-func (tree *MerkleTree) diffNode(
-	leftNode, rightNode *MerkleNode,
-	other *merkleSnapshot,
-	diffs *[]DiffEntry,
-) {
-	if bytes.Equal(leftNode.Hash, rightNode.Hash) {
-		return
-	}
-
-	if leftNode.Key != nil {
-		if otherLeaf, exists := other.LookupLeaf(leftNode.Key); exists {
-			if !bytes.Equal(leftNode.Value, otherLeaf.Value) {
-				*diffs = append(*diffs, DiffEntry{
-					Key:      leftNode.Key,
-					Value:    leftNode.Value,
-					Modified: true,
-				})
-			}
-
-			return
-		}
-
-		*diffs = append(*diffs, DiffEntry{
-			Key:      leftNode.Key,
-			Value:    leftNode.Value,
-			Modified: false,
-		})
-
-		return
-	}
-
-	if leftNode.Left != nil && rightNode.Left != nil {
-		tree.diffNode(leftNode.Left, rightNode.Left, other, diffs)
-	}
-
-	if leftNode.Right != nil && rightNode.Right != nil {
-		tree.diffNode(leftNode.Right, rightNode.Right, other, diffs)
-	}
 }
 
 func (tree *MerkleTree) fullDiff(left, right *merkleSnapshot) []DiffEntry {
@@ -4553,6 +4539,8 @@ func (tree *MerkleTree) GetProof(key []byte) ([][]byte, error) {
 			if parentNode.Right != nil {
 				entry := append([]byte{0x00}, parentNode.Right.Hash...)
 				proof = append(proof, entry)
+			} else {
+				proof = append(proof, []byte{0x02})
 			}
 		}
 
@@ -4581,7 +4569,7 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 	hasher := sha256.New()
 
 	for _, entry := range proof {
-		if len(entry) <= 1 {
+		if len(entry) == 0 {
 			return false
 		}
 
@@ -4591,12 +4579,25 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 		hasher.Reset()
 
 		if position == 0x00 {
+			if len(siblingHash) == 0 {
+				return false
+			}
 			hasher.Write(hash)
 			hasher.Write(siblingHash)
 		}
 
 		if position == 0x01 {
+			if len(siblingHash) == 0 {
+				return false
+			}
 			hasher.Write(siblingHash)
+			hasher.Write(hash)
+		}
+
+		if position == 0x02 {
+			if len(siblingHash) != 0 {
+				return false
+			}
 			hasher.Write(hash)
 		}
 
@@ -5252,8 +5253,6 @@ func (n *NetworkNode) syncWithPeers() {
 				entry := entries.At(i)
 				key := guardValue(state, entry.Key)
 				value := guardValue(state, entry.Value)
-				entryTerm := entry.Term()
-				entryIndex := entry.Index()
 
 				if state.Failed() {
 					continue
@@ -5264,7 +5263,6 @@ func (n *NetworkNode) syncWithPeers() {
 				totalBytes += len(key) + len(value)
 				n.forest.Insert(key, value)
 				n.merkleTree.Insert(key, value)
-				n.election.updateLogState(entryIndex, entryTerm)
 			}
 
 			if entries.Len() > 0 {
@@ -5353,10 +5351,10 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 		return state.Err()
 	}
 
-	diffs := n.merkleTree.GetDiff(NewMerkleTree())
+	leaves := n.merkleTree.Leaves()
 
 	entries := guardValue(state, func() (SyncEntry_List, error) {
-		return diff.NewEntries(int32(len(diffs)))
+		return diff.NewEntries(int32(len(leaves)))
 	})
 
 	if state.Failed() {
@@ -5365,15 +5363,13 @@ func (n *NetworkNode) Sync(ctx context.Context, call RadixRPC_sync) error {
 
 	fastest := n.forest.getFastestTree()
 
-	for i, d := range diffs {
+	for i, leaf := range leaves {
 		entry := entries.At(i)
-		entry.SetKey(d.Key)
-		entry.SetTerm(n.election.getCurrentTerm())
-		entry.SetIndex(n.election.getLastLogIndex() + uint64(i) + 1)
+		entry.SetKey(leaf.Key)
 
-		value := d.Value
+		value := leaf.Value
 		if fastest != nil {
-			if forestVal, ok := fastest.Get(d.Key); ok {
+			if forestVal, ok := fastest.Get(leaf.Key); ok {
 				value = forestVal
 			}
 		}
@@ -5668,12 +5664,9 @@ func (n *NetworkNode) applyFilteredSyncEntries(
 		}
 
 		value = append([]byte(nil), value...)
-		entryTerm := entry.Term()
-		entryIndex := entry.Index()
 
 		n.forest.Insert(key, value)
 		n.merkleTree.Insert(key, value)
-		n.election.updateLogState(entryIndex, entryTerm)
 	}
 
 	if entries.Len() > 0 {
@@ -6261,24 +6254,38 @@ into the tree. Also restores lastTerm and lastIndex.
 func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	ps.state.Reset()
 
-	file := guardValue(ps.state, func() (*os.File, error) {
-		fileHandle, err := os.Open(ps.walPath)
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+	file, err := os.Open(ps.walPath)
 
-		return fileHandle, err
-	})
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 
-	if ps.state.Failed() || file == nil {
-		return nil, ps.state.Err()
+	if err != nil {
+		return nil, ps.markFatal(err)
 	}
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
 	var entries []WALEntry
+	var offset int64
+
+	readRecordBytes := func(recordStart int64, target []byte) (bool, error) {
+		read, err := io.ReadFull(reader, target)
+		offset += int64(read)
+
+		if err == nil {
+			return false, nil
+		}
+
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return true, os.Truncate(ps.walPath, recordStart)
+		}
+
+		return false, err
+	}
 
 	for {
+		recordStart := offset
 		op, err := reader.ReadByte()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -6287,19 +6294,18 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 
 			return entries, ps.markFatal(err)
 		}
+		offset++
 
 		switch op {
 		case opInsert:
 			var header [24]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, header[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, header[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(header[0:8])
@@ -6316,18 +6322,22 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			}
 
 			key := make([]byte, keyLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, key)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, key)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			value := make([]byte, valLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, value)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, value)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			entries = append(entries, WALEntry{
 				Op:    opInsert,
@@ -6343,14 +6353,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opDelete:
 			var header [20]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, header[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, header[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(header[0:8])
@@ -6362,11 +6370,13 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			}
 
 			key := make([]byte, keyLen)
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, key)
-
-				return err
-			})
+			torn, err = readRecordBytes(recordStart, key)
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
+			}
 
 			entries = append(entries, WALEntry{
 				Op:    opDelete,
@@ -6381,14 +6391,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opTermUpdate:
 			var termBuf [8]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, termBuf[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, termBuf[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			ps.lastTerm.Store(binary.LittleEndian.Uint64(termBuf[:]))
@@ -6396,14 +6404,12 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		case opSnapshot:
 			var snapshotHeader [16]byte
 
-			guardStep(ps.state, func() error {
-				_, err := io.ReadFull(reader, snapshotHeader[:])
-
-				return err
-			})
-
-			if ps.state.Failed() {
-				break
+			torn, err := readRecordBytes(recordStart, snapshotHeader[:])
+			if torn {
+				return entries, err
+			}
+			if err != nil {
+				return entries, ps.markFatal(err)
 			}
 
 			term := binary.LittleEndian.Uint64(snapshotHeader[0:8])
@@ -6414,10 +6420,6 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		default:
 			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
 		}
-	}
-
-	if ps.state.Failed() {
-		return entries, ps.markFatal(ps.state.Err())
 	}
 
 	return entries, nil
@@ -6453,7 +6455,7 @@ func (ps *PersistentStore) CreateSnapshot(
 		return nil
 	}
 
-	err := ps.persistWal(func() error {
+	err := ps.runWal("snapshot", func() error {
 		ps.state.Reset()
 
 		guardStep(ps.state, func() error {
@@ -6616,23 +6618,19 @@ func (ps *PersistentStore) TruncateWAL(
 
 func (ps *PersistentStore) runWal(op string, fn func() error) error {
 	if ps.pool == nil {
-		return ps.persistWal(fn)
+		return fn()
 	}
 
 	sequence := ps.walSeq.Add(1)
 	jobID := "dmt/persist/" + op + "/" + strconv.FormatUint(sequence, 10)
 
 	wait := ps.pool.Schedule(jobID, func(ctx context.Context) (any, error) {
-		return nil, ps.persistWal(fn)
+		return nil, fn()
 	})
 
 	_, err := wait.Get(ps.ctx)
 
 	return err
-}
-
-func (ps *PersistentStore) persistWal(fn func() error) error {
-	return fn()
 }
 
 func writeFull(writer io.Writer, data []byte) error {
@@ -7200,8 +7198,6 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 	return iradix.New[[]byte]()
 }
 
-
-
 const treeOpSampleMask = uint64(63)
 
 func (tree *Tree) beginOp() (started time.Time, track bool) {
@@ -7455,14 +7451,22 @@ func (tree *Tree) InsertArtifact(
 	prefix []byte,
 	artifact *datura.Artifact,
 ) (*Tree, bool, error) {
-	if tree == nil || artifact == nil || len(prefix) == 0 {
-		return tree, false, nil
+	if tree == nil {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: nil tree", nil)
+	}
+
+	if artifact == nil {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: nil artifact", nil)
+	}
+
+	if len(prefix) == 0 {
+		return tree, false, errnie.Err(errnie.Validation, "dmt: empty artifact prefix", nil)
 	}
 
 	wire := artifact.Pack()
 
 	if len(wire) == 0 {
-		return tree, false, nil
+		return tree, false, errnie.Err(errnie.Validation, "dmt: empty packed artifact", nil)
 	}
 
 	return tree.Insert(prefix, wire)
@@ -7513,8 +7517,6 @@ func (tree *Tree) Close() error {
 
 	return tree.state.Err()
 }
-
-
 
 ---
 
@@ -7783,8 +7785,9 @@ package datura
 
 import (
 	"bufio"
+	"bytes"
+	"io"
 
-	"github.com/smallnest/ringbuffer"
 	"github.com/theapemachine/errnie"
 )
 
@@ -7792,56 +7795,95 @@ import (
 RWCStream buffers an io.ReadWriteCloser with bufio for chunked streaming.
 */
 type RWCStream struct {
-	artifact *Artifact
-	rw       *bufio.ReadWriter
+	artifact    *Artifact
+	readBuffer  *bytes.Buffer
+	read        *bufio.Reader
+	writeBuffer *bytes.Buffer
+	write       *bufio.Writer
 }
 
 /*
 NewRWCStream wraps artifact with bufio for use in Copy, FlipFlop, Pipeline, and Number.
 */
 func NewRWCStream(artifact *Artifact) *RWCStream {
-	buffer := ringbuffer.New(32 * 1024)
+	readBuffer := bytes.NewBuffer(nil)
+	writeBuffer := bytes.NewBuffer(nil)
+
+	if artifact != nil && artifact.IsValid() {
+		readBuffer.Write(artifact.Pack())
+	}
 
 	return &RWCStream{
-		artifact: artifact,
-		rw: bufio.NewReadWriter(
-			bufio.NewReader(buffer),
-			bufio.NewWriter(buffer),
-		),
+		artifact:    artifact,
+		readBuffer:  readBuffer,
+		read:        bufio.NewReader(readBuffer),
+		writeBuffer: writeBuffer,
+		write:       bufio.NewWriter(writeBuffer),
 	}
 }
 
 func (stream *RWCStream) Read(p []byte) (n int, err error) {
-	// Crucial: Do NOT call stream.rw.Flush() here.
-	// The writer already flushes. Touching stream.rw.Writer concurrently
-	// from the reader goroutine causes a critical data race and infinite loops.
-	return stream.rw.Read(p)
+	if stream == nil || stream.artifact == nil || !stream.artifact.IsValid() {
+		return 0, io.EOF
+	}
+
+	return stream.read.Read(p)
 }
 
 func (stream *RWCStream) Write(p []byte) (n int, err error) {
-	// If writing to the stream, directly unpack incoming bytes into the artifact.
-	// We return 0 on error to strictly satisfy the Go io.Writer contract.
-	if _, err = stream.artifact.Unpack(p); err != nil {
-		return 0, errnie.Error(errnie.Err(
-			errnie.IO,
-			err.Error(),
-			err,
-		))
+	if stream == nil || stream.artifact == nil {
+		return 0, io.ErrClosedPipe
 	}
 
-	// Write the serialized bytes of the artifact to the underlying ring buffer
-	n, err = stream.rw.Write(stream.artifact.Pack())
+	n, err = stream.write.Write(p)
+
 	if err != nil {
-		return n, err
+		return n, errnie.Error(errnie.Err(errnie.IO, err.Error(), err))
 	}
 
-	// Flush the buffer to ensure the bytes actually reach the ring buffer
-	err = stream.rw.Flush()
-	return n, err
+	if err = stream.write.Flush(); err != nil {
+		return n, errnie.Error(errnie.Err(errnie.IO, err.Error(), err))
+	}
+
+	stream.commit()
+
+	return n, nil
 }
 
 func (stream *RWCStream) Close() error {
-	return stream.rw.Flush()
+	if stream == nil {
+		return nil
+	}
+
+	if err := stream.write.Flush(); err != nil {
+		return errnie.Error(errnie.Err(errnie.IO, err.Error(), err))
+	}
+
+	if stream.writeBuffer.Len() == 0 {
+		return nil
+	}
+
+	if !stream.commit() {
+		err := io.ErrUnexpectedEOF
+
+		return errnie.Error(errnie.Err(errnie.IO, err.Error(), err))
+	}
+
+	return nil
+}
+
+func (stream *RWCStream) commit() bool {
+	if stream.writeBuffer.Len() == 0 {
+		return true
+	}
+
+	if _, err := stream.artifact.Unpack(stream.writeBuffer.Bytes()); err != nil {
+		return false
+	}
+
+	stream.writeBuffer.Reset()
+
+	return true
 }
 
 ---
@@ -7853,8 +7895,6 @@ File: /map.go
 package datura
 
 import (
-	"encoding/json"
-
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/theapemachine/errnie"
@@ -7866,6 +7906,7 @@ func (m Map[T]) Marshal() []byte {
 	payload, err := sonic.Marshal(m)
 
 	if err != nil {
+		errnie.Error(errnie.Err(errnie.Validation, "datura.Map: failed to marshal payload", err))
 		return nil
 	}
 
@@ -7967,11 +8008,6 @@ func (artifact *Artifact) MergeOutputs(values map[string]any) {
 
 func (artifact *Artifact) payloadMap() Map[any] {
 	payload := artifact.DecryptPayload()
-
-	if !json.Valid(payload) {
-		return Map[any]{}
-	}
-
 	body := Map[any]{}
 
 	if sonic.Unmarshal(payload, &body) != nil {
@@ -8397,408 +8433,545 @@ package structure
 
 import (
 	"errors"
-	"fmt"
+	"sync"
 	"time"
-
-	"github.com/theapemachine/datura"
 )
 
 var (
-	errClockNil        = errors.New("structure: clock ring is nil")
-	errClockTrackNil   = errors.New("structure: clock track is nil")
-	errClockTrackAlloc = errors.New("structure: clock track allocation failed")
-	errClockTrackHold  = errors.New("structure: clock track has no second-hand value to hold")
-	errClockHand       = errors.New("structure: clock hand is invalid")
+	errClockNil      = errors.New("structure: clock ring is nil")
+	errClockTimeline = errors.New("structure: clock timeline ring is nil")
+	errClockFactory  = errors.New("structure: clock track ring factory is nil")
+	errClockTrack    = errors.New("structure: clock track ring allocation failed")
+	errClockTime     = errors.New("structure: clock observation time is required")
+	errClockEmpty    = errors.New("structure: clock has no observations")
 )
 
 /*
-Hand names one gear on the virtual click clock.
+ClockSlot is one real observation on an item track. Sequence is monotonic within
+Track and makes overwritten or skipped observations detectable by consumers.
 */
-type Hand int
-
-const (
-	HandSecond Hand = iota
-	HandLittle
-	HandBig
-)
-
-/*
-ClockSlot is one click on a hand. Wall is zero for virtual fills that hold the
-previous observation across click space without a new market event.
-*/
-type ClockSlot[T any] struct {
-	Wall    time.Time
-	Click   int64
-	Payload T
+type ClockSlot[K comparable, T any] struct {
+	Track          K
+	Wall           time.Time
+	IngestSequence uint64
+	Sequence       uint64
+	Payload        T
 }
 
 /*
-Fresh reports whether the slot came from a real observation timestamp.
+ClockRing is a bounded observation timeline with independently paced item
+tracks. It implements Ring itself while Frame provides aligned event-time reads.
 */
-func (slot ClockSlot[T]) Fresh() bool {
-	return !slot.Wall.IsZero()
+type ClockRing[K comparable, T any] struct {
+	access       sync.RWMutex
+	timeline     Ring[ClockSlot[K, T]]
+	newTrack     func() Ring[ClockSlot[K, T]]
+	tracks       map[K]*clockTrack[K, T]
+	err          error
+	sequence     uint64
+	timelineSize int
+	rewritten    bool
+	timelineOpen bool
 }
 
 /*
-ClockCascade reports which slower hands ticked on one second-hand click.
+NewClockRing creates a clock from the caller's timeline Ring and track Ring
+factory. The factory is invoked lazily once for each observed or registered key.
 */
-type ClockCascade struct {
-	Little bool
-	Big    bool
-}
-
-/*
-ClockRing is a three-gear virtual click clock backed by ListRings.
-
-SecondHand advances on every click. Each time SecondHand completes one lap,
-LittleHand advances once; each LittleHand lap advances BigHand once. Virtual
-clicks advance SecondHand without a wall timestamp so sparse streams can fill
-click space for sequence detection at the cost of freshness.
-*/
-type ClockRing[T any] struct {
-	SecondHand *ListRing[ClockSlot[T]]
-	LittleHand *ListRing[ClockSlot[T]]
-	BigHand    *ListRing[ClockSlot[T]]
-	clicks     int64
-	secondLap  int
-	littleLap  int
-	artifact   *datura.Artifact
-}
-
-/*
-NewClockRing builds a click clock with positive second, little, and big capacities.
-*/
-func NewClockRing[T any](
-	secondCapacity, littleCapacity, bigCapacity int,
-) *ClockRing[T] {
-	if secondCapacity <= 0 || littleCapacity <= 0 || bigCapacity <= 0 {
-		return nil
+func NewClockRing[K comparable, T any](
+	timeline Ring[ClockSlot[K, T]],
+	newTrack func() Ring[ClockSlot[K, T]],
+) (*ClockRing[K, T], error) {
+	if timeline == nil {
+		return nil, errClockTimeline
 	}
 
-	secondHand := NewListRing[ClockSlot[T]](secondCapacity)
-	littleHand := NewListRing[ClockSlot[T]](littleCapacity)
-	bigHand := NewListRing[ClockSlot[T]](bigCapacity)
-
-	if secondHand == nil || littleHand == nil || bigHand == nil {
-		return nil
+	if newTrack == nil {
+		return nil, errClockFactory
 	}
 
-	return &ClockRing[T]{
-		SecondHand: secondHand,
-		LittleHand: littleHand,
-		BigHand:    bigHand,
-	}
+	return &ClockRing[K, T]{
+		timeline: timeline, newTrack: newTrack,
+		tracks: make(map[K]*clockTrack[K, T]), timelineOpen: true,
+	}, nil
 }
 
 /*
-Click returns the monotonic virtual click counter.
+Observe records one real observation after validating its event time.
 */
-func (clock *ClockRing[T]) Click() int64 {
+func (clock *ClockRing[K, T]) Observe(key K, wall time.Time, payload T) error {
 	if clock == nil {
-		return 0
-	}
-
-	return clock.clicks
-}
-
-/*
-ObserveSecond records a fresh second-hand click at wall and cascades slower hands.
-*/
-func (clock *ClockRing[T]) ObserveSecond(wall time.Time, value T) (ClockCascade, error) {
-	if clock == nil {
-		return ClockCascade{}, errors.New("structure: clock ring is nil")
+		return errClockNil
 	}
 
 	if wall.IsZero() {
-		return ClockCascade{}, errors.New("structure: clock ObserveSecond requires wall time")
+		return errClockTime
 	}
 
-	return clock.pushSecond(ClockSlot[T]{Wall: wall, Payload: value}), nil
-}
-
-/*
-ObserveLittle records a fresh little-hand click at wall and may cascade BigHand.
-*/
-func (clock *ClockRing[T]) ObserveLittle(wall time.Time) (ClockCascade, error) {
-	if clock == nil {
-		return ClockCascade{}, errors.New("structure: clock ring is nil")
+	if !clock.Push(ClockSlot[K, T]{
+		Track:   key,
+		Wall:    wall,
+		Payload: payload,
+	}) {
+		return clock.Error()
 	}
-
-	if wall.IsZero() {
-		return ClockCascade{}, errors.New("structure: clock ObserveLittle requires wall time")
-	}
-
-	return clock.pushLittle(ClockSlot[T]{Wall: wall}), nil
-}
-
-/*
-ObserveBig records a fresh big-hand click at wall.
-*/
-func (clock *ClockRing[T]) ObserveBig(wall time.Time) error {
-	if clock == nil {
-		return errors.New("structure: clock ring is nil")
-	}
-
-	if wall.IsZero() {
-		return errors.New("structure: clock ObserveBig requires wall time")
-	}
-
-	clock.pushBig(ClockSlot[T]{Wall: wall})
 
 	return nil
 }
 
 /*
-AdvanceVirtual advances SecondHand by clicks virtual steps without wall time.
+Push writes a slot to the global timeline and its keyed track.
 */
-func (clock *ClockRing[T]) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
-	if clock == nil {
-		return nil, errors.New("structure: clock ring is nil")
+func (clock *ClockRing[K, T]) Push(slot ClockSlot[K, T]) bool {
+	if clock == nil || clock.timeline == nil {
+		return false
 	}
 
-	if clicks <= 0 {
-		return nil, errors.New("structure: clock AdvanceVirtual requires positive clicks")
-	}
+	clock.access.Lock()
+	defer clock.access.Unlock()
 
-	cascades := make([]ClockCascade, 0, clicks)
-
-	for step := 0; step < clicks; step++ {
-		cascades = append(cascades, clock.pushSecond(ClockSlot[T]{}))
-	}
-
-	return cascades, nil
+	return clock.push(slot)
 }
 
 /*
-Freshness returns how many clicks back the latest fresh slot sits on hand.
-Zero means the latest slot is fresh.
+push writes one slot while the caller holds the clock lock so the global
+timeline, keyed track, and both sequence counters advance as one operation.
 */
-func (clock *ClockRing[T]) Freshness(hand Hand) (int, error) {
-	if clock == nil {
-		return 0, errors.New("structure: clock ring is nil")
+func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
+	if clock.err != nil {
+		return false
 	}
 
-	ring := clock.handRing(hand)
-
-	if ring == nil {
-		return 0, fmt.Errorf("structure: clock hand %d is invalid", hand)
+	if slot.Wall.IsZero() {
+		clock.err = errClockTime
+		return false
 	}
 
-	if ring.Len() == 0 {
-		return 0, nil
+	if err := clock.register(slot.Track); err != nil {
+		clock.err = err
+		return false
 	}
 
-	steps := 0
-	walk := ring.Select(-1)
+	track := clock.tracks[slot.Track]
 
-	for steps < ring.Len() {
-		slot := walk.Pop()
+	if slot.Sequence == 0 {
+		track.sequence++
+		slot.Sequence = track.sequence
+	}
 
-		if slot.Fresh() {
-			return steps, nil
+	clock.sequence++
+	slot.IngestSequence = clock.sequence
+
+	if track.first == 0 {
+		track.first = slot.IngestSequence
+	}
+
+	if !clock.timeline.Push(slot) || !track.values.Push(slot) {
+		clock.err = errors.New(
+			"structure: clock ring push failed and clock is no longer readable",
+		)
+		return false
+	}
+
+	if slot.Sequence > track.sequence {
+		track.sequence = slot.Sequence
+	}
+
+	if slot.Wall.After(track.latest) {
+		track.latest = slot.Wall
+	}
+
+	track.count++
+
+	if capacity := track.values.Len(); track.count > capacity {
+		track.count = capacity
+	}
+
+	clock.timelineSize++
+
+	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
+		clock.timelineSize = capacity
+	}
+
+	return true
+}
+
+/*
+Pop returns the latest global timeline observation without advancing its cursor.
+*/
+func (clock *ClockRing[K, T]) Pop() ClockSlot[K, T] {
+	if clock == nil || clock.timeline == nil {
+		return ClockSlot[K, T]{}
+	}
+
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	return clock.timeline.Select(-1).Pop()
+}
+
+/*
+Select returns a global timeline Ring view at step from its write cursor.
+*/
+func (clock *ClockRing[K, T]) Select(step int) Ring[ClockSlot[K, T]] {
+	if clock == nil || clock.timeline == nil {
+		return nil
+	}
+
+	return clock.timeline.Select(step)
+}
+
+/*
+Merge combines clocks whose keyed tracks are disjoint. Overlapping tracks are
+rejected because structural Ring splicing cannot preserve their event-time order.
+*/
+func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
+	if clock == nil || clock.timeline == nil {
+		return false
+	}
+
+	otherClock, ok := other.(*ClockRing[K, T])
+
+	if !ok || otherClock == clock {
+		return false
+	}
+
+	clock.access.Lock()
+	defer clock.access.Unlock()
+	otherClock.access.Lock()
+	defer otherClock.access.Unlock()
+
+	for key := range otherClock.tracks {
+		if clock.tracks[key] != nil {
+			return false
 		}
+	}
+	leftSequence := clock.sequence
+	leftSlots := clock.retained()
+	rightSlots := otherClock.retained()
 
-		steps++
-		walk = walk.Select(-1)
+	for index := range rightSlots {
+		rightSlots[index].IngestSequence += leftSequence
 	}
 
-	return steps, nil
-}
-
-/*
-HandRing returns the slot ring for hand.
-*/
-func (clock *ClockRing[T]) HandRing(hand Hand) (Ring[ClockSlot[T]], error) {
-	if clock == nil {
-		return nil, errors.New("structure: clock ring is nil")
-	}
-
-	ring := clock.handRing(hand)
-
-	if ring == nil {
-		return nil, fmt.Errorf("structure: clock hand %d is invalid", hand)
-	}
-
-	return ring, nil
-}
-
-/*
-Push records slot on the second hand and cascades slower hands when a lap completes.
-*/
-func (clock *ClockRing[T]) Push(slot ClockSlot[T]) bool {
-	if clock == nil {
+	if !clock.timeline.Merge(otherClock.timeline) {
 		return false
 	}
 
-	clock.pushSecond(slot)
+	for _, slot := range append(leftSlots, rightSlots...) {
+		if !clock.timeline.Push(slot) {
+			clock.err = errors.New("structure: clock timeline merge rewrite failed")
+			return false
+		}
+	}
+
+	for key, incoming := range otherClock.tracks {
+		incoming.resequence(leftSequence)
+		clock.tracks[key] = incoming
+	}
+
+	clock.sequence += otherClock.sequence
+	clock.timelineSize += otherClock.timelineSize
+	clock.rewritten = true
+
+	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
+		clock.timelineSize = capacity
+	}
 
 	return true
 }
 
 /*
-Pop returns the second-hand slot at the write cursor without advancing it.
+Slice detaches count slots from the global timeline as a Ring view.
 */
-func (clock *ClockRing[T]) Pop() ClockSlot[T] {
-	if clock == nil || clock.SecondHand == nil {
-		return ClockSlot[T]{}
-	}
-
-	view := clock.SecondHand.Select(-1)
-
-	if view == nil {
-		return ClockSlot[T]{}
-	}
-
-	return view.Pop()
-}
-
-/*
-Select returns a second-hand view offset step slots from the write cursor.
-*/
-func (clock *ClockRing[T]) Select(step int) Ring[ClockSlot[T]] {
-	if clock == nil || clock.SecondHand == nil {
+func (clock *ClockRing[K, T]) Slice(count int) Ring[ClockSlot[K, T]] {
+	if clock == nil || clock.timeline == nil {
 		return nil
 	}
 
-	return clock.SecondHand.Select(step)
+	clock.access.Lock()
+	defer clock.access.Unlock()
+
+	return clock.timeline.Slice(count)
 }
 
 /*
-Merge splices other into this clock. When other is another ClockRing, all three
-hands merge and lap counters reset. When other is a ListRing, only SecondHand merges.
+Len returns the global timeline Ring capacity.
 */
-func (clock *ClockRing[T]) Merge(other Ring[ClockSlot[T]]) bool {
-	if clock == nil {
-		return false
-	}
-
-	otherClock, ok := other.(*ClockRing[T])
-
-	if !ok {
-		return clock.SecondHand.Merge(other)
-	}
-
-	if !clock.SecondHand.Merge(otherClock.SecondHand) {
-		return false
-	}
-
-	if !clock.LittleHand.Merge(otherClock.LittleHand) {
-		return false
-	}
-
-	if !clock.BigHand.Merge(otherClock.BigHand) {
-		return false
-	}
-
-	if otherClock.clicks > clock.clicks {
-		clock.clicks = otherClock.clicks
-	}
-
-	clock.secondLap = 0
-	clock.littleLap = 0
-
-	return true
-}
-
-/*
-Slice detaches count second-hand slots into a new ring view.
-*/
-func (clock *ClockRing[T]) Slice(count int) Ring[ClockSlot[T]] {
-	if clock == nil || clock.SecondHand == nil {
-		return nil
-	}
-
-	return clock.SecondHand.Slice(count)
-}
-
-/*
-Len returns the second-hand capacity in slots.
-*/
-func (clock *ClockRing[T]) Len() int {
-	if clock == nil || clock.SecondHand == nil {
+func (clock *ClockRing[K, T]) Len() int {
+	if clock == nil || clock.timeline == nil {
 		return 0
 	}
 
-	return clock.SecondHand.Len()
+	return clock.timeline.Len()
 }
 
 /*
-Do visits every second-hand slot in cursor order.
+Do visits the global timeline in its Ring-defined logical order.
 */
-func (clock *ClockRing[T]) Do(visitor func(ClockSlot[T])) {
-	if clock == nil || clock.SecondHand == nil {
+func (clock *ClockRing[K, T]) Do(visitor func(ClockSlot[K, T])) {
+	if clock == nil || clock.timeline == nil {
 		return
 	}
 
-	clock.SecondHand.Do(visitor)
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	clock.timeline.Do(visitor)
 }
 
 /*
-Close is a no-op. It exists so ClockRing satisfies Ring[ClockSlot].
+Error returns the clock or underlying timeline error.
 */
-func (clock *ClockRing[T]) Close() error {
-	return nil
+func (clock *ClockRing[K, T]) Error() error {
+	if clock == nil {
+		return errClockNil
+	}
+
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	if clock.err != nil {
+		return clock.err
+	}
+
+	return clock.timeline.Error()
 }
 
 /*
-Error is always nil. It exists so ClockRing satisfies Ring[ClockSlot].
+Close closes every track Ring and the global timeline Ring.
 */
-func (clock *ClockRing[T]) Error() error {
-	return nil
-}
-
-func (clock *ClockRing[T]) pushSecond(slot ClockSlot[T]) ClockCascade {
-	clock.clicks++
-	slot.Click = clock.clicks
-	clock.SecondHand.Push(slot)
-	clock.secondLap++
-
-	if clock.secondLap < clock.SecondHand.Len() {
-		return ClockCascade{}
+func (clock *ClockRing[K, T]) Close() error {
+	if clock == nil {
+		return errClockNil
 	}
 
-	clock.secondLap = 0
+	clock.access.Lock()
+	defer clock.access.Unlock()
 
-	return clock.pushLittle(slot)
-}
-
-func (clock *ClockRing[T]) pushLittle(slot ClockSlot[T]) ClockCascade {
-	if slot.Click == 0 {
-		slot.Click = clock.clicks
+	for _, track := range clock.tracks {
+		if err := track.values.Close(); err != nil {
+			return err
+		}
 	}
 
-	clock.LittleHand.Push(slot)
-	clock.littleLap++
-
-	if clock.littleLap < clock.LittleHand.Len() {
-		return ClockCascade{Little: true}
-	}
-
-	clock.littleLap = 0
-	clock.pushBig(slot)
-
-	return ClockCascade{Little: true, Big: true}
-}
-
-func (clock *ClockRing[T]) pushBig(slot ClockSlot[T]) {
-	if slot.Click == 0 {
-		slot.Click = clock.clicks
-	}
-
-	clock.BigHand.Push(slot)
-}
-
-func (clock *ClockRing[T]) handRing(hand Hand) *ListRing[ClockSlot[T]] {
-	switch hand {
-	case HandSecond:
-		return clock.SecondHand
-	case HandLittle:
-		return clock.LittleHand
-	case HandBig:
-		return clock.BigHand
-	default:
+	if !clock.timelineOpen {
 		return nil
 	}
+
+	clock.timelineOpen = false
+
+	return clock.timeline.Close()
+}
+
+var _ Ring[ClockSlot[string, float64]] = (*ClockRing[string, float64])(nil)
+
+---
+
+---
+File: /structure/clock_cursor.go
+---
+
+package structure
+
+import (
+	"fmt"
+	"time"
+)
+
+/*
+ClockCut freezes one clock at an ingress boundary and wall-time boundary so a
+consumer can perform work without admitting observations that arrive later.
+*/
+type ClockCut struct {
+	Through uint64
+	At      time.Time
+}
+
+/*
+ClockCursor records the last ingress sequence processed by one consumer. The
+clock retains observations independently, so multiple consumers may advance
+without destructively removing each other's input.
+*/
+type ClockCursor struct {
+	After uint64
+}
+
+/*
+Cut captures the clock's current ingress high-water mark at the caller's chosen
+measurement time. The caller supplies time so replay and live operation share
+the same deterministic boundary mechanism.
+*/
+func (clock *ClockRing[K, T]) Cut(at time.Time) (ClockCut, error) {
+	if clock == nil {
+		return ClockCut{}, errClockNil
+	}
+
+	if at.IsZero() {
+		return ClockCut{}, errClockTime
+	}
+
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	if clock.err != nil {
+		return ClockCut{}, clock.err
+	}
+
+	return ClockCut{
+		Through: clock.sequence,
+		At:      at,
+	}, nil
+}
+
+/*
+FrameThrough returns one newest eligible state per populated track at a stable
+ingress cut. When a track has already cycled past that cut, it supplies its
+newest retained state at the requested event time instead of disappearing.
+*/
+func (clock *ClockRing[K, T]) FrameThrough(
+	cut ClockCut,
+) (ClockFrame[K, T], error) {
+	if clock == nil {
+		return ClockFrame[K, T]{}, errClockNil
+	}
+
+	if cut.At.IsZero() {
+		return ClockFrame[K, T]{}, errClockTime
+	}
+
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	return clock.frame(cut)
+}
+
+/*
+frame builds an immutable state surface while the caller holds the clock read
+lock, choosing the greatest event-time observation within the ingress cut.
+*/
+func (clock *ClockRing[K, T]) frame(
+	cut ClockCut,
+) (ClockFrame[K, T], error) {
+	if clock.err != nil {
+		return ClockFrame[K, T]{}, clock.err
+	}
+
+	if cut.Through > clock.sequence {
+		return ClockFrame[K, T]{}, fmt.Errorf(
+			"structure: clock cut %d exceeds high-water %d",
+			cut.Through,
+			clock.sequence,
+		)
+	}
+
+	frame := ClockFrame[K, T]{
+		Wall:   cut.At,
+		Tracks: make(map[K]ClockSlot[K, T], len(clock.tracks)),
+	}
+
+	for key, track := range clock.tracks {
+		slot, found := track.at(cut)
+
+		if !found && track.first <= cut.Through {
+			slot, found = track.at(ClockCut{
+				Through: clock.sequence,
+				At:      cut.At,
+			})
+		}
+
+		if found {
+			frame.Tracks[key] = slot
+		}
+	}
+
+	return frame, nil
+}
+
+/*
+EventsAfter returns the retained observations after cursor and through cut in
+global ingress order. A cursor older than the retained window resumes at that
+window's first slot because overwritten history is no longer actionable.
+*/
+func (clock *ClockRing[K, T]) EventsAfter(
+	cursor ClockCursor,
+	cut ClockCut,
+) ([]ClockSlot[K, T], ClockCursor, error) {
+	if clock == nil {
+		return nil, cursor, errClockNil
+	}
+
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	if clock.err != nil {
+		return nil, cursor, clock.err
+	}
+
+	if cut.Through > clock.sequence {
+		return nil, cursor, fmt.Errorf(
+			"structure: clock cut %d exceeds high-water %d",
+			cut.Through,
+			clock.sequence,
+		)
+	}
+
+	if cursor.After >= cut.Through {
+		return nil, cursor, nil
+	}
+
+	after := cursor.After
+
+	if clock.timelineSize > 0 {
+		oldest := clock.sequence - uint64(clock.timelineSize) + 1
+
+		if after < oldest-1 {
+			after = oldest - 1
+		}
+	}
+
+	capacity := 0
+
+	if cut.Through > after {
+		capacity = int(cut.Through - after)
+	}
+
+	if capacity > clock.timelineSize {
+		capacity = clock.timelineSize
+	}
+
+	events := make([]ClockSlot[K, T], 0, capacity)
+	appendSlot := func(slot ClockSlot[K, T]) {
+		if slot.IngestSequence <= after || slot.IngestSequence > cut.Through {
+			return
+		}
+
+		events = append(events, slot)
+	}
+
+	if clock.rewritten {
+		for _, slot := range clock.retained() {
+			appendSlot(slot)
+		}
+	} else {
+		clock.timeline.Do(appendSlot)
+	}
+
+	return events, ClockCursor{After: cut.Through}, nil
+}
+
+/*
+retained returns the populated global timeline in ingress order while the
+caller holds a clock lock, excluding unused ring capacity and stale rewrites.
+*/
+func (clock *ClockRing[K, T]) retained() []ClockSlot[K, T] {
+	slots := make([]ClockSlot[K, T], 0, clock.timelineSize)
+
+	for step := clock.timelineSize; step >= 1; step-- {
+		slots = append(slots, clock.timeline.Select(-step).Pop())
+	}
+
+	return slots
 }
 
 ---
@@ -8812,182 +8985,178 @@ package structure
 import "time"
 
 /*
-ClockTrack pairs a ClockRing with aligned value rings on each hand.
-
-Values on a hand advance when that hand ticks on the clock. Virtual second-hand
-clicks repeat the last second-hand value; cascaded little and big ticks repeat
-their own last observed values.
+ClockFrame is an event-time cut across the clock's populated item tracks. Every
+entry is the newest retained observation at or before Wall.
 */
-type ClockTrack[T any] struct {
-	clock        *ClockRing[T]
-	secondValues *ListRing[T]
-	littleValues *ListRing[T]
-	bigValues    *ListRing[T]
-	secondLast   T
-	littleLast   T
-	bigLast      T
-	hasSecond    bool
-	hasLittle    bool
-	hasBig       bool
+type ClockFrame[K comparable, T any] struct {
+	Wall   time.Time
+	Tracks map[K]ClockSlot[K, T]
 }
 
 /*
-NewClockTrack binds value rings to an existing click clock.
+clockTrack owns one bounded item history through the shared Ring interface.
 */
-func NewClockTrack[T any](clock *ClockRing[T]) (*ClockTrack[T], error) {
+type clockTrack[K comparable, T any] struct {
+	values   Ring[ClockSlot[K, T]]
+	count    int
+	sequence uint64
+	first    uint64
+	latest   time.Time
+}
+
+/*
+Register creates one empty item track. Repeated registration is idempotent.
+*/
+func (clock *ClockRing[K, T]) Register(key K) error {
 	if clock == nil {
-		return nil, errClockNil
+		return errClockNil
 	}
 
-	secondValues := NewListRing[T](clock.SecondHand.Len())
-	littleValues := NewListRing[T](clock.LittleHand.Len())
-	bigValues := NewListRing[T](clock.BigHand.Len())
+	clock.access.Lock()
+	defer clock.access.Unlock()
 
-	if secondValues == nil || littleValues == nil || bigValues == nil {
-		return nil, errClockTrackAlloc
-	}
-
-	return &ClockTrack[T]{
-		clock:        clock,
-		secondValues: secondValues,
-		littleValues: littleValues,
-		bigValues:    bigValues,
-	}, nil
+	return clock.register(key)
 }
 
 /*
-ObserveSecond records value on a fresh second-hand click.
+register creates a track while the caller holds the clock lock so observation
+and explicit registration share one allocation path.
 */
-func (track *ClockTrack[T]) ObserveSecond(wall time.Time, value T) (ClockCascade, error) {
-	if track == nil {
-		return ClockCascade{}, errClockTrackNil
+func (clock *ClockRing[K, T]) register(key K) error {
+
+	if clock.tracks[key] != nil {
+		return nil
 	}
 
-	track.secondLast = value
-	track.hasSecond = true
-	track.secondValues.Push(value)
+	values := clock.newTrack()
 
-	cascade, err := track.clock.ObserveSecond(wall, value)
-
-	if err != nil {
-		return ClockCascade{}, err
+	if values == nil {
+		return errClockTrack
 	}
 
-	track.applyCascade(cascade)
+	clock.tracks[key] = &clockTrack[K, T]{values: values}
 
-	return cascade, nil
+	return nil
 }
 
 /*
-ObserveLittle records value on a fresh little-hand click.
+Frame returns the newest retained nonfuture observation from every item track.
+Tracks without an eligible observation remain absent.
 */
-func (track *ClockTrack[T]) ObserveLittle(wall time.Time, value T) (ClockCascade, error) {
-	if track == nil {
-		return ClockCascade{}, errClockTrackNil
+func (clock *ClockRing[K, T]) Frame(
+	wall time.Time,
+) (ClockFrame[K, T], error) {
+	if clock == nil {
+		return ClockFrame[K, T]{}, errClockNil
 	}
 
-	track.littleLast = value
-	track.hasLittle = true
-	track.littleValues.Push(value)
-
-	cascade, err := track.clock.ObserveLittle(wall)
-
-	if err != nil {
-		return ClockCascade{}, err
+	if wall.IsZero() {
+		return ClockFrame[K, T]{}, errClockTime
 	}
 
-	if cascade.Big {
-		track.pushBigHold()
-	}
+	clock.access.RLock()
+	defer clock.access.RUnlock()
 
-	return cascade, nil
+	return clock.frame(ClockCut{
+		Through: clock.sequence,
+		At:      wall,
+	})
 }
 
 /*
-ObserveBig records value on a fresh big-hand click.
+Aligned returns a frame at the minimum latest timestamp across populated tracks.
+This is the greatest event-time cut every populated track can satisfy.
 */
-func (track *ClockTrack[T]) ObserveBig(wall time.Time, value T) error {
-	if track == nil {
-		return errClockTrackNil
+func (clock *ClockRing[K, T]) Aligned() (ClockFrame[K, T], error) {
+	if clock == nil {
+		return ClockFrame[K, T]{}, errClockNil
 	}
 
-	track.bigLast = value
-	track.hasBig = true
-	track.bigValues.Push(value)
+	clock.access.RLock()
+	defer clock.access.RUnlock()
 
-	return track.clock.ObserveBig(wall)
+	watermark := time.Time{}
+
+	for _, track := range clock.tracks {
+		if track.count == 0 || (!watermark.IsZero() && !track.latest.Before(watermark)) {
+			continue
+		}
+
+		watermark = track.latest
+	}
+
+	if watermark.IsZero() {
+		return ClockFrame[K, T]{}, errClockEmpty
+	}
+
+	return clock.frame(ClockCut{
+		Through: clock.sequence,
+		At:      watermark,
+	})
 }
 
 /*
-AdvanceVirtual fills second-hand click space with the last second-hand value.
+Track returns the Ring that owns one item's bounded observation history.
 */
-func (track *ClockTrack[T]) AdvanceVirtual(clicks int) ([]ClockCascade, error) {
-	if track == nil {
-		return nil, errClockTrackNil
+func (clock *ClockRing[K, T]) Track(key K) (Ring[ClockSlot[K, T]], bool) {
+	if clock == nil {
+		return nil, false
 	}
 
-	if !track.hasSecond {
-		return nil, errClockTrackHold
+	clock.access.RLock()
+	defer clock.access.RUnlock()
+
+	if clock.tracks[key] == nil {
+		return nil, false
 	}
 
-	cascades, err := track.clock.AdvanceVirtual(clicks)
+	return clock.tracks[key].values, true
+}
 
-	if err != nil {
-		return nil, err
-	}
+func (track *clockTrack[K, T]) at(cut ClockCut) (ClockSlot[K, T], bool) {
+	selected := ClockSlot[K, T]{}
+	found := false
 
-	for _, cascade := range cascades {
-		track.secondValues.Push(track.secondLast)
-		track.applyCascade(cascade)
-	}
+	track.values.Do(func(slot ClockSlot[K, T]) {
+		if slot.IngestSequence < track.first ||
+			slot.IngestSequence > cut.Through || slot.Wall.After(cut.At) {
+			return
+		}
 
-	return cascades, nil
+		if found && slot.Wall.Before(selected.Wall) {
+			return
+		}
+
+		if found && slot.Wall.Equal(selected.Wall) &&
+			slot.IngestSequence < selected.IngestSequence {
+			return
+		}
+
+		selected = slot
+		found = true
+	})
+
+	return selected, found
 }
 
 /*
-ValueRing returns the aligned value ring for hand.
+resequence offsets retained ingress identities after two disjoint clocks merge,
+while preserving track-local sequence and event-time order.
 */
-func (track *ClockTrack[T]) ValueRing(hand Hand) (*ListRing[T], error) {
-	if track == nil {
-		return nil, errClockTrackNil
+func (track *clockTrack[K, T]) resequence(offset uint64) {
+	slots := make([]ClockSlot[K, T], 0, track.count)
+
+	for step := track.count; step >= 1; step-- {
+		slot := track.values.Select(-step).Pop()
+		slot.IngestSequence += offset
+		slots = append(slots, slot)
 	}
 
-	switch hand {
-	case HandSecond:
-		return track.secondValues, nil
-	case HandLittle:
-		return track.littleValues, nil
-	case HandBig:
-		return track.bigValues, nil
-	default:
-		return nil, errClockHand
-	}
-}
-
-func (track *ClockTrack[T]) applyCascade(cascade ClockCascade) {
-	if cascade.Little {
-		track.pushLittleHold()
+	for _, slot := range slots {
+		track.values.Push(slot)
 	}
 
-	if cascade.Big {
-		track.pushBigHold()
-	}
-}
-
-func (track *ClockTrack[T]) pushLittleHold() {
-	if !track.hasLittle {
-		return
-	}
-
-	track.littleValues.Push(track.littleLast)
-}
-
-func (track *ClockTrack[T]) pushBigHold() {
-	if !track.hasBig {
-		return
-	}
-
-	track.bigValues.Push(track.bigLast)
+	track.first += offset
 }
 
 ---
@@ -9031,6 +9200,9 @@ must be positive.
 */
 type ListRing[T any] struct {
 	cursor *ListRingNode[T]
+	first  *ListRingNode[T]
+	writes int
+	size   int
 }
 
 /*
@@ -9054,7 +9226,11 @@ func NewListRing[T any](elementCount int) *ListRing[T] {
 	tail.next = head
 	head.prev = tail
 
-	return &ListRing[T]{cursor: head}
+	return &ListRing[T]{
+		cursor: head,
+		first:  head,
+		size:   elementCount,
+	}
 }
 
 /*
@@ -9067,11 +9243,18 @@ by the ListRing struct; callers do not need to call Select after Push.
 func (ring *ListRing[T]) Push(value T) bool {
 	if ring.cursor.next == nil {
 		ring.cursor.init()
+		ring.first = ring.cursor
 	}
 
 	ring.cursor.Value = value
 	ring.cursor = ring.cursor.next
 
+	if ring.writes < ring.size {
+		ring.writes++
+		return true
+	}
+
+	ring.first = ring.cursor
 	return true
 }
 
@@ -9097,6 +9280,9 @@ nodes as the receiver.
 func (ring *ListRing[T]) Select(step int) Ring[T] {
 	return &ListRing[T]{
 		cursor: ring.move(step),
+		first:  ring.first,
+		writes: ring.writes,
+		size:   ring.size,
 	}
 }
 
@@ -9147,6 +9333,12 @@ func (ring *ListRing[T]) Merge(other Ring[T]) bool {
 	}
 
 	ring.cursor.link(otherRing.cursor)
+	ring.size = ring.measure()
+	ring.writes += otherRing.writes
+
+	if ring.writes > ring.size {
+		ring.writes = ring.size
+	}
 
 	return true
 }
@@ -9189,42 +9381,71 @@ func (ring *ListRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	return &ListRing[T]{
-		cursor: removed,
+	ring.size = ring.measure()
+
+	if ring.writes > ring.size {
+		ring.writes = ring.size
 	}
+
+	removedRing := &ListRing[T]{
+		cursor: removed,
+		first:  removed,
+		writes: count,
+	}
+	removedRing.size = removedRing.measure()
+
+	if removedRing.writes > removedRing.size {
+		removedRing.writes = removedRing.size
+	}
+
+	return removedRing
 }
 
 /*
-Len returns the number of nodes in the circular list. Time is O(n).
+Len returns the retained structural node count in O(1).
 */
 func (ring *ListRing[T]) Len() int {
+	return ring.size
+}
+
+/*
+measure traverses structural links after the rare Merge and Slice operations so
+their resulting views can refresh the O(1) size retained by Len.
+*/
+func (ring *ListRing[T]) measure() int {
 	if ring.cursor.next == nil {
 		return 1
 	}
 
-	length := 1
+	size := 1
 
 	for walk := ring.cursor.next; walk != ring.cursor; walk = walk.next {
-		length++
+		size++
 	}
 
-	return length
+	return size
 }
 
 /*
-Do calls visitor on each Value in forward order, starting at the cursor and
-walking next until the cursor is reached again.
+Do calls visitor on each Value in forward order, starting at the logical first
+position and walking next until that first position is reached again.
 
 Behavior is undefined if visitor mutates the ring structure (links or cursor).
 */
 func (ring *ListRing[T]) Do(visitor func(T)) {
-	visitor(ring.cursor.Value)
+	first := ring.first
 
-	if ring.cursor.next == nil {
+	if first == nil {
+		first = ring.cursor
+	}
+
+	visitor(first.Value)
+
+	if first.next == nil {
 		return
 	}
 
-	for walk := ring.cursor.next; walk != ring.cursor; walk = walk.next {
+	for walk := first.next; walk != first; walk = walk.next {
 		visitor(walk.Value)
 	}
 }
@@ -9606,7 +9827,13 @@ func (ring *MPMCRing[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !ring.Push(datura.As[T](ring.artifact)) {
+	value, err := datura.As[T](ring.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !ring.Push(value) {
 		return written, errors.New("structure: MPMCRing Push failed")
 	}
 
@@ -9883,7 +10110,13 @@ func (navigator *mpmcNavigator[T]) Write(p []byte) (int, error) {
 		return written, err
 	}
 
-	if !navigator.Push(datura.As[T](navigator.parent.artifact)) {
+	value, err := datura.As[T](navigator.parent.artifact)
+
+	if err != nil {
+		return written, err
+	}
+
+	if !navigator.Push(value) {
 		return written, errors.New("structure: mpmcNavigator Push failed")
 	}
 
@@ -9902,17 +10135,6 @@ Error returns parent.Error when navigator and parent are valid.
 */
 func (navigator *mpmcNavigator[T]) Error() error {
 	return navigator.parent.Error()
-}
-
-/*
-max returns the larger of left and right.
-*/
-func max(left, right int) int {
-	if left > right {
-		return left
-	}
-
-	return right
 }
 
 ---
@@ -9968,12 +10190,9 @@ package structure
 
 import (
 	"errors"
-	"io"
 	"math/bits"
 	"sync/atomic"
 
-	"github.com/bytedance/sonic"
-	"github.com/theapemachine/datura"
 	"github.com/theapemachine/errnie"
 )
 
@@ -9993,9 +10212,10 @@ type SPSCRing[T any] struct {
 	mask             uint64
 	head             atomic.Uint64
 	tail             atomic.Uint64
+	dropped          atomic.Uint64
+	rejected         atomic.Uint64
 	dropOldestOnFull bool
 	err              error
-	artifact         *datura.Artifact
 }
 
 /*
@@ -10009,26 +10229,28 @@ failing.
 func NewSPSCRing[T any](
 	capacity int,
 	dropOldestOnFull bool,
-	artifact *datura.Artifact,
-) (*SPSCRing[T], error) {
+) *SPSCRing[T] {
 	if capacity < 1 || (capacity&(capacity-1)) != 0 {
-		return nil, errnie.Error(errnie.Err(
+		errnie.Error(errnie.Err(
 			errnie.Validation,
 			"SPSCRing capacity must be a positive power of two",
 			errors.New("SPSCRing capacity must be a positive power of two"),
 		))
+
+		return nil
 	}
 
 	ring := &SPSCRing[T]{
 		slots:            make([]atomic.Pointer[T], capacity),
 		mask:             uint64(capacity - 1),
 		dropOldestOnFull: dropOldestOnFull,
-		artifact:         artifact,
 	}
 
-	return ring, errnie.Error(errnie.Require(map[string]any{
+	errnie.Error(errnie.Require(map[string]any{
 		"slots": ring.slots,
 	}))
+
+	return ring
 }
 
 /*
@@ -10046,10 +10268,12 @@ func (ring *SPSCRing[T]) Push(value T) bool {
 		if head-tail >= uint64(len(ring.slots)) {
 			if ring.dropOldestOnFull {
 				ring.Pop()
+				ring.dropped.Add(1)
 
 				continue
 			}
 
+			ring.rejected.Add(1)
 			return false
 		}
 
@@ -10108,6 +10332,20 @@ func (ring *SPSCRing[T]) Empty() bool {
 }
 
 /*
+Dropped reports values explicitly evicted by drop-oldest overflow policy.
+*/
+func (ring *SPSCRing[T]) Dropped() uint64 {
+	return ring.dropped.Load()
+}
+
+/*
+Rejected reports pushes refused because a non-evicting ring was full.
+*/
+func (ring *SPSCRing[T]) Rejected() uint64 {
+	return ring.rejected.Load()
+}
+
+/*
 Select returns an spscNavigator Ring[T] positioned step logical elements forward
 from the current dequeue edge (tail). step may be negative to walk backward in
 sequence space.
@@ -10153,13 +10391,12 @@ func (ring *SPSCRing[T]) mergeSPSC(other *SPSCRing[T]) bool {
 	combined := ring.Len() + other.Len()
 
 	if combined > len(ring.slots) {
-		newRing, err := NewSPSCRing[T](
+		newRing := NewSPSCRing[T](
 			1<<uint(bits.Len(uint(max(combined, 2)))),
 			ring.dropOldestOnFull,
-			ring.artifact,
 		)
 
-		if err != nil {
+		if newRing == nil {
 			return false
 		}
 
@@ -10208,13 +10445,12 @@ func (ring *SPSCRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewSPSCRing[T](
+	sliced := NewSPSCRing[T](
 		1<<uint(bits.Len(uint(max(count, 2)))),
 		false,
-		ring.artifact,
 	)
 
-	if err != nil {
+	if sliced == nil {
 		return nil
 	}
 
@@ -10250,63 +10486,6 @@ func (ring *SPSCRing[T]) Do(visitor func(T)) {
 	for !ring.Empty() {
 		visitor(ring.Pop())
 	}
-}
-
-/*
-Read implements io.Reader. It Pop's one queued value and marshals it through the
-bound artifact.
-*/
-func (ring *SPSCRing[T]) Read(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, io.EOF
-	}
-
-	if ring.Empty() {
-		return 0, io.EOF
-	}
-
-	value := ring.Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if outbound == nil {
-		return 0, errors.New("structure: SPSCRing artifact acquire failed")
-	}
-
-	if scope, scopeErr := ring.artifact.Scope(); scopeErr == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p into the bound artifact and Push'es
-the decoded value.
-*/
-func (ring *SPSCRing[T]) Write(p []byte) (int, error) {
-	if ring.artifact == nil {
-		return 0, errors.New("structure: SPSCRing has no artifact")
-	}
-
-	written, err := ring.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !ring.Push(datura.As[T](ring.artifact)) {
-		return written, errors.New("structure: SPSCRing Push failed")
-	}
-
-	return written, nil
 }
 
 /*
@@ -10431,13 +10610,12 @@ func (navigator *spscNavigator[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	sliced, err := NewSPSCRing[T](
+	sliced := NewSPSCRing[T](
 		1<<uint(bits.Len(uint(max(count, 2)))),
 		false,
-		navigator.parent.artifact,
 	)
 
-	if err != nil {
+	if sliced == nil {
 		return nil
 	}
 
@@ -10495,63 +10673,6 @@ func (navigator *spscNavigator[T]) Do(visitor func(T)) {
 
 		visitor(*value)
 	}
-}
-
-/*
-Read implements io.Reader. It reads the navigator slot through the parent
-artifact.
-*/
-func (navigator *spscNavigator[T]) Read(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, io.EOF
-	}
-
-	if navigator.Len() == 0 {
-		return 0, io.EOF
-	}
-
-	value := navigator.Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if outbound == nil {
-		return 0, errors.New("structure: spscNavigator artifact acquire failed")
-	}
-
-	if scope, scopeErr := navigator.parent.artifact.Scope(); scopeErr == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p through the parent artifact and
-stores at the navigator slot.
-*/
-func (navigator *spscNavigator[T]) Write(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, errors.New("structure: spscNavigator has no artifact")
-	}
-
-	written, err := navigator.parent.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !navigator.Push(datura.As[T](navigator.parent.artifact)) {
-		return written, errors.New("structure: spscNavigator Push failed")
-	}
-
-	return written, nil
 }
 
 /*
@@ -10707,25 +10828,22 @@ File: /transport/copier.go
 package transport
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"sync"
-
-	"github.com/smallnest/ringbuffer"
 )
 
-var copierPool = sync.Pool{
+const copyBufferSize = 32 * 1024
+
+var copyBufferPool = sync.Pool{
 	New: func() any {
-		return ringbuffer.New(32 * 1024)
+		return make([]byte, copyBufferSize)
 	},
 }
 
 func Copy(destination io.Writer, origin io.Reader) (n int64, err error) {
-	rb := copierPool.Get().(*ringbuffer.RingBuffer)
-	rb.Reset()
-
 	defer func() {
-		copierPool.Put(rb)
-
 		if stream, ok := destination.(*Stream); ok {
 			if flushErr := stream.Flush(); flushErr != nil && err == nil {
 				err = flushErr
@@ -10733,11 +10851,67 @@ func Copy(destination io.Writer, origin io.Reader) (n int64, err error) {
 		}
 	}()
 
-	if n, err = rb.Copy(destination, origin); n == 0 && err == nil {
+	frame, err := readFrame(origin)
+
+	if err != nil {
+		return 0, err
+	}
+
+	if len(frame) == 0 {
 		return 0, io.EOF
 	}
 
-	return n, err
+	written, err := destination.Write(frame)
+
+	return int64(written), err
+}
+
+func readFrame(origin io.Reader) ([]byte, error) {
+	size := copyBufferSize
+
+	for {
+		frame, err := readFrameWithBuffer(origin, size)
+
+		if errors.Is(err, io.ErrShortBuffer) {
+			size *= 2
+
+			continue
+		}
+
+		return frame, err
+	}
+}
+
+func readFrameWithBuffer(origin io.Reader, size int) ([]byte, error) {
+	var frame bytes.Buffer
+	buffer := copyBufferPool.Get().([]byte)
+	if cap(buffer) < size {
+		buffer = make([]byte, size)
+	}
+	buffer = buffer[:size]
+	defer copyBufferPool.Put(buffer[:copyBufferSize])
+
+	for {
+		read, err := origin.Read(buffer)
+
+		if errors.Is(err, io.ErrShortBuffer) {
+			return nil, err
+		}
+
+		if read > 0 {
+			frame.Write(buffer[:read])
+		}
+
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, io.EOF) {
+			return frame.Bytes(), nil
+		}
+
+		return frame.Bytes(), err
+	}
 }
 
 ---
@@ -11091,6 +11265,7 @@ type Graph struct {
 	registry  io.ReadWriteCloser
 	nodes     map[string]*Node
 	edges     map[string][]string
+	edgeOrder []Edge
 	processed bool
 }
 
@@ -11111,9 +11286,10 @@ Returns:
 */
 func NewGraph(opts ...GraphOption) *Graph {
 	graph := &Graph{
-		registry: nil,
-		nodes:    make(map[string]*Node),
-		edges:    make(map[string][]string),
+		registry:  nil,
+		nodes:     make(map[string]*Node),
+		edges:     make(map[string][]string),
+		edgeOrder: make([]Edge, 0),
 	}
 
 	for _, opt := range opts {
@@ -11140,19 +11316,19 @@ func (graph *Graph) Read(p []byte) (n int, err error) {
 	}
 
 	if !graph.processed {
-		// Process through all edges in the graph
-		for from, targets := range graph.edges {
-			if node, ok := graph.nodes[from]; ok {
-				errnie.Info("graph.Read", "from", node.ID)
-				// Copy from source node to all target nodes
-				for _, to := range targets {
-					if targetNode, ok := graph.nodes[to]; ok {
-						errnie.Info("graph.Read", "to", targetNode.ID)
-						if _, err = io.Copy(targetNode.Component, node.Component); err != nil {
-							return 0, errnie.Error(err)
-						}
-					}
-				}
+		for _, edge := range graph.edgeOrder {
+			node, hasSource := graph.nodes[edge.From]
+			targetNode, hasTarget := graph.nodes[edge.To]
+
+			if !hasSource || !hasTarget {
+				continue
+			}
+
+			errnie.Info("graph.Read", "from", node.ID)
+			errnie.Info("graph.Read", "to", targetNode.ID)
+
+			if _, err = Copy(targetNode.Component, node.Component); err != nil {
+				return 0, errnie.Error(err)
 			}
 		}
 
@@ -11237,6 +11413,7 @@ Parameters:
 func WithEdge(edge *Edge) GraphOption {
 	return func(graph *Graph) {
 		graph.edges[edge.From] = append(graph.edges[edge.From], edge.To)
+		graph.edgeOrder = append(graph.edgeOrder, *edge)
 	}
 }
 
@@ -11326,6 +11503,10 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 					return 0, io.EOF
 				}
 
+				if errors.Is(err, io.ErrShortBuffer) {
+					return 0, err
+				}
+
 				if errors.Is(err, io.ErrNoProgress) && nn == 0 {
 					pipeline.processed = false
 					return 0, io.EOF
@@ -11348,6 +11529,10 @@ func (pipeline *Pipeline) Read(p []byte) (n int, err error) {
 	if err != nil {
 		if err == io.EOF {
 			pipeline.processed = false
+			return n, err
+		}
+
+		if errors.Is(err, io.ErrShortBuffer) {
 			return n, err
 		}
 
@@ -11408,9 +11593,7 @@ import (
 )
 
 /*
-Pump is a workflow component that creates a continuous feedback loop in a pipeline.
-It reads from the pipeline's output and feeds it back into its input, creating
-an infinite processing cycle that can be stopped via the done channel.
+Pump wraps a pipeline with a cancellable ReadWriteCloser boundary.
 */
 type Pump struct {
 	ctx      context.Context
@@ -11420,50 +11603,20 @@ type Pump struct {
 
 /*
 NewPump creates a new Pump instance that wraps the provided pipeline.
-It initializes a done channel for graceful shutdown and sets up a buffer
-that continuously processes data through the pipeline using a FlipFlop pattern.
-
-Parameters:
-  - pipeline: The io.ReadWriteCloser that will be pumped in a loop
-
-Returns:
-  - *Pump: A new Pump instance ready to create a feedback loop
 */
 func NewPump(ctx context.Context, pipeline io.ReadWriteCloser) *Pump {
 	ctx, cancel := context.WithCancel(ctx)
 
-	pump := &Pump{
+	return &Pump{
 		ctx:      ctx,
 		cancel:   cancel,
 		pipeline: pipeline,
 	}
-
-	go func() {
-		defer cancel()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				NewFlipFlop(pump.pipeline, pump.pipeline)
-			}
-		}
-	}()
-
-	return pump
 }
 
 /*
 Read implements the io.Reader interface.
 It delegates the read operation to the underlying pipeline.
-
-Parameters:
-  - p: Byte slice to read data into
-
-Returns:
-  - n: Number of bytes read
-  - err: Any error that occurred during reading
 */
 func (pump *Pump) Read(p []byte) (n int, err error) {
 	return pump.pipeline.Read(p)
@@ -11472,13 +11625,6 @@ func (pump *Pump) Read(p []byte) (n int, err error) {
 /*
 Write implements the io.Writer interface.
 It delegates the write operation to the underlying pipeline.
-
-Parameters:
-  - p: Byte slice containing data to write
-
-Returns:
-  - n: Number of bytes written
-  - err: Any error that occurred during writing
 */
 func (pump *Pump) Write(p []byte) (n int, err error) {
 	return pump.pipeline.Write(p)
@@ -11486,10 +11632,6 @@ func (pump *Pump) Write(p []byte) (n int, err error) {
 
 /*
 Close implements the io.Closer interface.
-It signals shutdown via the done channel and closes the underlying pipeline.
-
-Returns:
-  - error: Any error that occurred during closure
 */
 func (pump *Pump) Close() error {
 	if pump.cancel != nil {
@@ -11578,37 +11720,33 @@ File: /transport/stream.go
 package transport
 
 import (
-	"bufio"
+	"bytes"
 	"io"
 )
 
 /*
-Stream buffers an io.ReadWriteCloser with bufio for chunked streaming.
+Stream buffers writes to an io.ReadWriteCloser until Flush.
 */
 type Stream struct {
-	buffer *bufio.ReadWriter
-	closer io.Closer
+	writer bytes.Buffer
+	closer io.ReadWriteCloser
 }
 
 /*
-NewStream wraps rwc with bufio for use in Copy, FlipFlop, Pipeline, and Number.
+NewStream wraps rwc for use in Copy, FlipFlop, Pipeline, and Number.
 */
 func NewStream(rwc io.ReadWriteCloser) *Stream {
 	return &Stream{
-		buffer: bufio.NewReadWriter(
-			bufio.NewReader(rwc),
-			bufio.NewWriter(rwc),
-		),
 		closer: rwc,
 	}
 }
 
 func (stream *Stream) Read(p []byte) (n int, err error) {
-	return stream.buffer.Read(p)
+	return stream.closer.Read(p)
 }
 
 func (stream *Stream) Write(p []byte) (n int, err error) {
-	return stream.buffer.Write(p)
+	return stream.writer.Write(p)
 }
 
 /*
@@ -11616,8 +11754,12 @@ Flush delivers buffered writes to the underlying ReadWriteCloser.
 Copy defers this so capnp frames arrive in one Write to destinations that need it.
 */
 func (stream *Stream) Flush() error {
-	if err := stream.buffer.Flush(); err != nil {
-		return err
+	if stream.writer.Len() > 0 {
+		if _, err := stream.closer.Write(stream.writer.Bytes()); err != nil {
+			return err
+		}
+
+		stream.writer.Reset()
 	}
 
 	if flusher, ok := stream.closer.(interface{ Flush() error }); ok {
@@ -11628,7 +11770,7 @@ func (stream *Stream) Flush() error {
 }
 
 func (stream *Stream) Close() error {
-	if err := stream.buffer.Flush(); err != nil {
+	if err := stream.Flush(); err != nil {
 		return err
 	}
 
@@ -11889,19 +12031,11 @@ func (artifact *Artifact) decryptPayload() ([]byte, error) {
 		return payload, nil
 	}
 
-	if len(encryptedKey) < aesKeyBytes {
-		return nil, errnie.Err(errnie.Validation, "encrypted key too short", nil)
-	}
-
-	encryptedPayload, err := artifact.Payload()
-
-	if err != nil {
-		return nil, errnie.Err(errnie.Validation, "encrypted payload unavailable", err)
-	}
-
-	cryptoSuite := NewCryptoSuite()
-
-	return cryptoSuite.DecryptPayloadDirect(nil, encryptedPayload, encryptedKey)
+	return nil, errnie.Err(
+		errnie.Validation,
+		"legacy encrypted-key payload is unsupported",
+		nil,
+	)
 }
 
 func (artifact *Artifact) DecryptPayloadWithKey(privateKey *ecdh.PrivateKey) ([]byte, error) {

@@ -173,6 +173,42 @@ func TestReplayRejectsCorruptWAL(t *testing.T) {
 			So(err, ShouldNotBeNil)
 		})
 	})
+
+	Convey("Given valid records followed by a corrupt length", t, func() {
+		tmpDir := t.TempDir()
+		store, err := NewPersistentStore(tmpDir)
+		So(err, ShouldBeNil)
+		So(store.LogInsert([]byte("live"), []byte("value"), 2, 7), ShouldBeNil)
+		So(store.Close(), ShouldBeNil)
+
+		walPath := filepath.Join(tmpDir, "wal.log")
+		complete, err := os.Stat(walPath)
+		So(err, ShouldBeNil)
+		file, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0644)
+		So(err, ShouldBeNil)
+
+		var record [25]byte
+		record[0] = opInsert
+		binary.LittleEndian.PutUint32(record[17:21], uint32(maxWALFieldBytes+1))
+		_, err = file.Write(record[:])
+		So(err, ShouldBeNil)
+		So(file.Close(), ShouldBeNil)
+
+		Convey("NewPersistentStore should preserve valid records and truncate the corrupt tail", func() {
+			reopened, err := NewPersistentStore(tmpDir)
+			So(err, ShouldBeNil)
+			defer reopened.Close()
+
+			entries, err := reopened.Replay()
+			So(err, ShouldBeNil)
+			So(len(entries), ShouldEqual, 1)
+			So(string(entries[0].Key), ShouldEqual, "live")
+
+			truncated, err := os.Stat(walPath)
+			So(err, ShouldBeNil)
+			So(truncated.Size(), ShouldEqual, complete.Size())
+		})
+	})
 }
 
 func TestCreateSnapshot(t *testing.T) {

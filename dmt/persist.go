@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/theapemachine/errnie"
 	"github.com/theapemachine/qpool"
 )
 
@@ -394,6 +395,23 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	reader := bufio.NewReader(file)
 	var entries []WALEntry
 	var offset int64
+	recoverTail := func(recordStart int64, cause error) error {
+		if len(entries) == 0 {
+			return ps.markFatal(cause)
+		}
+
+		if err := os.Truncate(ps.walPath, recordStart); err != nil {
+			return ps.markFatal(errors.Join(cause, err))
+		}
+
+		errnie.Warn(
+			"dmt: truncated corrupt WAL tail",
+			"offset", recordStart,
+			"cause", cause.Error(),
+		)
+
+		return nil
+	}
 
 	readRecordBytes := func(recordStart int64, target []byte) (bool, error) {
 		read, err := io.ReadFull(reader, target)
@@ -440,11 +458,11 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			valLen := binary.LittleEndian.Uint32(header[20:24])
 
 			if err := validateWALLength("key", keyLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			if err := validateWALLength("value", valLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			key := make([]byte, keyLen)
@@ -492,7 +510,7 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
 
 			if err := validateWALLength("key", keyLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			key := make([]byte, keyLen)
@@ -544,7 +562,10 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 		default:
-			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
+			return entries, recoverTail(
+				recordStart,
+				fmt.Errorf("invalid wal operation: %d", op),
+			)
 		}
 	}
 
