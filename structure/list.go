@@ -35,6 +35,7 @@ type ListRing[T any] struct {
 	cursor *ListRingNode[T]
 	first  *ListRingNode[T]
 	writes int
+	size   int
 }
 
 /*
@@ -61,6 +62,7 @@ func NewListRing[T any](elementCount int) *ListRing[T] {
 	return &ListRing[T]{
 		cursor: head,
 		first:  head,
+		size:   elementCount,
 	}
 }
 
@@ -77,11 +79,10 @@ func (ring *ListRing[T]) Push(value T) bool {
 		ring.first = ring.cursor
 	}
 
-	capacity := ring.Len()
 	ring.cursor.Value = value
 	ring.cursor = ring.cursor.next
 
-	if ring.writes < capacity {
+	if ring.writes < ring.size {
 		ring.writes++
 		return true
 	}
@@ -114,6 +115,7 @@ func (ring *ListRing[T]) Select(step int) Ring[T] {
 		cursor: ring.move(step),
 		first:  ring.first,
 		writes: ring.writes,
+		size:   ring.size,
 	}
 }
 
@@ -164,6 +166,12 @@ func (ring *ListRing[T]) Merge(other Ring[T]) bool {
 	}
 
 	ring.cursor.link(otherRing.cursor)
+	ring.size = ring.measure()
+	ring.writes += otherRing.writes
+
+	if ring.writes > ring.size {
+		ring.writes = ring.size
+	}
 
 	return true
 }
@@ -206,28 +214,49 @@ func (ring *ListRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	return &ListRing[T]{
+	ring.size = ring.measure()
+
+	if ring.writes > ring.size {
+		ring.writes = ring.size
+	}
+
+	removedRing := &ListRing[T]{
 		cursor: removed,
 		first:  removed,
 		writes: count,
 	}
+	removedRing.size = removedRing.measure()
+
+	if removedRing.writes > removedRing.size {
+		removedRing.writes = removedRing.size
+	}
+
+	return removedRing
 }
 
 /*
-Len returns the number of nodes in the circular list. Time is O(n).
+Len returns the retained structural node count in O(1).
 */
 func (ring *ListRing[T]) Len() int {
+	return ring.size
+}
+
+/*
+measure traverses structural links after the rare Merge and Slice operations so
+their resulting views can refresh the O(1) size retained by Len.
+*/
+func (ring *ListRing[T]) measure() int {
 	if ring.cursor.next == nil {
 		return 1
 	}
 
-	length := 1
+	size := 1
 
 	for walk := ring.cursor.next; walk != ring.cursor; walk = walk.next {
-		length++
+		size++
 	}
 
-	return length
+	return size
 }
 
 /*

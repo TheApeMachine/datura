@@ -156,3 +156,12 @@ func TestListRingImplementsRing(t *testing.T) {
 		})
 	})
 }
+
+func BenchmarkListRingPush(b *testing.B) {
+	ring := NewListRing[int](8192)
+	b.ReportAllocs()
+
+	for index := range b.N {
+		ring.Push(index)
+	}
+}
