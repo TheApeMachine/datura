@@ -158,16 +158,26 @@ func (ring *SPSCRing[T]) Rejected() uint64 {
 }
 
 /*
-Select returns an spscNavigator Ring[T] positioned step logical elements forward
-from the current dequeue edge (tail). step may be negative to walk backward in
-sequence space.
+Select returns an spscNavigator Ring[T] positioned relative to the ring's
+logical edges. Negative steps walk backward from head (the write edge),
+matching ListRing's cursor-relative contract where Select(-1) means "the most
+recent element." Non-negative steps walk forward from tail (the read edge), so
+Select(0) positions at the oldest live element.
 
 The parent SPSCRing's head and tail are not modified.
 */
 func (ring *SPSCRing[T]) Select(step int) Ring[T] {
+	var position uint64
+
+	if step < 0 {
+		position = ring.head.Load() + uint64(step)
+	} else {
+		position = ring.tail.Load() + uint64(step)
+	}
+
 	return &spscNavigator[T]{
 		parent:   ring,
-		position: ring.tail.Load() + uint64(step),
+		position: position,
 	}
 }
 
@@ -371,13 +381,14 @@ func (navigator *spscNavigator[T]) Push(value T) bool {
 }
 
 /*
-Pop loads and clears the navigator's slot without advancing parent tail.
+Pop loads the navigator's slot value without clearing it. This matches ListRing's
+Pop contract: "returns the value at the cursor without moving the cursor."
 
 Returns the zero value of T when the slot is empty.
 */
 func (navigator *spscNavigator[T]) Pop() T {
 	index := navigator.position & navigator.parent.mask
-	value := navigator.parent.slots[index].Swap(nil)
+	value := navigator.parent.slots[index].Load()
 
 	if value == nil {
 		var zero T

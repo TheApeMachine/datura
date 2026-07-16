@@ -37,15 +37,12 @@ func (clock *ClockRing[K, T]) Cut(at time.Time) (ClockCut, error) {
 		return ClockCut{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	if clock.err != nil {
 		return ClockCut{}, clock.err
 	}
 
 	return ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      at,
 	}, nil
 }
@@ -66,9 +63,6 @@ func (clock *ClockRing[K, T]) FrameThrough(
 		return ClockFrame[K, T]{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	return clock.frame(cut)
 }
 
@@ -83,25 +77,27 @@ func (clock *ClockRing[K, T]) frame(
 		return ClockFrame[K, T]{}, clock.err
 	}
 
-	if cut.Through > clock.sequence {
+	sequence := clock.sequence.Load()
+
+	if cut.Through > sequence {
 		return ClockFrame[K, T]{}, fmt.Errorf(
 			"structure: clock cut %d exceeds high-water %d",
 			cut.Through,
-			clock.sequence,
+			sequence,
 		)
 	}
 
 	frame := ClockFrame[K, T]{
 		Wall:   cut.At,
-		Tracks: make(map[K]ClockSlot[K, T], len(clock.tracks)),
+		Tracks: make(map[K]ClockSlot[K, T]),
 	}
 
-	for key, track := range clock.tracks {
+	clock.rangeTracks(func(key K, track *clockTrack[K, T]) bool {
 		slot, found := track.at(cut)
 
-		if !found && track.first <= cut.Through {
+		if !found && track.first.Load() <= cut.Through {
 			slot, found = track.at(ClockCut{
-				Through: clock.sequence,
+				Through: sequence,
 				At:      cut.At,
 			})
 		}
@@ -109,7 +105,9 @@ func (clock *ClockRing[K, T]) frame(
 		if found {
 			frame.Tracks[key] = slot
 		}
-	}
+
+		return true
+	})
 
 	return frame, nil
 }
@@ -127,18 +125,17 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		return nil, cursor, errClockNil
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	if clock.err != nil {
 		return nil, cursor, clock.err
 	}
 
-	if cut.Through > clock.sequence {
+	sequence := clock.sequence.Load()
+
+	if cut.Through > sequence {
 		return nil, cursor, fmt.Errorf(
 			"structure: clock cut %d exceeds high-water %d",
 			cut.Through,
-			clock.sequence,
+			sequence,
 		)
 	}
 
@@ -147,9 +144,10 @@ func (clock *ClockRing[K, T]) EventsAfter(
 	}
 
 	after := cursor.After
+	timelineSize := clock.timelineSize.Load()
 
-	if clock.timelineSize > 0 {
-		oldest := clock.sequence - uint64(clock.timelineSize) + 1
+	if timelineSize > 0 {
+		oldest := sequence - uint64(timelineSize) + 1
 
 		if after < oldest-1 {
 			after = oldest - 1
@@ -162,8 +160,8 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		capacity = int(cut.Through - after)
 	}
 
-	if capacity > clock.timelineSize {
-		capacity = clock.timelineSize
+	if int64(capacity) > timelineSize {
+		capacity = int(timelineSize)
 	}
 
 	events := make([]ClockSlot[K, T], 0, capacity)
@@ -175,12 +173,14 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		events = append(events, slot)
 	}
 
-	if clock.rewritten {
+	if clock.rewritten.Load() {
 		for _, slot := range clock.retained() {
 			appendSlot(slot)
 		}
 	} else {
-		clock.timeline.Do(appendSlot)
+		// Select(0).Do is a non-consuming, lock-free walk of the live timeline;
+		// plain Do consumes on the FIFO rings and would drain the clock.
+		clock.timeline.Select(0).Do(appendSlot)
 	}
 
 	return events, ClockCursor{After: cut.Through}, nil
@@ -191,9 +191,10 @@ retained returns the populated global timeline in ingress order while the
 caller holds a clock lock, excluding unused ring capacity and stale rewrites.
 */
 func (clock *ClockRing[K, T]) retained() []ClockSlot[K, T] {
-	slots := make([]ClockSlot[K, T], 0, clock.timelineSize)
+	timelineSize := int(clock.timelineSize.Load())
+	slots := make([]ClockSlot[K, T], 0, timelineSize)
 
-	for step := clock.timelineSize; step >= 1; step-- {
+	for step := timelineSize; step >= 1; step-- {
 		slots = append(slots, clock.timeline.Select(-step).Pop())
 	}
 

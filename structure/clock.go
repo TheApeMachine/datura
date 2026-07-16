@@ -3,6 +3,7 @@ package structure
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,15 +33,40 @@ ClockRing is a bounded observation timeline with independently paced item
 tracks. It implements Ring itself while Frame provides aligned event-time reads.
 */
 type ClockRing[K comparable, T any] struct {
-	access       sync.RWMutex
-	timeline     Ring[ClockSlot[K, T]]
-	newTrack     func() Ring[ClockSlot[K, T]]
-	tracks       map[K]*clockTrack[K, T]
+	timeline Ring[ClockSlot[K, T]]
+	newTrack func() Ring[ClockSlot[K, T]]
+	// tracks maps each key to its bounded history. Keys are added once, when a
+	// key first appears, then only read; sync.Map is the accepted concurrent map
+	// for that add-once/read-many pattern and removes the map read/write race.
+	tracks       sync.Map
 	err          error
-	sequence     uint64
-	timelineSize int
-	rewritten    bool
+	sequence     atomic.Uint64
+	timelineSize atomic.Int64
+	rewritten    atomic.Bool
 	timelineOpen bool
+}
+
+/*
+track loads one registered track, or nil when the key is not yet registered.
+*/
+func (clock *ClockRing[K, T]) track(key K) *clockTrack[K, T] {
+	value, ok := clock.tracks.Load(key)
+
+	if !ok {
+		return nil
+	}
+
+	return value.(*clockTrack[K, T])
+}
+
+/*
+rangeTracks visits every registered track. Order is unspecified, matching the
+prior map iteration contract.
+*/
+func (clock *ClockRing[K, T]) rangeTracks(visit func(key K, track *clockTrack[K, T]) bool) {
+	clock.tracks.Range(func(rawKey, rawValue any) bool {
+		return visit(rawKey.(K), rawValue.(*clockTrack[K, T]))
+	})
 }
 
 /*
@@ -60,8 +86,7 @@ func NewClockRing[K comparable, T any](
 	}
 
 	return &ClockRing[K, T]{
-		timeline: timeline, newTrack: newTrack,
-		tracks: make(map[K]*clockTrack[K, T]), timelineOpen: true,
+		timeline: timeline, newTrack: newTrack, timelineOpen: true,
 	}, nil
 }
 
@@ -96,9 +121,6 @@ func (clock *ClockRing[K, T]) Push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
-
 	return clock.push(slot)
 }
 
@@ -116,23 +138,21 @@ func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	if err := clock.register(slot.Track); err != nil {
+	track, err := clock.registerTrack(slot.Track)
+
+	if err != nil {
 		clock.err = err
 		return false
 	}
 
-	track := clock.tracks[slot.Track]
-
 	if slot.Sequence == 0 {
-		track.sequence++
-		slot.Sequence = track.sequence
+		slot.Sequence = track.sequence.Add(1)
 	}
 
-	clock.sequence++
-	slot.IngestSequence = clock.sequence
+	slot.IngestSequence = clock.sequence.Add(1)
 
-	if track.first == 0 {
-		track.first = slot.IngestSequence
+	if track.first.Load() == 0 {
+		track.first.Store(slot.IngestSequence)
 	}
 
 	if !clock.timeline.Push(slot) || !track.values.Push(slot) {
@@ -142,24 +162,24 @@ func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	if slot.Sequence > track.sequence {
-		track.sequence = slot.Sequence
+	if slot.Sequence > track.sequence.Load() {
+		track.sequence.Store(slot.Sequence)
 	}
 
-	if slot.Wall.After(track.latest) {
-		track.latest = slot.Wall
+	if slot.Wall.After(track.latestWall()) {
+		track.storeLatest(slot.Wall)
 	}
 
-	track.count++
+	trackCount := track.count.Add(1)
 
-	if capacity := track.values.Len(); track.count > capacity {
-		track.count = capacity
+	if capacity := int64(track.values.Len()); trackCount > capacity {
+		track.count.Store(capacity)
 	}
 
-	clock.timelineSize++
+	timelineSize := clock.timelineSize.Add(1)
 
-	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
-		clock.timelineSize = capacity
+	if capacity := int64(clock.timeline.Len()); timelineSize > capacity {
+		clock.timelineSize.Store(capacity)
 	}
 
 	return true
@@ -172,9 +192,6 @@ func (clock *ClockRing[K, T]) Pop() ClockSlot[K, T] {
 	if clock == nil || clock.timeline == nil {
 		return ClockSlot[K, T]{}
 	}
-
-	clock.access.RLock()
-	defer clock.access.RUnlock()
 
 	return clock.timeline.Select(-1).Pop()
 }
@@ -205,17 +222,22 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		return false
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
-	otherClock.access.Lock()
-	defer otherClock.access.Unlock()
+	disjoint := true
 
-	for key := range otherClock.tracks {
-		if clock.tracks[key] != nil {
+	otherClock.rangeTracks(func(key K, _ *clockTrack[K, T]) bool {
+		if clock.track(key) != nil {
+			disjoint = false
 			return false
 		}
+
+		return true
+	})
+
+	if !disjoint {
+		return false
 	}
-	leftSequence := clock.sequence
+
+	leftSequence := clock.sequence.Load()
 	leftSlots := clock.retained()
 	rightSlots := otherClock.retained()
 
@@ -223,9 +245,13 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		rightSlots[index].IngestSequence += leftSequence
 	}
 
+	// Merge grows the underlying SPSC ring to hold both timelines, then drain
+	// the stale (un-resequenced) items so the re-push below lands cleanly.
 	if !clock.timeline.Merge(otherClock.timeline) {
 		return false
 	}
+
+	clock.timeline.Do(func(ClockSlot[K, T]) {})
 
 	for _, slot := range append(leftSlots, rightSlots...) {
 		if !clock.timeline.Push(slot) {
@@ -234,17 +260,18 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		}
 	}
 
-	for key, incoming := range otherClock.tracks {
+	otherClock.rangeTracks(func(key K, incoming *clockTrack[K, T]) bool {
 		incoming.resequence(leftSequence)
-		clock.tracks[key] = incoming
-	}
+		clock.tracks.Store(key, incoming)
+		return true
+	})
 
-	clock.sequence += otherClock.sequence
-	clock.timelineSize += otherClock.timelineSize
-	clock.rewritten = true
+	clock.sequence.Store(leftSequence + otherClock.sequence.Load())
+	clock.timelineSize.Store(clock.timelineSize.Load() + otherClock.timelineSize.Load())
+	clock.rewritten.Store(true)
 
-	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
-		clock.timelineSize = capacity
+	if capacity := int64(clock.timeline.Len()); clock.timelineSize.Load() > capacity {
+		clock.timelineSize.Store(capacity)
 	}
 
 	return true
@@ -257,9 +284,6 @@ func (clock *ClockRing[K, T]) Slice(count int) Ring[ClockSlot[K, T]] {
 	if clock == nil || clock.timeline == nil {
 		return nil
 	}
-
-	clock.access.Lock()
-	defer clock.access.Unlock()
 
 	return clock.timeline.Slice(count)
 }
@@ -283,9 +307,6 @@ func (clock *ClockRing[K, T]) Do(visitor func(ClockSlot[K, T])) {
 		return
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	clock.timeline.Do(visitor)
 }
 
@@ -296,9 +317,6 @@ func (clock *ClockRing[K, T]) Error() error {
 	if clock == nil {
 		return errClockNil
 	}
-
-	clock.access.RLock()
-	defer clock.access.RUnlock()
 
 	if clock.err != nil {
 		return clock.err
@@ -315,13 +333,19 @@ func (clock *ClockRing[K, T]) Close() error {
 		return errClockNil
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
+	var closeErr error
 
-	for _, track := range clock.tracks {
+	clock.rangeTracks(func(_ K, track *clockTrack[K, T]) bool {
 		if err := track.values.Close(); err != nil {
-			return err
+			closeErr = err
+			return false
 		}
+
+		return true
+	})
+
+	if closeErr != nil {
+		return closeErr
 	}
 
 	if !clock.timelineOpen {

@@ -1,6 +1,9 @@
 package structure
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 /*
 ClockFrame is an event-time cut across the clock's populated item tracks. Every
@@ -13,13 +16,38 @@ type ClockFrame[K comparable, T any] struct {
 
 /*
 clockTrack owns one bounded item history through the shared Ring interface.
+Scalar fields are atomic because the single producer mutates them in push while
+concurrent readers observe them in at, Aligned, and Frame.
 */
 type clockTrack[K comparable, T any] struct {
-	values   Ring[ClockSlot[K, T]]
-	count    int
-	sequence uint64
-	first    uint64
-	latest   time.Time
+	values      Ring[ClockSlot[K, T]]
+	count       atomic.Int64
+	sequence    atomic.Uint64
+	first       atomic.Uint64
+	latestUnix  atomic.Int64
+	latestNanos atomic.Int64
+}
+
+/*
+latestWall returns the track's newest observed wall time as one value.
+*/
+func (track *clockTrack[K, T]) latestWall() time.Time {
+	seconds := track.latestUnix.Load()
+	nanos := track.latestNanos.Load()
+
+	if seconds == 0 && nanos == 0 {
+		return time.Time{}
+	}
+
+	return time.Unix(seconds, nanos).UTC()
+}
+
+/*
+storeLatest publishes a newer wall time for this track.
+*/
+func (track *clockTrack[K, T]) storeLatest(wall time.Time) {
+	track.latestUnix.Store(wall.Unix())
+	track.latestNanos.Store(int64(wall.Nanosecond()))
 }
 
 /*
@@ -30,31 +58,30 @@ func (clock *ClockRing[K, T]) Register(key K) error {
 		return errClockNil
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
+	_, err := clock.registerTrack(key)
 
-	return clock.register(key)
+	return err
 }
 
 /*
-register creates a track while the caller holds the clock lock so observation
-and explicit registration share one allocation path.
+registerTrack returns the track for key, allocating it once on first appearance.
+Concurrent producers cannot occur per the single-producer contract, but
+LoadOrStore keeps the add-once semantics exact under sync.Map.
 */
-func (clock *ClockRing[K, T]) register(key K) error {
-
-	if clock.tracks[key] != nil {
-		return nil
+func (clock *ClockRing[K, T]) registerTrack(key K) (*clockTrack[K, T], error) {
+	if existing := clock.track(key); existing != nil {
+		return existing, nil
 	}
 
 	values := clock.newTrack()
 
 	if values == nil {
-		return errClockTrack
+		return nil, errClockTrack
 	}
 
-	clock.tracks[key] = &clockTrack[K, T]{values: values}
+	actual, _ := clock.tracks.LoadOrStore(key, &clockTrack[K, T]{values: values})
 
-	return nil
+	return actual.(*clockTrack[K, T]), nil
 }
 
 /*
@@ -72,11 +99,8 @@ func (clock *ClockRing[K, T]) Frame(
 		return ClockFrame[K, T]{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	return clock.frame(ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      wall,
 	})
 }
@@ -90,25 +114,26 @@ func (clock *ClockRing[K, T]) Aligned() (ClockFrame[K, T], error) {
 		return ClockFrame[K, T]{}, errClockNil
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	watermark := time.Time{}
 
-	for _, track := range clock.tracks {
-		if track.count == 0 || (!watermark.IsZero() && !track.latest.Before(watermark)) {
-			continue
+	clock.rangeTracks(func(_ K, track *clockTrack[K, T]) bool {
+		latest := track.latestWall()
+
+		if track.count.Load() == 0 ||
+			(!watermark.IsZero() && !latest.Before(watermark)) {
+			return true
 		}
 
-		watermark = track.latest
-	}
+		watermark = latest
+		return true
+	})
 
 	if watermark.IsZero() {
 		return ClockFrame[K, T]{}, errClockEmpty
 	}
 
 	return clock.frame(ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      watermark,
 	})
 }
@@ -121,22 +146,24 @@ func (clock *ClockRing[K, T]) Track(key K) (Ring[ClockSlot[K, T]], bool) {
 		return nil, false
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
+	track := clock.track(key)
 
-	if clock.tracks[key] == nil {
+	if track == nil {
 		return nil, false
 	}
 
-	return clock.tracks[key].values, true
+	return track.values, true
 }
 
 func (track *clockTrack[K, T]) at(cut ClockCut) (ClockSlot[K, T], bool) {
 	selected := ClockSlot[K, T]{}
 	found := false
+	first := track.first.Load()
 
-	track.values.Do(func(slot ClockSlot[K, T]) {
-		if slot.IngestSequence < track.first ||
+	// Select(0).Do is a non-consuming, lock-free walk; plain Do consumes on the
+	// FIFO rings and would drain the track.
+	track.values.Select(0).Do(func(slot ClockSlot[K, T]) {
+		if slot.IngestSequence < first ||
 			slot.IngestSequence > cut.Through || slot.Wall.After(cut.At) {
 			return
 		}
@@ -162,10 +189,11 @@ resequence offsets retained ingress identities after two disjoint clocks merge,
 while preserving track-local sequence and event-time order.
 */
 func (track *clockTrack[K, T]) resequence(offset uint64) {
-	slots := make([]ClockSlot[K, T], 0, track.count)
+	count := int(track.count.Load())
+	slots := make([]ClockSlot[K, T], 0, count)
 
-	for step := track.count; step >= 1; step-- {
-		slot := track.values.Select(-step).Pop()
+	for range count {
+		slot := track.values.Pop()
 		slot.IngestSequence += offset
 		slots = append(slots, slot)
 	}
@@ -174,5 +202,5 @@ func (track *clockTrack[K, T]) resequence(offset uint64) {
 		track.values.Push(slot)
 	}
 
-	track.first += offset
+	track.first.Store(track.first.Load() + offset)
 }

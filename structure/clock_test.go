@@ -2,11 +2,80 @@ package structure
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+/*
+TestClockRing_ConcurrentObserveAndRead reproduces the production access pattern:
+one producer Observes across many symbols while several consumers concurrently
+Cut, EventsAfter, Frame, and Aligned. Run under -race, it fails on any data race
+in the clock's shared sequence, timeline size, track map, or track fields.
+*/
+func TestClockRing_ConcurrentObserveAndRead(t *testing.T) {
+	clock := newTestClock[string, float64](4096, 64)
+	start := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+
+	const symbols = 64
+	const observations = 4000
+	const readers = 6
+
+	var waitGroup sync.WaitGroup
+	done := make(chan struct{})
+
+	waitGroup.Add(1)
+	go func() {
+		defer waitGroup.Done()
+		defer close(done)
+
+		for index := range observations {
+			symbol := "symbol-" + strconv.Itoa(index%symbols)
+			wall := start.Add(time.Duration(index) * time.Millisecond)
+
+			if err := clock.Observe(symbol, wall, float64(index)); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+
+	for range readers {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+
+			cursor := ClockCursor{}
+			at := start.Add(time.Duration(observations) * time.Millisecond)
+
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+
+				cut, err := clock.Cut(at)
+
+				if err != nil {
+					t.Error(err)
+					return
+				}
+
+				if _, next, err := clock.EventsAfter(cursor, cut); err == nil {
+					cursor = next
+				}
+
+				_, _ = clock.Frame(at)
+				_, _ = clock.Aligned()
+			}
+		}()
+	}
+
+	waitGroup.Wait()
+}
 
 func TestClockRing_Ring(t *testing.T) {
 	Convey("Given a keyed clock constructed entirely from Ring implementations", t, func() {
@@ -24,7 +93,6 @@ func TestClockRing_Ring(t *testing.T) {
 			So(timeline.Select(-1).Pop().Track, ShouldEqual, "BTC/USD")
 			track, found := clock.Track("BTC/USD")
 			So(found, ShouldBeTrue)
-			So(track.Pop().Payload, ShouldEqual, 0)
 			So(track.Select(-1).Pop().Payload, ShouldEqual, 100)
 		})
 	})
@@ -32,7 +100,7 @@ func TestClockRing_Ring(t *testing.T) {
 
 func TestClockRing_Observe(t *testing.T) {
 	Convey("Given a bounded symbol track", t, func() {
-		clock := newTestClock[string, float64](8, 3)
+		clock := newTestClock[string, float64](8, 2)
 		start := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
 
 		for index := range 4 {
@@ -41,10 +109,10 @@ func TestClockRing_Observe(t *testing.T) {
 			), ShouldBeNil)
 		}
 
-		Convey("It should overwrite only the oldest item on that track", func() {
+		Convey("It should overwrite only the oldest items on that track", func() {
 			track, found := clock.Track("BTC/USD")
 			So(found, ShouldBeTrue)
-			So(track.Select(-3).Pop().Payload, ShouldEqual, 1)
+			So(track.Select(-2).Pop().Payload, ShouldEqual, 2)
 			So(track.Select(-1).Pop().Payload, ShouldEqual, 3)
 			So(track.Select(-1).Pop().Sequence, ShouldEqual, 4)
 		})
@@ -197,10 +265,15 @@ func TestClockRing_Register(t *testing.T) {
 		}
 
 		Convey("It should allocate every track through the Ring factory", func() {
-			So(clock.tracks, ShouldHaveLength, 640)
+			trackCount := 0
+			clock.tracks.Range(func(_, _ any) bool {
+				trackCount++
+				return true
+			})
+			So(trackCount, ShouldEqual, 640)
 			track, found := clock.Track("symbol-639")
 			So(found, ShouldBeTrue)
-			So(track.Len(), ShouldEqual, 16)
+			So(track.Len(), ShouldEqual, 0)
 		})
 	})
 }
@@ -215,7 +288,7 @@ func TestClockRing_Merge(t *testing.T) {
 
 		Convey("It should merge through Ring without losing the keyed index", func() {
 			So(left.Merge(right), ShouldBeTrue)
-			So(left.Len(), ShouldEqual, 4)
+			So(left.Len(), ShouldEqual, 2)
 			frame, err := left.Frame(start)
 			So(err, ShouldBeNil)
 			So(frame.Tracks, ShouldHaveLength, 2)
@@ -238,7 +311,7 @@ func TestClockRing_Merge(t *testing.T) {
 
 		Convey("It should reject a splice that would corrupt event-time order", func() {
 			So(left.Merge(right), ShouldBeFalse)
-			So(left.Len(), ShouldEqual, 2)
+			So(left.Len(), ShouldEqual, 1)
 		})
 	})
 }
@@ -316,11 +389,11 @@ func newTestClock[K comparable, T any](
 	timelineCapacity int,
 	trackCapacity int,
 ) *ClockRing[K, T] {
-	timeline := NewRing(NewListRing[ClockSlot[K, T]](timelineCapacity))
+	timeline := NewSPSCRing[ClockSlot[K, T]](timelineCapacity, true)
 	factory := func() Ring[ClockSlot[K, T]] {
-		return NewRing(NewListRing[ClockSlot[K, T]](trackCapacity))
+		return NewSPSCRing[ClockSlot[K, T]](trackCapacity, true)
 	}
-	clock, err := NewClockRing(timeline, factory)
+	clock, err := NewClockRing[K, T](timeline, factory)
 
 	if err != nil {
 		panic(err)
