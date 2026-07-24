@@ -16,10 +16,12 @@ type ContrastiveEvidence struct {
 
 /*
 AnalogyMatch is the closest topological sibling for an unknown key.
+Truncated is true when the scan stopped early under a capacity limit.
 */
 type AnalogyMatch struct {
 	ClosestKey []byte
 	Score      int
+	Truncated  bool
 }
 
 /*
@@ -148,16 +150,54 @@ func (tree *Tree) MeasureBranchAmbiguity(prefix []byte) AmbiguityState {
 }
 
 /*
-FindStructuralAnalog scans keys for the longest shared prefix with unknownKey.
+FindStructuralAnalog scans keys within the unknown key's namespace prefix for the
+longest shared prefix. Truncation is reported when the candidate cap is hit.
 */
 func (tree *Tree) FindStructuralAnalog(unknownKey []byte) (AnalogyMatch, bool) {
-	root := tree.loadRoot()
-	iterator := root.Root().Iterator()
-
+	candidates, indexTruncated := tree.collectAnalogCandidates(unknownKey)
 	bestMatch := AnalogyMatch{Score: -1}
 	minimumScore := analogMinimumScore(unknownKey)
 
+	if len(candidates) > 0 {
+		for _, candidate := range candidates {
+			matchLength := sharedPrefixLength(candidate, unknownKey)
+
+			if matchLength <= bestMatch.Score {
+				continue
+			}
+
+			bestMatch.Score = matchLength
+			bestMatch.ClosestKey = append(bestMatch.ClosestKey[:0], candidate...)
+		}
+
+		bestMatch.Truncated = indexTruncated
+
+		if bestMatch.Score >= minimumScore {
+			return bestMatch, true
+		}
+	}
+
+	root := tree.loadRoot()
+	iterator := root.Root().Iterator()
+
+	namespace := namespacePrefixOf(unknownKey)
+	iterator.SeekPrefix(namespace)
+
+	const candidateCap = 4096
+	examined := 0
+
 	for key, _, ok := iterator.Next(); ok; key, _, ok = iterator.Next() {
+		if len(namespace) > 0 && !bytes.HasPrefix(key, namespace) {
+			break
+		}
+
+		examined++
+
+		if examined > candidateCap {
+			bestMatch.Truncated = true
+			break
+		}
+
 		matchLength := sharedPrefixLength(key, unknownKey)
 
 		if matchLength <= bestMatch.Score {
@@ -169,10 +209,20 @@ func (tree *Tree) FindStructuralAnalog(unknownKey []byte) (AnalogyMatch, bool) {
 	}
 
 	if bestMatch.Score < minimumScore {
-		return AnalogyMatch{}, false
+		return AnalogyMatch{Truncated: bestMatch.Truncated}, false
 	}
 
 	return bestMatch, true
+}
+
+func namespacePrefixOf(key []byte) []byte {
+	index := bytes.IndexByte(key, '/')
+
+	if index <= 0 {
+		return nil
+	}
+
+	return key[:index+1]
 }
 
 /*
@@ -185,6 +235,7 @@ func (tree *Tree) CompareSensoryBranches(leftPrefix, rightPrefix []byte) float64
 /*
 ExecuteDecayConsolidation degrades stale namespace weights and prunes dead branches.
 Preserved sequences skip decay so freshly replayed REM paths are retained.
+When observedAt is non-zero, decay follows elapsed event time instead of a ratio.
 */
 func (tree *Tree) ExecuteDecayConsolidation(
 	namespacePrefix []byte,
@@ -195,46 +246,118 @@ func (tree *Tree) ExecuteDecayConsolidation(
 		return
 	}
 
+	tree.applyDecayConsolidation(
+		namespacePrefix,
+		decayFactor,
+		0,
+		countNamespaceEntries(tree, namespacePrefix),
+		preservedSequences...,
+	)
+}
+
+/*
+applyDecayConsolidation streams namespace rewrites in persistence-quantum batches
+and compacts via one forced snapshot. Logging every decayed key into the WAL
+materializes the full sensory namespace twice and is what froze long REM runs.
+*/
+func (tree *Tree) applyDecayConsolidation(
+	namespacePrefix []byte,
+	decayFactor float64,
+	observedAt uint64,
+	namespaceEntries int,
+	preservedSequences ...[]byte,
+) {
+	if tree == nil || namespaceEntries <= 0 {
+		return
+	}
+
+	if decayFactor <= 0 && observedAt == 0 {
+		return
+	}
+
 	oldRoot := tree.loadRoot()
 	iterator := oldRoot.Root().Iterator()
 	iterator.SeekPrefix(namespacePrefix)
 
-	namespaceEntries := countNamespaceEntries(tree, namespacePrefix)
+	preserved := make(map[string]struct{}, len(preservedSequences))
 
-	iterator = oldRoot.Root().Iterator()
-	iterator.SeekPrefix(namespacePrefix)
+	for _, sequence := range preservedSequences {
+		preserved[string(sequence)] = struct{}{}
+	}
 
-	mutations := make([]decayMutation, 0, namespaceEntries)
+	batchLimit := tree.decayBatchLimit()
+	batch := make([]decayMutation, 0, batchLimit)
+	mutated := false
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		tree.commitDecayMutations(batch)
+		mutated = true
+		batch = batch[:0]
+	}
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, namespacePrefix) {
 			break
 		}
 
-		if sensoryKeyPreserved(key, preservedSequences) {
+		if sensoryKeyPreservedSet(key, preserved) {
 			continue
 		}
 
 		weight := UnmarshalCognitive(value)
-		weight.Probability *= decayFactor
+
+		if observedAt > 0 {
+			weight.Probability *= eventTimeDecayMultiplier(
+				weight.LastObserved,
+				observedAt,
+				weight.Count,
+				namespaceEntries,
+			)
+		} else {
+			weight.Probability *= decayFactor
+		}
+
 		entryPruneThreshold := pruneProbabilityThreshold(namespaceEntries, weight)
 
 		if weight.Probability < entryPruneThreshold {
-			mutations = append(mutations, decayMutation{
+			batch = append(batch, decayMutation{
 				key:    append([]byte(nil), key...),
 				delete: true,
 			})
-
-			continue
+		} else {
+			batch = append(batch, decayMutation{
+				key:   append([]byte(nil), key...),
+				value: MarshalCognitive(weight),
+			})
 		}
 
-		mutations = append(mutations, decayMutation{
-			key:   append([]byte(nil), key...),
-			value: MarshalCognitive(weight),
-		})
+		if len(batch) >= batchLimit {
+			flush()
+		}
 	}
 
-	tree.commitDecayMutations(mutations)
+	flush()
+
+	if mutated {
+		tree.invalidateDerivedIndexes(namespacePrefix)
+		_ = tree.SaveSnapshotForced()
+	}
+}
+
+/*
+decayBatchLimit follows the persistent store's snapshot quantum so REM decay
+never holds a full-namespace mutation list in memory.
+*/
+func (tree *Tree) decayBatchLimit() int {
+	if tree != nil && tree.persist != nil && tree.persist.snapCount > 0 {
+		return int(tree.persist.snapCount)
+	}
+
+	return 1000
 }
 
 func (tree *Tree) commitDecayMutations(mutations []decayMutation) {
@@ -259,33 +382,32 @@ func (tree *Tree) commitDecayMutations(mutations []decayMutation) {
 		newRoot := transaction.Commit()
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
-			tree.logDecayMutations(mutations)
-
 			return
 		}
 	}
 }
 
-func (tree *Tree) logDecayMutations(mutations []decayMutation) {
-	if tree.persist == nil {
+/*
+invalidateDerivedIndexes drops namespace-scoped child indexes after bulk decay.
+Analog indexes are rebuilt lazily on the next insert.
+*/
+func (tree *Tree) invalidateDerivedIndexes(namespacePrefix []byte) {
+	if tree == nil || len(namespacePrefix) == 0 {
 		return
 	}
 
-	term, index := tree.GetLogState()
+	indexPrefix := append([]byte(childIndexNamespace), namespacePrefix...)
+	keysToDelete := make([][]byte, 0)
 
-	for _, mutation := range mutations {
-		index++
+	tree.WalkPrefix(indexPrefix, func(key, value []byte) bool {
+		keysToDelete = append(keysToDelete, append([]byte(nil), key...))
 
-		if mutation.delete {
-			_ = tree.persist.LogDelete(mutation.key, term, index)
+		return true
+	})
 
-			continue
-		}
-
-		_ = tree.persist.LogInsert(mutation.key, mutation.value, term, index)
+	for _, key := range keysToDelete {
+		tree.deleteEphemeral(key)
 	}
-
-	tree.logIndex.Store(index)
 }
 
 func countNamespaceEntries(tree *Tree, namespacePrefix []byte) int {
@@ -361,40 +483,34 @@ func sharedPrefixLength(leftKey, rightKey []byte) int {
 	return matchLength
 }
 
-func deriveDecayFactor(replayedObservations, namespaceEntries uint64) float64 {
-	denominator := replayedObservations + namespaceEntries
-
-	if denominator == 0 {
+/*
+eventTimeDecayMultiplier scales probability by elapsed event time relative to the
+observation's own count mass and the active namespace size.
+*/
+func eventTimeDecayMultiplier(
+	lastObserved, observedAt uint64,
+	observationCount uint64,
+	namespaceEntries int,
+) float64 {
+	if observedAt <= lastObserved {
 		return 1.0
 	}
 
-	return float64(replayedObservations) / float64(denominator)
+	elapsed := float64(observedAt - lastObserved)
+	scale := float64(observationCount) + float64(namespaceEntries) + 1.0
+
+	return scale / (scale + elapsed)
 }
 
-func sensoryKeyPreserved(storageKey []byte, preservedSequences [][]byte) bool {
+func sensoryKeyPreservedSet(storageKey []byte, preserved map[string]struct{}) bool {
 	sequence, mapped := sequenceFromSensoryKey(storageKey)
 
 	if !mapped {
 		return false
 	}
 
-	for _, preservedSequence := range preservedSequences {
-		if bytes.Equal(sequence, preservedSequence) {
-			return true
-		}
-
-		if bytes.HasPrefix(preservedSequence, sequence) {
-			if len(preservedSequence) == len(sequence) {
-				return true
-			}
-
-			if preservedSequence[len(sequence)] == '_' {
-				return true
-			}
-		}
-	}
-
-	return false
+	_, ok := preserved[string(sequence)]
+	return ok
 }
 
 func sensoryPrefixPaths(sequence []byte) [][]byte {
@@ -434,7 +550,7 @@ func tokenSequenceSimilarity(leftSequence, rightSequence []byte) float64 {
 	sharedDepth := 0
 	pairCount := min(len(leftTokens), len(rightTokens))
 
-	for index := 0; index < pairCount; index++ {
+	for index := range pairCount {
 		if !bytes.Equal(leftTokens[index], rightTokens[index]) {
 			break
 		}

@@ -12,7 +12,8 @@ import (
 func TestForest(t *testing.T) {
 	Convey("Given a newly initialized Forest Server", t, func() {
 		ctx := context.Background()
-		server := NewForestServer(WithContext(ctx))
+		server, err := NewForestServer(WithContext(ctx))
+		So(err, ShouldBeNil)
 		client := Server_ServerToClient(server)
 		defer client.Release()
 
@@ -69,7 +70,10 @@ func TestForest(t *testing.T) {
 
 func BenchmarkForestWrite(b *testing.B) {
 	ctx := context.Background()
-	server := NewForestServer(WithContext(ctx))
+	server, err := NewForestServer(WithContext(ctx))
+	if err != nil {
+		b.Fatal(err)
+	}
 	client := Server_ServerToClient(server)
 	defer client.Release()
 
@@ -94,7 +98,10 @@ func BenchmarkForestWrite(b *testing.B) {
 
 func BenchmarkForestLookup(b *testing.B) {
 	ctx := context.Background()
-	server := NewForestServer(WithContext(ctx))
+	server, err := NewForestServer(WithContext(ctx))
+	if err != nil {
+		b.Fatal(err)
+	}
 	client := Server_ServerToClient(server)
 	defer client.Release()
 

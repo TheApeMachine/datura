@@ -44,18 +44,27 @@ func TestSPSCRingPush(t *testing.T) {
 
 		var first, second, third spscFrame
 
-		Convey("Pop on empty returns zero before any Push", func() {
-			So(ring.Pop(), ShouldBeNil)
+		Convey("Pop on empty returns ok false before any Push", func() {
+			value, ok := ring.Pop()
+			So(ok, ShouldBeFalse)
+			So(value, ShouldBeNil)
 		})
 
 		Convey("FIFO order holds for sequential Push then Pop", func() {
 			So(ring.Push(&first), ShouldBeTrue)
 			So(ring.Push(&second), ShouldBeTrue)
 			So(ring.Push(&third), ShouldBeTrue)
-			So(ring.Pop(), ShouldEqual, &first)
-			So(ring.Pop(), ShouldEqual, &second)
-			So(ring.Pop(), ShouldEqual, &third)
-			So(ring.Pop(), ShouldBeNil)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &first)
+			value, ok = ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &second)
+			value, ok = ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &third)
+			_, ok = ring.Pop()
+			So(ok, ShouldBeFalse)
 		})
 	})
 
@@ -67,7 +76,9 @@ func TestSPSCRingPush(t *testing.T) {
 		Convey("Push should evict the oldest value when full", func() {
 			So(ring.Push(&first), ShouldBeTrue)
 			So(ring.Push(&second), ShouldBeTrue)
-			So(ring.Pop(), ShouldEqual, &second)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &second)
 			So(ring.Dropped(), ShouldEqual, 1)
 			So(ring.Rejected(), ShouldEqual, 0)
 		})
@@ -89,7 +100,9 @@ func TestSPSCRingPush(t *testing.T) {
 			So(ring.Push(&first), ShouldBeTrue)
 			So(ring.Push(&second), ShouldBeTrue)
 			So(ring.Push(&third), ShouldBeFalse)
-			So(ring.Pop(), ShouldEqual, &first)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &first)
 			So(ring.Push(&third), ShouldBeTrue)
 		})
 	})
@@ -104,10 +117,14 @@ func TestSPSCRingClose(t *testing.T) {
 		So(ring.Push(&first), ShouldBeTrue)
 		So(ring.Push(&second), ShouldBeTrue)
 
-		Convey("Close should drain all queued values", func() {
+		Convey("Close should drain, mark closed, and reject further Push", func() {
 			So(ring.Close(), ShouldBeNil)
-			So(ring.Pop(), ShouldBeNil)
+			So(ring.Closed(), ShouldBeTrue)
+			_, ok := ring.Pop()
+			So(ok, ShouldBeFalse)
 			So(ring.Len(), ShouldEqual, 0)
+			var third spscFrame
+			So(ring.Push(&third), ShouldBeFalse)
 		})
 	})
 }
@@ -125,7 +142,9 @@ func TestSPSCRingSelectMergeSlice(t *testing.T) {
 			selected := ring.Select(1)
 
 			So(selected, ShouldNotBeNil)
-			So(selected.Pop(), ShouldEqual, &second)
+			value, ok := selected.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &second)
 		})
 
 		Convey("Slice should detach queued values into a new ring", func() {
@@ -175,7 +194,10 @@ func BenchmarkSPSCRingPush(b *testing.B) {
 		for !ring.Push(&blob) {
 		}
 
-		for ring.Pop() == nil {
+		for {
+			if _, ok := ring.Pop(); ok {
+				break
+			}
 		}
 	}
 }

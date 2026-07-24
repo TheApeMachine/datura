@@ -12,7 +12,8 @@ import (
 
 func TestDelete(t *testing.T) {
 	Convey("Given a new tree with some keys", t, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		tree.Insert([]byte("key1"), []byte("val1"))
 		tree.Insert([]byte("key2"), []byte("val2"))
 
@@ -44,8 +45,8 @@ func TestDelete(t *testing.T) {
 
 func TestNewTree(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a new tree is created", func() {
 			So(tree, ShouldNotBeNil)
 		})
@@ -54,8 +55,8 @@ func TestNewTree(t *testing.T) {
 
 func TestSeek(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a seek is performed", func() {
 			artifact := datura.Acquire("test", datura.Artifact_Type_json)
 			So(artifact, ShouldNotBeNil)
@@ -82,8 +83,8 @@ func TestSeek(t *testing.T) {
 
 func TestSeekStopsAtPrefixBoundary(t *testing.T) {
 	Convey("Given adjacent timestamp prefixes", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		matching := datura.Acquire("match", datura.Artifact_Type_json)
 		defer matching.Release()
 		matching.WithPayload([]byte(`{"ok":true}`))
@@ -109,7 +110,8 @@ func TestSeekStopsAtPrefixBoundary(t *testing.T) {
 
 func TestSeekReturnsMutableArtifacts(testingTB *testing.T) {
 	Convey("Given an artifact stored in a tree", testingTB, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		artifact := datura.Acquire("test", datura.Artifact_Type_json)
 		So(artifact, ShouldNotBeNil)
 		defer artifact.Release()
@@ -138,8 +140,8 @@ func TestSeekReturnsMutableArtifacts(testingTB *testing.T) {
 
 func TestSeekSkipsInvalidArtifactValue(testingTB *testing.T) {
 	Convey("Given a tree with an invalid artifact value", testingTB, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When seeking that prefix", func() {
 			tree.Insert([]byte("instrument/snapshot"), nil)
 
@@ -156,7 +158,8 @@ func TestSeekSkipsInvalidArtifactValue(testingTB *testing.T) {
 
 func TestWalkLowerBoundScansRange(testingTB *testing.T) {
 	Convey("Given lexicographically ordered tree keys", testingTB, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		tree.Insert([]byte("001"), []byte("1"))
 		tree.Insert([]byte("002"), []byte("2"))
 		tree.Insert([]byte("005"), []byte("5"))
@@ -183,8 +186,8 @@ func TestWalkLowerBoundScansRange(testingTB *testing.T) {
 
 func TestInsert(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When an insert is performed", func() {
 			newTree, ok, err := tree.Insert([]byte("test"), []byte("test"))
 			So(err, ShouldBeNil)
@@ -201,8 +204,8 @@ func TestInsert(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a get is performed", func() {
 			tree.Insert([]byte("test"), []byte("test"))
 			value, ok := tree.Get([]byte("test"))
@@ -214,8 +217,8 @@ func TestGet(t *testing.T) {
 
 func TestAVG(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a avg is performed", func() {
 			for range 128 {
 				tree.Insert([]byte("test"), []byte("test"))
@@ -230,8 +233,8 @@ func TestAVG(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a close is performed", func() {
 			err := tree.Close()
 			So(err, ShouldBeNil)
@@ -241,8 +244,8 @@ func TestClose(t *testing.T) {
 
 func TestUpdateTerm(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a update term is performed", func() {
 			tree.UpdateTerm(1)
 			term, _ := tree.GetLogState()
@@ -253,8 +256,8 @@ func TestUpdateTerm(t *testing.T) {
 
 func TestGetLogState(t *testing.T) {
 	Convey("Given a new tree", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		Convey("When a get log state is performed", func() {
 			term, index := tree.GetLogState()
 			So(term, ShouldEqual, 0)
@@ -265,7 +268,8 @@ func TestGetLogState(t *testing.T) {
 
 func TestTreeConcurrentInsert(test *testing.T) {
 	Convey("Given concurrent writers on one tree", test, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		defer tree.Close()
 
 		var waitGroup sync.WaitGroup
@@ -292,22 +296,28 @@ func TestTreeConcurrentInsert(test *testing.T) {
 }
 
 func BenchmarkTreeInsert(b *testing.B) {
-	tree := NewTree("")
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer tree.Close()
 
 	b.ReportAllocs()
 
 	index := 0
 	for b.Loop() {
-		key := []byte(fmt.Sprintf("bench-key-%d", index))
-		value := []byte(fmt.Sprintf("bench-value-%d", index))
+		key := fmt.Appendf(nil, "bench-key-%d", index)
+		value := fmt.Appendf(nil, "bench-value-%d", index)
 		tree.Insert(key, value)
 		index++
 	}
 }
 
 func BenchmarkTreeSeek(b *testing.B) {
-	tree := NewTree("")
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer tree.Close()
 
 	artifact := datura.Acquire("bench", datura.Artifact_Type_json)
@@ -334,13 +344,16 @@ func BenchmarkTreeSeek(b *testing.B) {
 }
 
 func BenchmarkTreeGet(b *testing.B) {
-	tree := NewTree("")
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer tree.Close()
 
 	const seedCount = 4096
 	for i := 0; i < seedCount; i++ {
-		key := []byte(fmt.Sprintf("seed-key-%d", i))
-		value := []byte(fmt.Sprintf("seed-value-%d", i))
+		key := fmt.Appendf(nil, "seed-key-%d", i)
+		value := fmt.Appendf(nil, "seed-value-%d", i)
 		tree.Insert(key, value)
 	}
 
@@ -348,7 +361,7 @@ func BenchmarkTreeGet(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		key := []byte(fmt.Sprintf("seed-key-%d", index%seedCount))
+		key := fmt.Appendf(nil, "seed-key-%d", index%seedCount)
 		value, ok := tree.Get(key)
 		if !ok || len(value) == 0 {
 			b.Fatalf("missing key: %s", key)
@@ -359,7 +372,8 @@ func BenchmarkTreeGet(b *testing.B) {
 
 func TestInsertArtifact(testingTB *testing.T) {
 	Convey("Given a tree and artifact", testingTB, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		artifact := datura.Acquire("test", datura.APPJSON)
 		So(artifact, ShouldNotBeNil)
 
@@ -393,7 +407,8 @@ func TestInsertArtifact(testingTB *testing.T) {
 
 func TestInsertArtifactValidation(testingTB *testing.T) {
 	Convey("Given invalid artifact insert inputs", testingTB, func() {
-		tree := NewTree("")
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		artifact := datura.Acquire("test", datura.APPJSON).
 			WithRole("ticker").
 			WithPayload([]byte(`{"channel":"ticker"}`))
@@ -423,8 +438,8 @@ func TestInsertArtifactValidation(testingTB *testing.T) {
 
 func TestWithCognition(testingTB *testing.T) {
 	Convey("Given a trained context path", testingTB, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		_, _, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{
 			Count:       10,
 			Probability: 1.0,
@@ -454,7 +469,10 @@ func TestWithCognition(testingTB *testing.T) {
 }
 
 func BenchmarkCognitiveEngineStamp(benchmark *testing.B) {
-	tree := NewTree("")
+	tree, err := NewTree("")
+	if err != nil {
+		benchmark.Fatal(err)
+	}
 	engine := NewCognitiveEngine(tree)
 
 	_, _, _ = tree.InsertContextWeight([]byte("update"), PackedWeight{

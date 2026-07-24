@@ -30,7 +30,9 @@ func TestListRingPush(t *testing.T) {
 
 		Convey("Push should store at the cursor and advance", func() {
 			So(ring.Push(42), ShouldBeTrue)
-			So(ring.Pop(), ShouldEqual, 42)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, 42)
 		})
 	})
 

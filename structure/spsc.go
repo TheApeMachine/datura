@@ -16,8 +16,9 @@ Exactly one goroutine may Push and exactly one may Pop without external
 synchronization. head and tail are monotonic sequence counters; the physical slot
 is index = sequence & mask. Capacity must be a positive power of two.
 
-When dropOldestOnFull is true, Push evicts the oldest queued value (via Pop) when
-the ring is full instead of returning false.
+When dropOldestOnFull is true, a full Push advances an eviction cursor (tail)
+and clears the oldest slot without executing the consumer Pop path, then
+enqueues the new value.
 */
 type SPSCRing[T any] struct {
 	slots            []atomic.Pointer[T]
@@ -26,6 +27,7 @@ type SPSCRing[T any] struct {
 	tail             atomic.Uint64
 	dropped          atomic.Uint64
 	rejected         atomic.Uint64
+	closed           atomic.Bool
 	dropOldestOnFull bool
 	err              error
 }
@@ -68,25 +70,31 @@ func NewSPSCRing[T any](
 /*
 Push enqueues one value at the producer edge (head).
 
-Returns false when value is the nil sentinel for T, or the ring is full and
-dropOldestOnFull is false. The enqueue loop retries on CAS failure under
-contention between producer steps.
+Returns false when the ring is closed, or the ring is full and dropOldestOnFull
+is false. On drop-oldest overflow the producer advances the eviction cursor
+without calling Pop.
 */
 func (ring *SPSCRing[T]) Push(value T) bool {
+	if ring.closed.Load() {
+		return false
+	}
+
 	for {
 		head := ring.head.Load()
 		tail := ring.tail.Load()
 
 		if head-tail >= uint64(len(ring.slots)) {
-			if ring.dropOldestOnFull {
-				ring.Pop()
-				ring.dropped.Add(1)
+			if !ring.dropOldestOnFull {
+				ring.rejected.Add(1)
+				return false
+			}
 
+			if !ring.evictOldest(tail) {
 				continue
 			}
 
-			ring.rejected.Add(1)
-			return false
+			ring.dropped.Add(1)
+			continue
 		}
 
 		index := head & ring.mask
@@ -105,19 +113,30 @@ func (ring *SPSCRing[T]) Push(value T) bool {
 }
 
 /*
+evictOldest clears the slot at the consumer edge and advances tail. The producer
+owns this eviction path under dropOldestOnFull; it does not return the value.
+*/
+func (ring *SPSCRing[T]) evictOldest(tail uint64) bool {
+	index := tail & ring.mask
+	ring.slots[index].Store(nil)
+	return ring.tail.CompareAndSwap(tail, tail+1)
+}
+
+/*
 Pop dequeues the oldest value from the consumer edge (tail).
 
-Returns the zero value of T when the queue is empty. The dequeue
-loop retries on CAS failure when the consumer races the producer's slot publish.
+ok is false when the queue is empty. The dequeue loop retries on CAS failure when
+the consumer races the producer's slot publish or eviction.
 */
-func (ring *SPSCRing[T]) Pop() T {
+func (ring *SPSCRing[T]) Pop() (T, bool) {
+	var zero T
+
 	for {
 		tail := ring.tail.Load()
 		head := ring.head.Load()
 
 		if tail >= head {
-			var zero T
-			return zero
+			return zero, false
 		}
 
 		index := tail & ring.mask
@@ -128,7 +147,7 @@ func (ring *SPSCRing[T]) Pop() T {
 		}
 
 		if ring.tail.CompareAndSwap(tail, tail+1) {
-			return *value
+			return *value, true
 		}
 
 		ring.slots[index].Store(value)
@@ -158,50 +177,68 @@ func (ring *SPSCRing[T]) Rejected() uint64 {
 }
 
 /*
-Select returns an spscNavigator Ring[T] positioned relative to the ring's
-logical edges. Negative steps walk backward from head (the write edge),
-matching ListRing's cursor-relative contract where Select(-1) means "the most
-recent element." Non-negative steps walk forward from tail (the read edge), so
-Select(0) positions at the oldest live element.
-
-The parent SPSCRing's head and tail are not modified.
+Snapshot copies currently queued values into an OfflineRing without dequeuing.
 */
-func (ring *SPSCRing[T]) Select(step int) Ring[T] {
-	var position uint64
+func (ring *SPSCRing[T]) Snapshot() *OfflineRing[T] {
+	tail := ring.tail.Load()
+	head := ring.head.Load()
+	values := make([]T, 0, int(head-tail))
 
-	if step < 0 {
-		position = ring.head.Load() + uint64(step)
-	} else {
-		position = ring.tail.Load() + uint64(step)
+	for position := tail; position < head; position++ {
+		value := ring.slots[position&ring.mask].Load()
+
+		if value == nil {
+			continue
+		}
+
+		values = append(values, *value)
 	}
 
-	return &spscNavigator[T]{
-		parent:   ring,
-		position: position,
-	}
+	return NewOfflineRing(values)
 }
 
 /*
-Merge absorbs other into ring.
+Select returns an OfflineRing snapshot positioned relative to the ring's logical
+edges. Negative steps walk backward from the write edge; non-negative steps walk
+forward from the read edge.
+*/
+func (ring *SPSCRing[T]) Select(step int) Ring[T] {
+	offline := ring.Snapshot()
 
-When other is *SPSCRing[T], every queued value is moved into ring. If the
-combined length exceeds ring's capacity, a new larger SPSCRing is allocated,
-both rings are drained into it, and ring adopts the grown storage.
+	if step < 0 {
+		cursor := offline.Len() + step
 
-When other is *spscNavigator[T], values from the navigator's span are pushed into
-ring without removing them from the parent queue.
+		if cursor < 0 {
+			cursor = 0
+		}
 
-Call while quiescent (no concurrent Push or Pop on the participating rings).
-Returns false when other is not a compatible Ring[T].
+		return &OfflineRing[T]{values: offline.values, cursor: cursor}
+	}
+
+	return offline.Select(step)
+}
+
+/*
+Merge absorbs other into ring while quiescent.
 */
 func (ring *SPSCRing[T]) Merge(other Ring[T]) bool {
 	switch typed := other.(type) {
 	case *SPSCRing[T]:
 		return ring.mergeSPSC(typed)
-	case *spscNavigator[T]:
-		return ring.mergeNavigator(typed)
 	default:
-		return false
+		if other == nil {
+			return false
+		}
+
+		ok := true
+
+		other.Do(func(value T) {
+			if !ring.Push(value) {
+				ok = false
+			}
+		})
+
+		return ok
 	}
 }
 
@@ -233,34 +270,8 @@ func (ring *SPSCRing[T]) mergeSPSC(other *SPSCRing[T]) bool {
 }
 
 /*
-mergeNavigator copies values from the navigator's logical span [position, head)
-into ring via Push. Slots in the parent queue are not cleared.
-*/
-func (ring *SPSCRing[T]) mergeNavigator(navigator *spscNavigator[T]) bool {
-	head := navigator.parent.head.Load()
-
-	for position := navigator.position; position < head; position++ {
-		index := position & navigator.parent.mask
-		value := navigator.parent.slots[index].Load()
-
-		if value == nil {
-			continue
-		}
-
-		if !ring.Push(*value) {
-			return false
-		}
-	}
-
-	return true
-}
-
-/*
 Slice detaches up to count elements from the dequeue edge into a new SPSCRing.
-
-Each element is Pop'd from ring and Push'd onto the returned ring. When count <=
-0, returns nil. The returned ring owns the detached values; ring's queue shrinks
-accordingly.
+Stops when Pop reports empty so overlong counts do not manufacture zero values.
 */
 func (ring *SPSCRing[T]) Slice(count int) Ring[T] {
 	if count <= 0 {
@@ -276,8 +287,13 @@ func (ring *SPSCRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	for index := 0; index < count; index++ {
-		value := ring.Pop()
+	for range count {
+		value, ok := ring.Pop()
+
+		if !ok {
+			break
+		}
+
 		sliced.Push(value)
 	}
 
@@ -300,23 +316,34 @@ func (ring *SPSCRing[T]) Len() int {
 
 /*
 Do drains the queue in FIFO order, invoking visitor for each value until empty.
-
-This consumes the queue; it is not a snapshot. Call while quiescent if other
-goroutines must not observe an emptying queue mid-Do.
 */
 func (ring *SPSCRing[T]) Do(visitor func(T)) {
-	for !ring.Empty() {
-		visitor(ring.Pop())
+	for {
+		value, ok := ring.Pop()
+
+		if !ok {
+			return
+		}
+
+		visitor(value)
 	}
 }
 
 /*
-Close drains all queued values by calling Do with a no-op visitor, then returns
-ring.err.
+Close marks the ring closed so later Push fails, drains remaining values, and
+returns ring.err.
 */
 func (ring *SPSCRing[T]) Close() error {
+	ring.closed.Store(true)
 	ring.Do(func(T) {})
 	return ring.err
+}
+
+/*
+Closed reports whether Close has been called.
+*/
+func (ring *SPSCRing[T]) Closed() bool {
+	return ring.closed.Load()
 }
 
 /*
@@ -331,15 +358,17 @@ drainInto Pop's every value from ring and Push'es each onto target until ring is
 empty. Returns false when a Push onto target fails mid-drain.
 */
 func (ring *SPSCRing[T]) drainInto(target *SPSCRing[T]) bool {
-	for !ring.Empty() {
-		value := ring.Pop()
+	for {
+		value, ok := ring.Pop()
+
+		if !ok {
+			return true
+		}
 
 		if !target.Push(value) {
 			return false
 		}
 	}
-
-	return true
 }
 
 /*
@@ -351,163 +380,4 @@ func (ring *SPSCRing[T]) adopt(grownRing *SPSCRing[T]) {
 	ring.mask = grownRing.mask
 	ring.head.Store(grownRing.head.Load())
 	ring.tail.Store(grownRing.tail.Load())
-}
-
-/*
-spscNavigator is a Ring[T] view anchored at one logical sequence position inside
-an SPSCRing. position indexes the same monotonic space as head and tail; the
-physical slot is position & parent.mask.
-
-Navigators share the parent's slot array. Safe use matches the parent's SPSC
-concurrency contract; mutating slots through a navigator while the parent is
-live requires quiescence.
-*/
-type spscNavigator[T any] struct {
-	parent   *SPSCRing[T]
-	position uint64
-}
-
-/*
-Push stores value in the navigator's slot when that slot is empty (CAS from nil).
-
-Does not advance parent head or tail. Returns false when value is the nil
-sentinel for T.
-*/
-func (navigator *spscNavigator[T]) Push(value T) bool {
-	index := navigator.position & navigator.parent.mask
-	stored := value
-
-	return navigator.parent.slots[index].CompareAndSwap(nil, &stored)
-}
-
-/*
-Pop loads the navigator's slot value without clearing it. This matches ListRing's
-Pop contract: "returns the value at the cursor without moving the cursor."
-
-Returns the zero value of T when the slot is empty.
-*/
-func (navigator *spscNavigator[T]) Pop() T {
-	index := navigator.position & navigator.parent.mask
-	value := navigator.parent.slots[index].Load()
-
-	if value == nil {
-		var zero T
-		return zero
-	}
-
-	return *value
-}
-
-/*
-Select returns a new navigator at position+step on the same parent SPSCRing.
-*/
-func (navigator *spscNavigator[T]) Select(step int) Ring[T] {
-	return &spscNavigator[T]{
-		parent:   navigator.parent,
-		position: navigator.position + uint64(step),
-	}
-}
-
-/*
-Merge delegates to parent.mergeSPSC or parent.mergeNavigator depending on other
-'s concrete type.
-*/
-func (navigator *spscNavigator[T]) Merge(other Ring[T]) bool {
-	switch typed := other.(type) {
-	case *SPSCRing[T]:
-		return navigator.parent.mergeSPSC(typed)
-	case *spscNavigator[T]:
-		return navigator.parent.mergeNavigator(typed)
-	default:
-		return false
-	}
-}
-
-/*
-Slice removes up to count values from the navigator's span [position, head) into
-a new SPSCRing. Each slot in that span is Swap'd to nil in the parent. Values
-that were nil are skipped.
-*/
-func (navigator *spscNavigator[T]) Slice(count int) Ring[T] {
-	if count <= 0 {
-		return nil
-	}
-
-	sliced := NewSPSCRing[T](
-		1<<uint(bits.Len(uint(max(count, 2)))),
-		false,
-	)
-
-	if sliced == nil {
-		return nil
-	}
-
-	head := navigator.parent.head.Load()
-
-	for offset := 0; offset < count; offset++ {
-		position := navigator.position + uint64(offset)
-
-		if position >= head {
-			break
-		}
-
-		index := position & navigator.parent.mask
-		value := navigator.parent.slots[index].Swap(nil)
-
-		if value == nil {
-			continue
-		}
-
-		sliced.Push(*value)
-	}
-
-	return sliced
-}
-
-/*
-Len returns the number of logical positions from navigator.position up to but not
-including parent.head at the instant of the call.
-*/
-func (navigator *spscNavigator[T]) Len() int {
-	head := navigator.parent.head.Load()
-
-	if navigator.position >= head {
-		return 0
-	}
-
-	return int(head - navigator.position)
-}
-
-/*
-Do visits each non-nil value in [position, head) without removing slots.
-
-For a consuming walk, use Slice or Pop on the parent queue instead.
-*/
-func (navigator *spscNavigator[T]) Do(visitor func(T)) {
-	head := navigator.parent.head.Load()
-
-	for position := navigator.position; position < head; position++ {
-		index := position & navigator.parent.mask
-		value := navigator.parent.slots[index].Load()
-
-		if value == nil {
-			continue
-		}
-
-		visitor(*value)
-	}
-}
-
-/*
-Close drains the parent SPSCRing via parent.Close.
-*/
-func (navigator *spscNavigator[T]) Close() error {
-	return navigator.parent.Close()
-}
-
-/*
-Error returns parent.Error when navigator and parent are valid.
-*/
-func (navigator *spscNavigator[T]) Error() error {
-	return navigator.parent.Error()
 }

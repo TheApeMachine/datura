@@ -22,16 +22,21 @@ import (
 Tree wraps an immutable radix tree implementation from hashicorp/go-immutable-radix.
 It stores byte slices as both keys and values, providing efficient prefix-based operations.
 Readers load the root pointer atomically; writers publish new roots with compare-and-swap.
+Public read APIs copy into caller-owned buffers; Borrow exposes a scoped view that must
+not be retained past the callback.
 */
 type Tree struct {
-	state        *batch
-	root         atomic.Pointer[iradix.Tree[[]byte]]
-	persist      *PersistentStore
-	persistMu    sync.Mutex
-	term         atomic.Uint64
-	logIndex     atomic.Uint64
-	opCount      atomic.Uint64
-	opTotalNanos atomic.Int64
+	state           *batch
+	root            atomic.Pointer[iradix.Tree[[]byte]]
+	persist         *PersistentStore
+	persistMu       sync.Mutex
+	term            atomic.Uint64
+	logIndex        atomic.Uint64
+	opCount         atomic.Uint64
+	opSampleCount   atomic.Uint64
+	opTotalNanos    atomic.Int64
+	appliedIndex    atomic.Uint64
+	basinClassNames atomic.Pointer[[]string]
 }
 
 func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
@@ -50,12 +55,25 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 
 const treeOpSampleMask = uint64(63)
 
+/*
+cloneBytes returns a caller-owned copy of value. Nil stays nil.
+*/
+func cloneBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+
+	return append([]byte(nil), value...)
+}
+
 func (tree *Tree) beginOp() (started time.Time, track bool) {
 	if tree == nil {
 		return time.Time{}, false
 	}
 
-	if tree.opCount.Load()&treeOpSampleMask != 0 {
+	count := tree.opCount.Add(1)
+
+	if count&treeOpSampleMask != 0 {
 		return time.Time{}, false
 	}
 
@@ -63,27 +81,24 @@ func (tree *Tree) beginOp() (started time.Time, track bool) {
 }
 
 /*
-endOp increments the operation count and tracks the time taken.
+endOp records a completed latency sample when track is true. Operation count is
+advanced in beginOp so the sampling decision and count stay consistent.
 */
 func (tree *Tree) endOp(started time.Time, track bool) {
-	if tree == nil {
+	if tree == nil || !track {
 		return
 	}
 
-	tree.opCount.Add(1)
-
-	if !track {
-		return
-	}
-
+	tree.opSampleCount.Add(1)
 	tree.opTotalNanos.Add(time.Since(started).Nanoseconds())
 }
 
 /*
 NewTree creates and returns a new empty Tree instance.
-The underlying radix tree is initialized with no entries.
+When persistDir is non-empty, the persistent store is opened and WAL replayed
+before the tree is returned. Construction failures are returned as errors.
 */
-func NewTree(persistDir string) *Tree {
+func NewTree(persistDir string) (*Tree, error) {
 	tree := &Tree{
 		state: newBatch("dmt/tree"),
 	}
@@ -91,31 +106,43 @@ func NewTree(persistDir string) *Tree {
 	emptyRoot := iradix.New[[]byte]()
 	tree.root.Store(emptyRoot)
 
-	if persistDir != "" {
-		tree.persist = guardValue(tree.state, func() (*PersistentStore, error) {
-			return NewPersistentStore(persistDir)
-		})
-
-		entries := guardValue(tree.state, tree.persist.Replay)
-		root := tree.loadRoot()
-
-		for _, entry := range entries {
-			if entry.Op == opDelete {
-				root, _, _ = root.Delete(entry.Key)
-				continue
-			}
-
-			root, _, _ = root.Insert(entry.Key, entry.Value)
-		}
-
-		tree.root.Store(root)
-
-		term, index := tree.persist.GetLastState()
-		tree.term.Store(term)
-		tree.logIndex.Store(index)
+	if persistDir == "" {
+		return tree, nil
 	}
 
-	return tree
+	store, err := NewPersistentStore(persistDir)
+
+	if err != nil {
+		return nil, err
+	}
+
+	tree.persist = store
+
+	entries, err := tree.persist.Replay()
+
+	if err != nil {
+		_ = tree.persist.Close()
+		return nil, err
+	}
+
+	root := tree.loadRoot()
+
+	for _, entry := range entries {
+		if entry.Op == opDelete {
+			root, _, _ = root.Delete(entry.Key)
+			continue
+		}
+
+		root, _, _ = root.Insert(cloneBytes(entry.Key), cloneBytes(entry.Value))
+	}
+
+	tree.root.Store(root)
+
+	term, index := tree.persist.GetLastState()
+	tree.term.Store(term)
+	tree.logIndex.Store(index)
+
+	return tree, nil
 }
 
 /*
@@ -161,8 +188,8 @@ func (tree *Tree) Seek(key []byte) iter.Seq[*datura.Artifact] {
 /*
 WalkPrefix visits every key/value whose key begins with prefix, in
 lexicographical (and therefore chronological, given Artifact.Prefix keys) order.
-The walk stops early if fn returns false. This is the history read: write
-observations keyed by Artifact.Prefix, then walk the scope prefix to replay them.
+The walk stops at the first key that does not share the prefix. The walk stops
+early if fn returns false. Key and value are copied into caller-owned buffers.
 */
 func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
 	started, track := tree.beginOp()
@@ -172,7 +199,11 @@ func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
 	it.SeekPrefix(prefix)
 
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-		if !fn(key, value) {
+		if !bytes.HasPrefix(key, prefix) {
+			break
+		}
+
+		if !fn(cloneBytes(key), cloneBytes(value)) {
 			tree.endOp(started, track)
 
 			return
@@ -196,7 +227,7 @@ func (tree *Tree) WalkLowerBound(lowerBound []byte, fn func(key, value []byte) b
 	it.SeekLowerBound(lowerBound)
 
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-		if !fn(key, value) {
+		if !fn(cloneBytes(key), cloneBytes(value)) {
 			tree.endOp(started, track)
 
 			return
@@ -227,12 +258,18 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 	}
 
 	if tree.persist != nil {
-		return tree.insertPersistent(started, track, key, value)
+		updated, changed, err := tree.insertPersistent(started, track, key, value)
+
+		if changed {
+			tree.noteBasinClass(key)
+		}
+
+		return updated, changed, err
 	}
 
 	for {
 		oldRoot := tree.loadRoot()
-		newRoot, _, _ := oldRoot.Insert(key, value)
+		newRoot, _, _ := oldRoot.Insert(cloneBytes(key), cloneBytes(value))
 
 		if newRoot == oldRoot {
 			tree.endOp(started, track)
@@ -241,6 +278,7 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 		}
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
+			tree.noteBasinClass(key)
 			tree.endOp(started, track)
 
 			return tree, true, nil
@@ -323,7 +361,7 @@ func (tree *Tree) InsertArtifact(
 }
 
 /*
-Get retrieves the value associated with the given key.
+Get retrieves a caller-owned copy of the value associated with the given key.
 Returns the value and true if the key exists, or nil and false if it doesn't.
 */
 func (tree *Tree) Get(key []byte) ([]byte, bool) {
@@ -331,24 +369,67 @@ func (tree *Tree) Get(key []byte) ([]byte, bool) {
 	value, ok := tree.loadRoot().Get(key)
 	tree.endOp(started, track)
 
-	return value, ok
+	if !ok {
+		return nil, false
+	}
+
+	return cloneBytes(value), true
 }
 
 /*
-AVG returns the average performance of the tree in nanoseconds.
+getRaw returns the live radix value without copying. Callers must not retain or
+mutate the slice beyond the immediate unmarshal.
+*/
+func (tree *Tree) getRaw(key []byte) ([]byte, bool) {
+	return tree.loadRoot().Get(key)
+}
+
+/*
+Borrow invokes fn with the live radix value for key. The bytes are valid only
+for the duration of fn; callers must not retain or mutate them after return.
+Returns false when the key is absent.
+*/
+func (tree *Tree) Borrow(key []byte, fn func(value []byte)) bool {
+	started, track := tree.beginOp()
+	value, ok := tree.loadRoot().Get(key)
+	tree.endOp(started, track)
+
+	if !ok {
+		return false
+	}
+
+	fn(value)
+	return true
+}
+
+/*
+AVG returns the average sampled operation latency in nanoseconds. Trees with no
+completed latency sample return 0 and must be excluded from latency-based
+selection via HasLatencySample.
 */
 func (tree *Tree) AVG() int64 {
 	if tree == nil {
 		return 0
 	}
 
-	count := tree.opCount.Load()
+	samples := tree.opSampleCount.Load()
 
-	if count == 0 {
+	if samples == 0 {
 		return 0
 	}
 
-	return tree.opTotalNanos.Load() * int64(treeOpSampleMask+1) / int64(count)
+	return tree.opTotalNanos.Load() / int64(samples)
+}
+
+/*
+HasLatencySample reports whether at least one operation latency sample exists.
+*/
+func (tree *Tree) HasLatencySample() bool {
+	if tree == nil {
+		return false
+	}
+
+	return tree.opSampleCount.Load() > 0
 }
 
 /*

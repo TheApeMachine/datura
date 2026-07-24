@@ -37,22 +37,33 @@ func TestMPMCRingPush(t *testing.T) {
 
 		var a, b, c mpmcFrame
 
-		Convey("Pop on empty returns zero before any Push", func() {
-			So(ring.Pop(), ShouldBeNil)
+		Convey("Pop on empty returns ok false before any Push", func() {
+			value, ok := ring.Pop()
+			So(ok, ShouldBeFalse)
+			So(value, ShouldBeNil)
 		})
 
-		Convey("Navigator Pop on an empty cell returns zero instead of panicking", func() {
-			So(ring.Select(0).Pop(), ShouldBeNil)
+		Convey("Snapshot Select Pop on empty returns ok false", func() {
+			value, ok := ring.Select(0).Pop()
+			So(ok, ShouldBeFalse)
+			So(value, ShouldBeNil)
 		})
 
 		Convey("FIFO order holds for sequential Push then Pop", func() {
 			So(ring.Push(&a), ShouldBeTrue)
 			So(ring.Push(&b), ShouldBeTrue)
 			So(ring.Push(&c), ShouldBeTrue)
-			So(ring.Pop(), ShouldEqual, &a)
-			So(ring.Pop(), ShouldEqual, &b)
-			So(ring.Pop(), ShouldEqual, &c)
-			So(ring.Pop(), ShouldBeNil)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &a)
+			value, ok = ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &b)
+			value, ok = ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &c)
+			_, ok = ring.Pop()
+			So(ok, ShouldBeFalse)
 		})
 	})
 
@@ -72,7 +83,9 @@ func TestMPMCRingPush(t *testing.T) {
 			So(ring.Push(&x), ShouldBeTrue)
 			So(ring.Push(&y), ShouldBeTrue)
 			So(ring.Push(&z), ShouldBeFalse)
-			So(ring.Pop(), ShouldEqual, &x)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &x)
 			So(ring.Push(&z), ShouldBeTrue)
 		})
 	})
@@ -120,7 +133,7 @@ func TestMPMCRingPush(t *testing.T) {
 					perProducer,
 				)
 			default:
-				if ring.Pop() == nil {
+				if _, ok := ring.Pop(); !ok {
 					runtime.Gosched()
 					continue
 				}
@@ -186,8 +199,8 @@ func TestMPMCRingConcurrentNoLossOrDuplicate(t *testing.T) {
 			defer consumerWG.Done()
 
 			for consumed.Load() < total {
-				value := ring.Pop()
-				if value == 0 {
+				value, ok := ring.Pop()
+				if !ok {
 					runtime.Gosched()
 					continue
 				}
@@ -290,7 +303,9 @@ func TestMPMCRingSelectMergeSlice(t *testing.T) {
 			selected := ring.Select(1)
 
 			So(selected, ShouldNotBeNil)
-			So(selected.Pop(), ShouldEqual, &second)
+			value, ok := selected.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &second)
 		})
 
 		Convey("Slice should detach queued values into a new ring", func() {
@@ -319,11 +334,18 @@ func TestMPMCRingClose(t *testing.T) {
 		ring, err := NewMPMCRing[*mpmcFrame](context.Background(), 4)
 		So(err, ShouldBeNil)
 
-		Convey("Close should cancel the derived context", func() {
+		Convey("Close should cancel context and reject further Push", func() {
+			var frame mpmcFrame
+			So(ring.Push(&frame), ShouldBeTrue)
 			closeErr := ring.Close()
 
 			So(closeErr, ShouldBeNil)
+			So(ring.Closed(), ShouldBeTrue)
 			So(ring.ctx.Err(), ShouldNotBeNil)
+			So(ring.Push(&frame), ShouldBeFalse)
+			value, ok := ring.Pop()
+			So(ok, ShouldBeTrue)
+			So(value, ShouldEqual, &frame)
 		})
 	})
 }
@@ -393,7 +415,10 @@ func BenchmarkMPMCRingPush(b *testing.B) {
 		for !ring.Push(&blob) {
 		}
 
-		for ring.Pop() == nil {
+		for {
+			if _, ok := ring.Pop(); ok {
+				break
+			}
 		}
 	}
 }

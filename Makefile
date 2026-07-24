@@ -1,4 +1,4 @@
-.PHONY: build test cover bench dump
+.PHONY: build test test-race cover bench dump
 
 export GOFLAGS := -ldflags=-checklinkname=0
 
@@ -8,6 +8,10 @@ build:
 test:
 	capnp compile -I ../../capnproto/go-capnp/std -ogo artifact.capnp dmt/server/server.capnp
 	go test -v ./...
+
+test-race:
+	capnp compile -I ../../capnproto/go-capnp/std -ogo artifact.capnp dmt/server/server.capnp
+	go test -race ./structure/... ./dmt/...
 
 cover:
 	capnp compile -I ../../capnproto/go-capnp/std -ogo artifact.capnp dmt/server/server.capnp

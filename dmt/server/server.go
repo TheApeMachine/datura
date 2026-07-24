@@ -4,34 +4,31 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"net"
+	"sync"
 
 	capnp "capnproto.org/go/capnp/v3"
-	"capnproto.org/go/capnp/v3/rpc"
 	"github.com/theapemachine/datura"
 	"github.com/theapemachine/datura/dmt"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
 ForestServer implements the Cap'n Proto RPC interface for the spatial
 index. It delegates all storage to a dmt.Forest, which provides persistence
-(WAL), distribution (Merkle sync), and read routing (fastest tree).
+(WAL), distribution (Merkle sync), and read routing (applied-index + latency).
 
 Keys are Morton-packed uint64 values, stored as 8-byte big-endian keys
 in the radix tree to preserve sort order for prefix queries.
+
+In-process clients receive the local Cap'n Proto capability directly; there is
+no net.Pipe multiplexing.
 */
 type ForestServer struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	serverSide  net.Conn
-	clientSide  net.Conn
-	client      Server
-	serverConn  *rpc.Conn
-	clientConns map[string]*rpc.Conn
-	forest      *dmt.Forest
-	workerPool  *qpool.Q[any]
+	ctx    context.Context
+	cancel context.CancelFunc
+	client Server
+	mu     sync.Mutex
+	forest *dmt.Forest
 }
 
 type serverOpts func(*ForestServer)
@@ -39,86 +36,49 @@ type serverOpts func(*ForestServer)
 /*
 NewForestServer creates a new ForestServer backed by a dmt.Forest.
 */
-func NewForestServer(opts ...serverOpts) *ForestServer {
-	idx := &ForestServer{
-		clientConns: map[string]*rpc.Conn{},
-	}
+func NewForestServer(opts ...serverOpts) (*ForestServer, error) {
+	idx := &ForestServer{}
 
 	for _, opt := range opts {
 		opt(idx)
 	}
 
-	if err := errnie.Require(map[string]any{
-		"ctx": idx.ctx,
-	}); err != nil {
-		panic(err)
+	if idx.ctx == nil {
+		return nil, errors.New("dmt/server: context is required")
 	}
 
 	if idx.forest == nil {
-		forest, err := dmt.NewForest(dmt.ForestConfig{
-			Pool: idx.workerPool,
-		})
+		forest, err := dmt.NewForest(dmt.ForestConfig{})
 
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 
 		idx.forest = forest
 	}
 
-	idx.serverSide, idx.clientSide = net.Pipe()
 	idx.client = Server_ServerToClient(idx)
 
-	idx.serverConn = rpc.NewConn(rpc.NewStreamTransport(
-		idx.serverSide,
-	), &rpc.Options{
-		BootstrapClient: capnp.Client(idx.client),
-	})
-
-	return idx
+	return idx, nil
 }
 
 /*
-Client returns a Cap'n Proto client connected to this ForestServer.
+Client returns the local Cap'n Proto capability for in-process use.
 */
 func (idx *ForestServer) Client(clientID string) Server {
-	idx.clientConns[clientID] = rpc.NewConn(rpc.NewStreamTransport(
-		idx.clientSide,
-	), &rpc.Options{
-		BootstrapClient: capnp.Client(idx.client),
-	})
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	_ = clientID
 
 	return idx.client
 }
 
 /*
-Close shuts down the RPC connections, underlying net.Pipe, and the forest.
+Close shuts down the forest and cancels the server context.
 */
 func (idx *ForestServer) Close() error {
 	var closeErr error
-
-	if idx.serverConn != nil {
-		closeErr = errnie.Combine(closeErr, idx.serverConn.Close())
-		idx.serverConn = nil
-	}
-
-	for clientID, conn := range idx.clientConns {
-		if conn != nil {
-			closeErr = errnie.Combine(closeErr, conn.Close())
-		}
-
-		delete(idx.clientConns, clientID)
-	}
-
-	if idx.serverSide != nil {
-		closeErr = errnie.Combine(closeErr, idx.serverSide.Close())
-		idx.serverSide = nil
-	}
-
-	if idx.clientSide != nil {
-		closeErr = errnie.Combine(closeErr, idx.clientSide.Close())
-		idx.clientSide = nil
-	}
 
 	if idx.cancel != nil {
 		idx.cancel()
@@ -135,7 +95,7 @@ func (idx *ForestServer) Close() error {
 Done implements the Forest RPC done method.
 */
 func (idx *ForestServer) Done(ctx context.Context, call Server_done) error {
-	return nil
+	return idx.Close()
 }
 
 /*
@@ -150,22 +110,57 @@ func (idx *ForestServer) EvaluateClassification(sequence []byte) (dmt.Classifica
 
 	var scratch dmt.ClassificationScratch
 
-	return tree.Classify(sequence, &scratch), nil
+	return tree.Classify(sequence, &scratch)
 }
 
 /*
 IntelligentIngestPipeline stores data and evaluates branch curiosity for peer sync.
 */
-func (idx *ForestServer) IntelligentIngestPipeline(key, value []byte) {
-	idx.forest.Insert(key, value)
+func (idx *ForestServer) IntelligentIngestPipeline(key, value []byte) error {
+	if err := idx.forest.Insert(key, value); err != nil {
+		return err
+	}
+
 	idx.forest.EvaluateCuriosityAndTriggerSync(key)
+
+	return nil
 }
 
 /*
-IntelligentLookupPipeline resolves a key with analogical fallback routing.
+ExactLookup resolves a key without analogical fallback.
 */
-func (idx *ForestServer) IntelligentLookupPipeline(key []byte) ([]byte, bool) {
-	return idx.forest.GetAnalogousFallback(key)
+func (idx *ForestServer) ExactLookup(key []byte) ([]byte, bool) {
+	return idx.forest.Get(key)
+}
+
+/*
+AnalogLookup resolves a key through structural analog mapping and returns the
+matched key when fallback occurs.
+*/
+func (idx *ForestServer) AnalogLookup(key []byte) (matchedKey, value []byte, found bool) {
+	if value, ok := idx.forest.Get(key); ok {
+		return append([]byte(nil), key...), value, true
+	}
+
+	tree := idx.forest.GetFastestTree()
+
+	if tree == nil {
+		return nil, nil, false
+	}
+
+	match, ok := tree.FindStructuralAnalog(key)
+
+	if !ok {
+		return nil, nil, false
+	}
+
+	value, found = tree.Get(match.ClosestKey)
+
+	if !found {
+		return nil, nil, false
+	}
+
+	return append([]byte(nil), match.ClosestKey...), value, true
 }
 
 /*
@@ -193,16 +188,15 @@ func (idx *ForestServer) Write(
 	var keyBytes [8]byte
 	binary.BigEndian.PutUint64(keyBytes[:], key)
 
-	idx.IntelligentIngestPipeline(
+	return idx.IntelligentIngestPipeline(
 		append([]byte(nil), keyBytes[:]...),
 		append([]byte(nil), value...),
 	)
-
-	return nil
 }
 
 /*
-Lookup retrieves values from the forest for the given Morton-packed keys.
+Lookup retrieves exact values from the forest for the given Morton-packed keys.
+Missing keys leave a found=false style empty artifact rather than analog fallback.
 */
 func (idx *ForestServer) Lookup(
 	ctx context.Context,
@@ -239,7 +233,7 @@ func (idx *ForestServer) Lookup(
 	for index := range keys.Value().Len() {
 		binary.BigEndian.PutUint64(keyBytes[:], keys.Value().At(index))
 
-		value, exists := idx.IntelligentLookupPipeline(keyBytes[:])
+		value, exists := idx.ExactLookup(keyBytes[:])
 
 		if !exists || len(value) == 0 {
 			continue
@@ -282,15 +276,6 @@ WithForest injects a pre-created dmt.Forest.
 func WithForest(forest *dmt.Forest) serverOpts {
 	return func(idx *ForestServer) {
 		idx.forest = forest
-	}
-}
-
-/*
-WithWorkerPool injects the shared worker pool for the backing forest.
-*/
-func WithWorkerPool(workerPool *qpool.Q[any]) serverOpts {
-	return func(idx *ForestServer) {
-		idx.workerPool = workerPool
 	}
 }
 

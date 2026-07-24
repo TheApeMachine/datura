@@ -1619,6 +1619,8 @@ func (scratch *ClassificationScratch) Reset() {
 
 /*
 Classify evaluates a sensory sequence against attractor basins and returns posteriors.
+It probes only the token prefixes and extensions of the sequence under each known
+attractor class, so REM replay does not rescan the entire basin namespace.
 */
 func (tree *Tree) Classify(
 	sequence []byte,
@@ -1631,29 +1633,21 @@ func (tree *Tree) Classify(
 	scratch.Reset()
 
 	var keyScratch [128]byte
-	root := tree.loadRoot()
-	iterator := root.Root().Iterator()
+	var prefixScratch [128]byte
+	classes := tree.basinClasses()
 
-	iterator.SeekPrefix(basinNamespaceBytes)
-
-	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
-		if !bytes.HasPrefix(key, basinNamespaceBytes) {
-			break
+	if len(classes) == 0 {
+		tree.classifyFullScan(sequence, scratch, &keyScratch)
+	} else {
+		for _, className := range classes {
+			tree.accumulateClassBasins(
+				[]byte(className),
+				sequence,
+				scratch,
+				&keyScratch,
+				&prefixScratch,
+			)
 		}
-
-		className, basinSequence, mapped := classSequenceFromBasinKey(key)
-
-		if !mapped || !basinMatchesSequence(basinSequence, sequence) {
-			continue
-		}
-
-		weight := UnmarshalCognitive(value)
-		parentPath := parentContextPath(basinSequence)
-		parentWeight := tree.getBasinWeightStack(className, parentPath, &keyScratch)
-		probabilityFloor := probabilityFloorFromWeight(weight, parentWeight.Count)
-		logEvidence := math.Log(math.Max(weight.Probability, probabilityFloor))
-
-		scratch.accumulateClassEvidence(className, logEvidence)
 	}
 
 	if scratch.activeCount == 0 {
@@ -1669,6 +1663,144 @@ func (tree *Tree) Classify(
 		Winner:  scores[0].ClassName,
 		Highest: scores[0].Value,
 	}
+}
+
+/*
+classifyFullScan is the cold path used before any basin class has been indexed,
+and seeds the class registry from the keys it visits.
+*/
+func (tree *Tree) classifyFullScan(
+	sequence []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+) {
+	root := tree.loadRoot()
+	iterator := root.Root().Iterator()
+	iterator.SeekPrefix(basinNamespaceBytes)
+
+	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
+		if !bytes.HasPrefix(key, basinNamespaceBytes) {
+			break
+		}
+
+		tree.noteBasinClass(key)
+		className, basinSequence, mapped := classSequenceFromBasinKey(key)
+
+		if !mapped || !basinMatchesSequence(basinSequence, sequence) {
+			continue
+		}
+
+		tree.accumulateBasinEvidence(className, basinSequence, value, scratch, keyScratch)
+	}
+}
+
+/*
+accumulateClassBasins scores one attractor class by reading the sequence's token
+prefixes and any stored extensions under that class.
+*/
+func (tree *Tree) accumulateClassBasins(
+	className []byte,
+	sequence []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+	prefixScratch *[128]byte,
+) {
+	tokenStart := 0
+
+	for index := 0; index <= len(sequence); index++ {
+		if index < len(sequence) && sequence[index] != '_' {
+			continue
+		}
+
+		if index == tokenStart {
+			tokenStart = index + 1
+
+			continue
+		}
+
+		path := sequence[:index]
+		storageKey := tree.basinKeyScratch(className, path, keyScratch)
+
+		if storageKey == nil {
+			storageKey = basinStorageKey(className, path)
+		}
+
+		value, found := tree.Get(storageKey)
+
+		if found {
+			tree.accumulateBasinEvidence(
+				className, path, value, scratch, keyScratch,
+			)
+		}
+
+		tokenStart = index + 1
+	}
+
+	storagePrefix := tree.basinKeyScratch(className, sequence, prefixScratch)
+
+	if storagePrefix == nil {
+		storagePrefix = basinStorageKey(className, sequence)
+	}
+
+	root := tree.loadRoot()
+	iterator := root.Root().Iterator()
+	iterator.SeekPrefix(storagePrefix)
+
+	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
+		if !bytes.HasPrefix(key, storagePrefix) {
+			break
+		}
+
+		_, basinSequence, mapped := classSequenceFromBasinKey(key)
+
+		if !mapped || len(basinSequence) <= len(sequence) {
+			continue
+		}
+
+		if !basinMatchesSequence(basinSequence, sequence) {
+			continue
+		}
+
+		tree.accumulateBasinEvidence(
+			className, basinSequence, value, scratch, keyScratch,
+		)
+	}
+}
+
+func (tree *Tree) accumulateBasinEvidence(
+	className []byte,
+	basinSequence []byte,
+	value []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+) {
+	weight := UnmarshalCognitive(value)
+	parentPath := parentContextPath(basinSequence)
+	parentWeight := tree.getBasinWeightStack(className, parentPath, keyScratch)
+	probabilityFloor := probabilityFloorFromWeight(weight, parentWeight.Count)
+	logEvidence := math.Log(math.Max(weight.Probability, probabilityFloor))
+
+	scratch.accumulateClassEvidence(className, logEvidence)
+}
+
+func (tree *Tree) basinKeyScratch(
+	className []byte,
+	sequence []byte,
+	keyScratch *[128]byte,
+) []byte {
+	requiredLength := len(basinNamespaceBytes) + len(className) + 1 + len(sequence)
+
+	if requiredLength > len(keyScratch) {
+		return nil
+	}
+
+	storageKey := keyScratch[:requiredLength]
+	offset := copy(storageKey, basinNamespaceBytes)
+	offset += copy(storageKey[offset:], className)
+	storageKey[offset] = '/'
+	copy(storageKey[offset+1:], sequence)
+
+	return storageKey
 }
 
 /*
@@ -1931,11 +2063,69 @@ func (tree *Tree) commitLearnMutations(mutations []learnMutation) {
 		newRoot := transaction.Commit()
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
+			for _, mutation := range mutations {
+				tree.noteBasinClass(mutation.key)
+			}
+
 			tree.logLearnMutations(mutations)
 
 			return
 		}
 	}
+}
+
+/*
+noteBasinClass records attractor class names so Classify can probe per-class
+prefixes instead of walking every basin key on each REM replay.
+*/
+func (tree *Tree) noteBasinClass(key []byte) {
+	if tree == nil {
+		return
+	}
+
+	className, _, mapped := classSequenceFromBasinKey(key)
+
+	if !mapped || len(className) == 0 {
+		return
+	}
+
+	name := string(className)
+
+	for {
+		current := tree.basinClassNames.Load()
+
+		if current != nil {
+			for _, existing := range *current {
+				if existing == name {
+					return
+				}
+			}
+		}
+
+		next := []string{name}
+
+		if current != nil {
+			next = append(append([]string{}, (*current)...), name)
+		}
+
+		if tree.basinClassNames.CompareAndSwap(current, &next) {
+			return
+		}
+	}
+}
+
+func (tree *Tree) basinClasses() []string {
+	if tree == nil {
+		return nil
+	}
+
+	current := tree.basinClassNames.Load()
+
+	if current == nil {
+		return nil
+	}
+
+	return *current
 }
 
 func (tree *Tree) logLearnMutations(mutations []learnMutation) {
@@ -2261,40 +2451,53 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 	replayedObservations := uint64(0)
 	preservedSequences := make([][]byte, 0, 8)
 
-	tree.WalkPrefix([]byte(episodicNamespace), func(storageKey, value []byte) bool {
-		timestamp, sequence, mapped := timestampFromEpisodicKey(storageKey)
+	// Seek to the REM window instead of scanning every earlier episodic key.
+	tree.WalkLowerBound(
+		episodicStorageKey(startTimestamp, nil),
+		func(storageKey, value []byte) bool {
+			if !bytes.HasPrefix(storageKey, []byte(episodicNamespace)) {
+				return false
+			}
 
-		if !mapped {
+			timestamp, sequence, mapped := timestampFromEpisodicKey(storageKey)
+
+			if !mapped {
+				return true
+			}
+
+			if timestamp > endTimestamp {
+				return false
+			}
+
+			if len(value) == 0 {
+				return true
+			}
+
+			tree.TrainSensorySequence(sequence)
+			preservedSequences = append(
+				preservedSequences, sensoryPrefixPaths(sequence)...,
+			)
+
+			var classifyScratch ClassificationScratch
+			_ = tree.optimizeWeightsInline(sequence, &classifyScratch)
+
+			replayedObservations++
+
 			return true
-		}
+		},
+	)
 
-		if timestamp < startTimestamp {
-			return true
-		}
+	namespaceEntries := countNamespaceEntries(tree, []byte(sensoryNamespace))
+	decayFactor := deriveDecayFactor(
+		replayedObservations, uint64(namespaceEntries),
+	)
 
-		if timestamp > endTimestamp {
-			return false
-		}
-
-		if len(value) == 0 {
-			return true
-		}
-
-		tree.TrainSensorySequence(sequence)
-		preservedSequences = append(preservedSequences, sensoryPrefixPaths(sequence)...)
-
-		var classifyScratch ClassificationScratch
-		_ = tree.optimizeWeightsInline(sequence, &classifyScratch)
-
-		replayedObservations++
-
-		return true
-	})
-
-	namespaceEntries := uint64(countNamespaceEntries(tree, []byte(sensoryNamespace)))
-	decayFactor := deriveDecayFactor(replayedObservations, namespaceEntries)
-
-	tree.ExecuteDecayConsolidation([]byte(sensoryNamespace), decayFactor, preservedSequences...)
+	tree.applyDecayConsolidation(
+		[]byte(sensoryNamespace),
+		decayFactor,
+		namespaceEntries,
+		preservedSequences...,
+	)
 }
 
 /*
@@ -2405,6 +2608,7 @@ import (
 	"strings"
 
 	"github.com/theapemachine/datura"
+	"github.com/theapemachine/errnie"
 )
 
 /*
@@ -2516,12 +2720,20 @@ func (engine *CognitiveEngine) train(sequence []byte) {
 		return
 	}
 
-	mutations := engine.buildContextTrainingMutations(sequence)
+	mutations, err := engine.buildContextTrainingMutations(sequence)
+
+	if err != nil {
+		errnie.Error(err)
+		return
+	}
+
 	mutations = append(mutations, engine.tree.buildSensoryMutations(sequence)...)
 	engine.tree.commitLearnMutations(mutations)
 }
 
-func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []learnMutation {
+func (engine *CognitiveEngine) buildContextTrainingMutations(
+	sequence []byte,
+) ([]learnMutation, error) {
 	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
 	pending := make(map[string]PackedWeight, countTokenBoundaries(sequence))
 	tokenStart := 0
@@ -2557,11 +2769,16 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		if len(parentPath) > 0 {
 			denominator := float64(parent.Count)
 
-			if denominator <= 0 {
-				denominator = float64(nextCount)
+			if !(denominator > 0) {
+				return nil, errnie.Err(
+					errnie.Validation,
+					"dmt: context training requires a positive parent sample count",
+					nil,
+				)
 			}
 
 			probability = float64(nextCount) / denominator
+
 			if probability > 1.0 {
 				probability = 1.0
 			}
@@ -2579,7 +2796,7 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		tokenStart = index + 1
 	}
 
-	return mutations
+	return mutations, nil
 }
 
 func (engine *CognitiveEngine) writeArtifact(
@@ -2594,7 +2811,19 @@ func (engine *CognitiveEngine) writeArtifact(
 	lookaheadPaths int,
 ) {
 	surprise := engine.surprise(sequence)
-	surpriseThreshold := -math.Log2(1.0 / float64(parentWeight.Count+1))
+	mass := float64(parentWeight.Count + 1)
+
+	if !(mass > 0) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"dmt: surprise threshold requires positive parent mass",
+			nil,
+		))
+
+		return
+	}
+
+	surpriseThreshold := -math.Log2(1.0 / mass)
 
 	artifact.Poke(surprise, "cognition", "surprise", "value")
 	artifact.Poke(surpriseThreshold, "cognition", "surprise", "threshold")
@@ -2824,16 +3053,46 @@ func (tree *Tree) ExecuteDecayConsolidation(
 		return
 	}
 
+	tree.applyDecayConsolidation(
+		namespacePrefix,
+		decayFactor,
+		countNamespaceEntries(tree, namespacePrefix),
+		preservedSequences...,
+	)
+}
+
+/*
+applyDecayConsolidation streams namespace rewrites in persistence-quantum batches
+and compacts via one forced snapshot. Logging every decayed key into the WAL
+materializes the full sensory namespace twice and is what froze long REM runs.
+*/
+func (tree *Tree) applyDecayConsolidation(
+	namespacePrefix []byte,
+	decayFactor float64,
+	namespaceEntries int,
+	preservedSequences ...[]byte,
+) {
+	if tree == nil || decayFactor <= 0 || namespaceEntries <= 0 {
+		return
+	}
+
 	oldRoot := tree.loadRoot()
 	iterator := oldRoot.Root().Iterator()
 	iterator.SeekPrefix(namespacePrefix)
 
-	namespaceEntries := countNamespaceEntries(tree, namespacePrefix)
+	batchLimit := tree.decayBatchLimit()
+	batch := make([]decayMutation, 0, batchLimit)
+	mutated := false
 
-	iterator = oldRoot.Root().Iterator()
-	iterator.SeekPrefix(namespacePrefix)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
 
-	mutations := make([]decayMutation, 0, namespaceEntries)
+		tree.commitDecayMutations(batch)
+		mutated = true
+		batch = batch[:0]
+	}
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, namespacePrefix) {
@@ -2849,21 +3108,39 @@ func (tree *Tree) ExecuteDecayConsolidation(
 		entryPruneThreshold := pruneProbabilityThreshold(namespaceEntries, weight)
 
 		if weight.Probability < entryPruneThreshold {
-			mutations = append(mutations, decayMutation{
+			batch = append(batch, decayMutation{
 				key:    append([]byte(nil), key...),
 				delete: true,
 			})
-
-			continue
+		} else {
+			batch = append(batch, decayMutation{
+				key:   append([]byte(nil), key...),
+				value: MarshalCognitive(weight),
+			})
 		}
 
-		mutations = append(mutations, decayMutation{
-			key:   append([]byte(nil), key...),
-			value: MarshalCognitive(weight),
-		})
+		if len(batch) >= batchLimit {
+			flush()
+		}
 	}
 
-	tree.commitDecayMutations(mutations)
+	flush()
+
+	if mutated {
+		_ = tree.SaveSnapshotForced()
+	}
+}
+
+/*
+decayBatchLimit follows the persistent store's snapshot quantum so REM decay
+never holds a full-namespace mutation list in memory.
+*/
+func (tree *Tree) decayBatchLimit() int {
+	if tree != nil && tree.persist != nil && tree.persist.snapCount > 0 {
+		return int(tree.persist.snapCount)
+	}
+
+	return 1000
 }
 
 func (tree *Tree) commitDecayMutations(mutations []decayMutation) {
@@ -2888,33 +3165,9 @@ func (tree *Tree) commitDecayMutations(mutations []decayMutation) {
 		newRoot := transaction.Commit()
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
-			tree.logDecayMutations(mutations)
-
 			return
 		}
 	}
-}
-
-func (tree *Tree) logDecayMutations(mutations []decayMutation) {
-	if tree.persist == nil {
-		return
-	}
-
-	term, index := tree.GetLogState()
-
-	for _, mutation := range mutations {
-		index++
-
-		if mutation.delete {
-			_ = tree.persist.LogDelete(mutation.key, term, index)
-
-			continue
-		}
-
-		_ = tree.persist.LogInsert(mutation.key, mutation.value, term, index)
-	}
-
-	tree.logIndex.Store(index)
 }
 
 func countNamespaceEntries(tree *Tree, namespacePrefix []byte) int {
@@ -3063,7 +3316,7 @@ func tokenSequenceSimilarity(leftSequence, rightSequence []byte) float64 {
 	sharedDepth := 0
 	pairCount := min(len(leftTokens), len(rightTokens))
 
-	for index := 0; index < pairCount; index++ {
+	for index := range pairCount {
 		if !bytes.Equal(leftTokens[index], rightTokens[index]) {
 			break
 		}
@@ -3249,7 +3502,6 @@ import (
 
 	"github.com/theapemachine/datura/structure"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -3665,25 +3917,26 @@ func (election *Election) getLastLogTerm() uint64 {
 	return election.lastLogTerm.Load()
 }
 
+/*
+schedule runs an Election background task on a dedicated goroutine.
+*/
 func (election *Election) schedule(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-	)
+	go func() {
+		_, _ = fn(election.node.ctx)
+	}()
 }
 
+/*
+scheduleLoop runs a long-lived Election loop on a dedicated goroutine.
+*/
 func (election *Election) scheduleLoop(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	election.schedule("", fn)
 }
 
 // storeTermForTest sets the current term in tests.
@@ -3732,7 +3985,6 @@ import (
 	"sync/atomic"
 
 	"github.com/theapemachine/datura"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -3748,8 +4000,6 @@ type Forest struct {
 	// Context for controlling background workers
 	ctx    context.Context
 	cancel context.CancelFunc
-	pool   *qpool.Q[any]
-	owned  bool
 	// Network node for distributed operation
 	network *NetworkNode
 }
@@ -3758,8 +4008,6 @@ type Forest struct {
 type ForestConfig struct {
 	// Directory for persistence
 	PersistDir string
-	// Worker pool for background tasks
-	Pool *qpool.Q[any]
 	// Network configuration
 	Network *NetworkConfig
 }
@@ -3776,15 +4024,9 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		state:  newBatch("dmt/forest"),
 		ctx:    ctx,
 		cancel: cancel,
-		pool:   config.Pool,
 	}
 
 	forest.snapshot.Store(&Snapshot{})
-
-	if forest.pool == nil {
-		forest.pool = newWorkerPool(forest.ctx)
-		forest.owned = true
-	}
 
 	// Create initial tree (with persistence if directory is provided)
 	tree := guardValue(forest.state, func() (*Tree, error) {
@@ -3823,10 +4065,6 @@ func (forest *Forest) Close() error {
 
 	for _, tree := range trees {
 		guardStep(forest.state, tree.Close)
-	}
-
-	if forest.owned && forest.pool != nil {
-		forest.pool.Close()
 	}
 
 	return forest.state.Err()
@@ -4057,7 +4295,7 @@ EvaluateCuriosityAndTriggerSync schedules targeted peer sync when branch entropy
 func (forest *Forest) EvaluateCuriosityAndTriggerSync(prefix []byte) {
 	tree := forest.getFastestTree()
 
-	if tree == nil || forest.network == nil || forest.pool == nil {
+	if tree == nil || forest.network == nil {
 		return
 	}
 
@@ -4077,12 +4315,11 @@ func (forest *Forest) EvaluateCuriosityAndTriggerSync(prefix []byte) {
 	targetPeer := activePeers[0]
 	prefixCopy := append([]byte(nil), prefix...)
 
-	forest.pool.Schedule(
-		"curiosity-sync",
-		func(ctx context.Context) (any, error) {
-			return nil, forest.StreamTargetedPrefixSync(ctx, targetPeer.Addr(), prefixCopy)
-		},
-	)
+	go func() {
+		_ = forest.StreamTargetedPrefixSync(
+			forest.ctx, targetPeer.Addr(), prefixCopy,
+		)
+	}()
 }
 
 /*
@@ -4109,11 +4346,7 @@ File: /dmt/guard.go
 package dmt
 
 import (
-	"context"
-	"runtime"
-
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -4164,19 +4397,6 @@ func guardStep(batch *batch, fn func() error) {
 	if err := fn(); err != nil {
 		batch.err = errnie.Err(errnie.IO, batch.op, err)
 	}
-}
-
-func workerPoolConfig() *qpool.Config {
-	config := qpool.NewConfig()
-	config.Scaler = nil
-
-	return config
-}
-
-func newWorkerPool(ctx context.Context) *qpool.Q[any] {
-	workers := max(4, runtime.NumCPU())
-
-	return qpool.NewQ[any](ctx, workers, workers, workerPoolConfig())
 }
 
 ---
@@ -4913,7 +5133,6 @@ import (
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/rpc"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -5675,27 +5894,25 @@ func (n *NetworkNode) applyFilteredSyncEntries(
 }
 
 /*
-schedule runs a NetworkNode background task on the Forest worker pool.
+schedule runs a NetworkNode background task on a dedicated goroutine.
 */
 func (n *NetworkNode) schedule(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-	)
+	go func() {
+		_, _ = fn(n.ctx)
+	}()
 }
 
+/*
+scheduleLoop runs a long-lived NetworkNode loop on a dedicated goroutine.
+*/
 func (n *NetworkNode) scheduleLoop(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	n.schedule("", fn)
 }
 
 ---
@@ -5888,11 +6105,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/theapemachine/qpool"
+	"github.com/theapemachine/errnie"
 )
 
 /*
@@ -5938,8 +6155,7 @@ type PersistentStore struct {
 	snapPath  string
 	ctx       context.Context
 	cancel    context.CancelFunc
-	pool      *qpool.Q[any]
-	walSeq    atomic.Uint64
+	walMu     sync.Mutex
 	lastIndex atomic.Uint64
 	lastTerm  atomic.Uint64
 	closed    atomic.Bool
@@ -6003,7 +6219,6 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 		snapPath:  filepath.Join(dir, "snapshot"),
 		ctx:       ctx,
 		cancel:    cancel,
-		pool:      qpool.NewQ[any](ctx, 1, 1, workerPoolConfig()),
 		snapCount: 1000,
 	}
 
@@ -6203,13 +6418,6 @@ func (ps *PersistentStore) Close() error {
 		ps.cancel()
 	}
 
-	workerPool := ps.pool
-	ps.pool = nil
-
-	if workerPool != nil {
-		workerPool.Close()
-	}
-
 	return err
 }
 
@@ -6268,6 +6476,23 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 	reader := bufio.NewReader(file)
 	var entries []WALEntry
 	var offset int64
+	recoverTail := func(recordStart int64, cause error) error {
+		if len(entries) == 0 {
+			return ps.markFatal(cause)
+		}
+
+		if err := os.Truncate(ps.walPath, recordStart); err != nil {
+			return ps.markFatal(errors.Join(cause, err))
+		}
+
+		errnie.Warn(
+			"dmt: truncated corrupt WAL tail",
+			"offset", recordStart,
+			"cause", cause.Error(),
+		)
+
+		return nil
+	}
 
 	readRecordBytes := func(recordStart int64, target []byte) (bool, error) {
 		read, err := io.ReadFull(reader, target)
@@ -6314,11 +6539,11 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			valLen := binary.LittleEndian.Uint32(header[20:24])
 
 			if err := validateWALLength("key", keyLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			if err := validateWALLength("value", valLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			key := make([]byte, keyLen)
@@ -6366,7 +6591,7 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			keyLen := binary.LittleEndian.Uint32(header[16:20])
 
 			if err := validateWALLength("key", keyLen); err != nil {
-				return entries, ps.markFatal(err)
+				return entries, recoverTail(recordStart, err)
 			}
 
 			key := make([]byte, keyLen)
@@ -6418,7 +6643,10 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 			ps.lastTerm.Store(term)
 			ps.lastIndex.Store(index)
 		default:
-			return entries, ps.markFatal(fmt.Errorf("invalid wal operation: %d", op))
+			return entries, recoverTail(
+				recordStart,
+				fmt.Errorf("invalid wal operation: %d", op),
+			)
 		}
 	}
 
@@ -6436,6 +6664,13 @@ func (ps *PersistentStore) loadLastState() error {
 func (ps *PersistentStore) CreateSnapshot(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	return ps.createSnapshot(false, iterator)
+}
+
+func (ps *PersistentStore) createSnapshot(
+	force bool,
+	iterator func(yield func(key, value []byte) bool),
+) error {
 	if err := ps.requireWritable(); err != nil {
 		return err
 	}
@@ -6447,12 +6682,16 @@ func (ps *PersistentStore) CreateSnapshot(
 	now := time.Now().UnixNano()
 	lastSnap := ps.lastSnap.Load()
 
-	if now-lastSnap < int64(time.Minute) {
-		return nil
-	}
+	if !force {
+		if now-lastSnap < int64(time.Minute) {
+			return nil
+		}
 
-	if !ps.lastSnap.CompareAndSwap(lastSnap, now) {
-		return nil
+		if !ps.lastSnap.CompareAndSwap(lastSnap, now) {
+			return nil
+		}
+	} else {
+		ps.lastSnap.Store(now)
 	}
 
 	err := ps.runWal("snapshot", func() error {
@@ -6616,21 +6855,14 @@ func (ps *PersistentStore) TruncateWAL(
 	})
 }
 
-func (ps *PersistentStore) runWal(op string, fn func() error) error {
-	if ps.pool == nil {
-		return fn()
-	}
+/*
+runWal serializes WAL mutations so writers, syncs, and close never overlap.
+*/
+func (ps *PersistentStore) runWal(_ string, fn func() error) error {
+	ps.walMu.Lock()
+	defer ps.walMu.Unlock()
 
-	sequence := ps.walSeq.Add(1)
-	jobID := "dmt/persist/" + op + "/" + strconv.FormatUint(sequence, 10)
-
-	wait := ps.pool.Schedule(jobID, func(ctx context.Context) (any, error) {
-		return nil, fn()
-	})
-
-	_, err := wait.Get(ps.ctx)
-
-	return err
+	return fn()
 }
 
 func writeFull(writer io.Writer, data []byte) error {
@@ -6657,21 +6889,6 @@ func validateWALLength(field string, length uint32) error {
 	}
 
 	return nil
-}
-
-func (ps *PersistentStore) schedule(
-	id string,
-	fn func(ctx context.Context) (any, error),
-) {
-	if ps.pool == nil {
-		return
-	}
-
-	ps.pool.Schedule(
-		"dmt/persist/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
 }
 
 func (ps *PersistentStore) backgroundSyncer() {
@@ -6805,7 +7022,6 @@ import (
 	"github.com/theapemachine/datura"
 	"github.com/theapemachine/datura/dmt"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -6825,7 +7041,6 @@ type ForestServer struct {
 	serverConn  *rpc.Conn
 	clientConns map[string]*rpc.Conn
 	forest      *dmt.Forest
-	workerPool  *qpool.Q[any]
 }
 
 type serverOpts func(*ForestServer)
@@ -6849,9 +7064,7 @@ func NewForestServer(opts ...serverOpts) *ForestServer {
 	}
 
 	if idx.forest == nil {
-		forest, err := dmt.NewForest(dmt.ForestConfig{
-			Pool: idx.workerPool,
-		})
+		forest, err := dmt.NewForest(dmt.ForestConfig{})
 
 		if err != nil {
 			panic(err)
@@ -7080,15 +7293,6 @@ func WithForest(forest *dmt.Forest) serverOpts {
 }
 
 /*
-WithWorkerPool injects the shared worker pool for the backing forest.
-*/
-func WithWorkerPool(workerPool *qpool.Q[any]) serverOpts {
-	return func(idx *ForestServer) {
-		idx.workerPool = workerPool
-	}
-}
-
-/*
 SpatialIndexError is a typed error for SpatialIndex failures.
 */
 type SpatialIndexError string
@@ -7174,14 +7378,15 @@ It stores byte slices as both keys and values, providing efficient prefix-based 
 Readers load the root pointer atomically; writers publish new roots with compare-and-swap.
 */
 type Tree struct {
-	state        *batch
-	root         atomic.Pointer[iradix.Tree[[]byte]]
-	persist      *PersistentStore
-	persistMu    sync.Mutex
-	term         atomic.Uint64
-	logIndex     atomic.Uint64
-	opCount      atomic.Uint64
-	opTotalNanos atomic.Int64
+	state           *batch
+	root            atomic.Pointer[iradix.Tree[[]byte]]
+	persist         *PersistentStore
+	persistMu       sync.Mutex
+	term            atomic.Uint64
+	logIndex        atomic.Uint64
+	opCount         atomic.Uint64
+	opTotalNanos    atomic.Int64
+	basinClassNames atomic.Pointer[[]string]
 }
 
 func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
@@ -7377,7 +7582,13 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 	}
 
 	if tree.persist != nil {
-		return tree.insertPersistent(started, track, key, value)
+		updated, changed, err := tree.insertPersistent(started, track, key, value)
+
+		if changed {
+			tree.noteBasinClass(key)
+		}
+
+		return updated, changed, err
 	}
 
 	for {
@@ -7391,6 +7602,7 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 		}
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
+			tree.noteBasinClass(key)
 			tree.endOp(started, track)
 
 			return tree, true, nil
@@ -7595,7 +7807,9 @@ func (tree *Tree) insertPersistent(
 	tree.logIndex.Store(index)
 
 	if index%tree.persist.snapCount == 0 {
-		if err := tree.SaveSnapshot(); err != nil {
+		// Already holding persistMu; call the locked variant to avoid a
+		// self-deadlock on the non-reentrant mutex.
+		if err := tree.saveSnapshotLocked(false); err != nil {
 			tree.endOp(started, track)
 
 			return tree, true, tree.failPersistence(err)
@@ -7641,7 +7855,9 @@ func (tree *Tree) deletePersistent(
 	tree.logIndex.Store(index)
 
 	if index%tree.persist.snapCount == 0 {
-		if err := tree.SaveSnapshot(); err != nil {
+		// Already holding persistMu; call the locked variant to avoid a
+		// self-deadlock on the non-reentrant mutex.
+		if err := tree.saveSnapshotLocked(false); err != nil {
 			tree.endOp(started, track)
 
 			return tree, true, tree.failPersistence(err)
@@ -7654,6 +7870,18 @@ func (tree *Tree) deletePersistent(
 }
 
 func (tree *Tree) SaveSnapshot() error {
+	return tree.saveSnapshot(false)
+}
+
+/*
+SaveSnapshotForced compacts the WAL after bulk namespace rewrites such as REM
+decay, bypassing the ordinary snapshot rate limit so durability matches memory.
+*/
+func (tree *Tree) SaveSnapshotForced() error {
+	return tree.saveSnapshot(true)
+}
+
+func (tree *Tree) saveSnapshot(force bool) error {
 	if tree == nil || tree.persist == nil {
 		return nil
 	}
@@ -7662,7 +7890,34 @@ func (tree *Tree) SaveSnapshot() error {
 		return err
 	}
 
-	if err := tree.persist.CreateSnapshot(func(yield func(key, value []byte) bool) {
+	// External snapshot callers do not hold persistMu; acquire it so rotation is
+	// exclusive with inserts/deletes (same lock order they use: persistMu →
+	// walMu). Inline triggers from insertPersistent/deletePersistent already
+	// hold persistMu and must call saveSnapshotLocked directly to avoid
+	// self-deadlock on this non-reentrant mutex.
+	tree.persistMu.Lock()
+	defer tree.persistMu.Unlock()
+
+	return tree.saveSnapshotLocked(force)
+}
+
+/*
+saveSnapshotLocked performs WAL snapshot rotation. The caller MUST hold
+persistMu: rotation iterates the live tree and renames/reopens the WAL file,
+which must not overlap a concurrent insert that mutates tree.root and appends to
+the same WAL. A prior version iterated without persistMu, letting an insert race
+the rename and latch a fatal "dmt/tree" error (leaving a stale wal.log.new).
+*/
+func (tree *Tree) saveSnapshotLocked(force bool) error {
+	if tree == nil || tree.persist == nil {
+		return nil
+	}
+
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	if err := tree.persist.createSnapshot(force, func(yield func(key, value []byte) bool) {
 		root := tree.loadRoot()
 		it := root.Root().Iterator()
 
@@ -8434,6 +8689,7 @@ package structure
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -8463,15 +8719,40 @@ ClockRing is a bounded observation timeline with independently paced item
 tracks. It implements Ring itself while Frame provides aligned event-time reads.
 */
 type ClockRing[K comparable, T any] struct {
-	access       sync.RWMutex
-	timeline     Ring[ClockSlot[K, T]]
-	newTrack     func() Ring[ClockSlot[K, T]]
-	tracks       map[K]*clockTrack[K, T]
+	timeline Ring[ClockSlot[K, T]]
+	newTrack func() Ring[ClockSlot[K, T]]
+	// tracks maps each key to its bounded history. Keys are added once, when a
+	// key first appears, then only read; sync.Map is the accepted concurrent map
+	// for that add-once/read-many pattern and removes the map read/write race.
+	tracks       sync.Map
 	err          error
-	sequence     uint64
-	timelineSize int
-	rewritten    bool
+	sequence     atomic.Uint64
+	timelineSize atomic.Int64
+	rewritten    atomic.Bool
 	timelineOpen bool
+}
+
+/*
+track loads one registered track, or nil when the key is not yet registered.
+*/
+func (clock *ClockRing[K, T]) track(key K) *clockTrack[K, T] {
+	value, ok := clock.tracks.Load(key)
+
+	if !ok {
+		return nil
+	}
+
+	return value.(*clockTrack[K, T])
+}
+
+/*
+rangeTracks visits every registered track. Order is unspecified, matching the
+prior map iteration contract.
+*/
+func (clock *ClockRing[K, T]) rangeTracks(visit func(key K, track *clockTrack[K, T]) bool) {
+	clock.tracks.Range(func(rawKey, rawValue any) bool {
+		return visit(rawKey.(K), rawValue.(*clockTrack[K, T]))
+	})
 }
 
 /*
@@ -8491,8 +8772,7 @@ func NewClockRing[K comparable, T any](
 	}
 
 	return &ClockRing[K, T]{
-		timeline: timeline, newTrack: newTrack,
-		tracks: make(map[K]*clockTrack[K, T]), timelineOpen: true,
+		timeline: timeline, newTrack: newTrack, timelineOpen: true,
 	}, nil
 }
 
@@ -8527,9 +8807,6 @@ func (clock *ClockRing[K, T]) Push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
-
 	return clock.push(slot)
 }
 
@@ -8547,23 +8824,21 @@ func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	if err := clock.register(slot.Track); err != nil {
+	track, err := clock.registerTrack(slot.Track)
+
+	if err != nil {
 		clock.err = err
 		return false
 	}
 
-	track := clock.tracks[slot.Track]
-
 	if slot.Sequence == 0 {
-		track.sequence++
-		slot.Sequence = track.sequence
+		slot.Sequence = track.sequence.Add(1)
 	}
 
-	clock.sequence++
-	slot.IngestSequence = clock.sequence
+	slot.IngestSequence = clock.sequence.Add(1)
 
-	if track.first == 0 {
-		track.first = slot.IngestSequence
+	if track.first.Load() == 0 {
+		track.first.Store(slot.IngestSequence)
 	}
 
 	if !clock.timeline.Push(slot) || !track.values.Push(slot) {
@@ -8573,24 +8848,24 @@ func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
 		return false
 	}
 
-	if slot.Sequence > track.sequence {
-		track.sequence = slot.Sequence
+	if slot.Sequence > track.sequence.Load() {
+		track.sequence.Store(slot.Sequence)
 	}
 
-	if slot.Wall.After(track.latest) {
-		track.latest = slot.Wall
+	if slot.Wall.After(track.latestWall()) {
+		track.storeLatest(slot.Wall)
 	}
 
-	track.count++
+	trackCount := track.count.Add(1)
 
-	if capacity := track.values.Len(); track.count > capacity {
-		track.count = capacity
+	if capacity := int64(track.values.Len()); trackCount > capacity {
+		track.count.Store(capacity)
 	}
 
-	clock.timelineSize++
+	timelineSize := clock.timelineSize.Add(1)
 
-	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
-		clock.timelineSize = capacity
+	if capacity := int64(clock.timeline.Len()); timelineSize > capacity {
+		clock.timelineSize.Store(capacity)
 	}
 
 	return true
@@ -8603,9 +8878,6 @@ func (clock *ClockRing[K, T]) Pop() ClockSlot[K, T] {
 	if clock == nil || clock.timeline == nil {
 		return ClockSlot[K, T]{}
 	}
-
-	clock.access.RLock()
-	defer clock.access.RUnlock()
 
 	return clock.timeline.Select(-1).Pop()
 }
@@ -8636,17 +8908,22 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		return false
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
-	otherClock.access.Lock()
-	defer otherClock.access.Unlock()
+	disjoint := true
 
-	for key := range otherClock.tracks {
-		if clock.tracks[key] != nil {
+	otherClock.rangeTracks(func(key K, _ *clockTrack[K, T]) bool {
+		if clock.track(key) != nil {
+			disjoint = false
 			return false
 		}
+
+		return true
+	})
+
+	if !disjoint {
+		return false
 	}
-	leftSequence := clock.sequence
+
+	leftSequence := clock.sequence.Load()
 	leftSlots := clock.retained()
 	rightSlots := otherClock.retained()
 
@@ -8654,9 +8931,13 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		rightSlots[index].IngestSequence += leftSequence
 	}
 
+	// Merge grows the underlying SPSC ring to hold both timelines, then drain
+	// the stale (un-resequenced) items so the re-push below lands cleanly.
 	if !clock.timeline.Merge(otherClock.timeline) {
 		return false
 	}
+
+	clock.timeline.Do(func(ClockSlot[K, T]) {})
 
 	for _, slot := range append(leftSlots, rightSlots...) {
 		if !clock.timeline.Push(slot) {
@@ -8665,17 +8946,18 @@ func (clock *ClockRing[K, T]) Merge(other Ring[ClockSlot[K, T]]) bool {
 		}
 	}
 
-	for key, incoming := range otherClock.tracks {
+	otherClock.rangeTracks(func(key K, incoming *clockTrack[K, T]) bool {
 		incoming.resequence(leftSequence)
-		clock.tracks[key] = incoming
-	}
+		clock.tracks.Store(key, incoming)
+		return true
+	})
 
-	clock.sequence += otherClock.sequence
-	clock.timelineSize += otherClock.timelineSize
-	clock.rewritten = true
+	clock.sequence.Store(leftSequence + otherClock.sequence.Load())
+	clock.timelineSize.Store(clock.timelineSize.Load() + otherClock.timelineSize.Load())
+	clock.rewritten.Store(true)
 
-	if capacity := clock.timeline.Len(); clock.timelineSize > capacity {
-		clock.timelineSize = capacity
+	if capacity := int64(clock.timeline.Len()); clock.timelineSize.Load() > capacity {
+		clock.timelineSize.Store(capacity)
 	}
 
 	return true
@@ -8688,9 +8970,6 @@ func (clock *ClockRing[K, T]) Slice(count int) Ring[ClockSlot[K, T]] {
 	if clock == nil || clock.timeline == nil {
 		return nil
 	}
-
-	clock.access.Lock()
-	defer clock.access.Unlock()
 
 	return clock.timeline.Slice(count)
 }
@@ -8714,9 +8993,6 @@ func (clock *ClockRing[K, T]) Do(visitor func(ClockSlot[K, T])) {
 		return
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	clock.timeline.Do(visitor)
 }
 
@@ -8727,9 +9003,6 @@ func (clock *ClockRing[K, T]) Error() error {
 	if clock == nil {
 		return errClockNil
 	}
-
-	clock.access.RLock()
-	defer clock.access.RUnlock()
 
 	if clock.err != nil {
 		return clock.err
@@ -8746,13 +9019,19 @@ func (clock *ClockRing[K, T]) Close() error {
 		return errClockNil
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
+	var closeErr error
 
-	for _, track := range clock.tracks {
+	clock.rangeTracks(func(_ K, track *clockTrack[K, T]) bool {
 		if err := track.values.Close(); err != nil {
-			return err
+			closeErr = err
+			return false
 		}
+
+		return true
+	})
+
+	if closeErr != nil {
+		return closeErr
 	}
 
 	if !clock.timelineOpen {
@@ -8811,15 +9090,12 @@ func (clock *ClockRing[K, T]) Cut(at time.Time) (ClockCut, error) {
 		return ClockCut{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	if clock.err != nil {
 		return ClockCut{}, clock.err
 	}
 
 	return ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      at,
 	}, nil
 }
@@ -8840,9 +9116,6 @@ func (clock *ClockRing[K, T]) FrameThrough(
 		return ClockFrame[K, T]{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	return clock.frame(cut)
 }
 
@@ -8857,25 +9130,27 @@ func (clock *ClockRing[K, T]) frame(
 		return ClockFrame[K, T]{}, clock.err
 	}
 
-	if cut.Through > clock.sequence {
+	sequence := clock.sequence.Load()
+
+	if cut.Through > sequence {
 		return ClockFrame[K, T]{}, fmt.Errorf(
 			"structure: clock cut %d exceeds high-water %d",
 			cut.Through,
-			clock.sequence,
+			sequence,
 		)
 	}
 
 	frame := ClockFrame[K, T]{
 		Wall:   cut.At,
-		Tracks: make(map[K]ClockSlot[K, T], len(clock.tracks)),
+		Tracks: make(map[K]ClockSlot[K, T]),
 	}
 
-	for key, track := range clock.tracks {
+	clock.rangeTracks(func(key K, track *clockTrack[K, T]) bool {
 		slot, found := track.at(cut)
 
-		if !found && track.first <= cut.Through {
+		if !found && track.first.Load() <= cut.Through {
 			slot, found = track.at(ClockCut{
-				Through: clock.sequence,
+				Through: sequence,
 				At:      cut.At,
 			})
 		}
@@ -8883,7 +9158,9 @@ func (clock *ClockRing[K, T]) frame(
 		if found {
 			frame.Tracks[key] = slot
 		}
-	}
+
+		return true
+	})
 
 	return frame, nil
 }
@@ -8901,18 +9178,17 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		return nil, cursor, errClockNil
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	if clock.err != nil {
 		return nil, cursor, clock.err
 	}
 
-	if cut.Through > clock.sequence {
+	sequence := clock.sequence.Load()
+
+	if cut.Through > sequence {
 		return nil, cursor, fmt.Errorf(
 			"structure: clock cut %d exceeds high-water %d",
 			cut.Through,
-			clock.sequence,
+			sequence,
 		)
 	}
 
@@ -8921,9 +9197,10 @@ func (clock *ClockRing[K, T]) EventsAfter(
 	}
 
 	after := cursor.After
+	timelineSize := clock.timelineSize.Load()
 
-	if clock.timelineSize > 0 {
-		oldest := clock.sequence - uint64(clock.timelineSize) + 1
+	if timelineSize > 0 {
+		oldest := sequence - uint64(timelineSize) + 1
 
 		if after < oldest-1 {
 			after = oldest - 1
@@ -8936,8 +9213,8 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		capacity = int(cut.Through - after)
 	}
 
-	if capacity > clock.timelineSize {
-		capacity = clock.timelineSize
+	if int64(capacity) > timelineSize {
+		capacity = int(timelineSize)
 	}
 
 	events := make([]ClockSlot[K, T], 0, capacity)
@@ -8949,12 +9226,14 @@ func (clock *ClockRing[K, T]) EventsAfter(
 		events = append(events, slot)
 	}
 
-	if clock.rewritten {
+	if clock.rewritten.Load() {
 		for _, slot := range clock.retained() {
 			appendSlot(slot)
 		}
 	} else {
-		clock.timeline.Do(appendSlot)
+		// Select(0).Do is a non-consuming, lock-free walk of the live timeline;
+		// plain Do consumes on the FIFO rings and would drain the clock.
+		clock.timeline.Select(0).Do(appendSlot)
 	}
 
 	return events, ClockCursor{After: cut.Through}, nil
@@ -8965,9 +9244,10 @@ retained returns the populated global timeline in ingress order while the
 caller holds a clock lock, excluding unused ring capacity and stale rewrites.
 */
 func (clock *ClockRing[K, T]) retained() []ClockSlot[K, T] {
-	slots := make([]ClockSlot[K, T], 0, clock.timelineSize)
+	timelineSize := int(clock.timelineSize.Load())
+	slots := make([]ClockSlot[K, T], 0, timelineSize)
 
-	for step := clock.timelineSize; step >= 1; step-- {
+	for step := timelineSize; step >= 1; step-- {
 		slots = append(slots, clock.timeline.Select(-step).Pop())
 	}
 
@@ -8982,7 +9262,10 @@ File: /structure/clock_track.go
 
 package structure
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 /*
 ClockFrame is an event-time cut across the clock's populated item tracks. Every
@@ -8995,13 +9278,38 @@ type ClockFrame[K comparable, T any] struct {
 
 /*
 clockTrack owns one bounded item history through the shared Ring interface.
+Scalar fields are atomic because the single producer mutates them in push while
+concurrent readers observe them in at, Aligned, and Frame.
 */
 type clockTrack[K comparable, T any] struct {
-	values   Ring[ClockSlot[K, T]]
-	count    int
-	sequence uint64
-	first    uint64
-	latest   time.Time
+	values      Ring[ClockSlot[K, T]]
+	count       atomic.Int64
+	sequence    atomic.Uint64
+	first       atomic.Uint64
+	latestUnix  atomic.Int64
+	latestNanos atomic.Int64
+}
+
+/*
+latestWall returns the track's newest observed wall time as one value.
+*/
+func (track *clockTrack[K, T]) latestWall() time.Time {
+	seconds := track.latestUnix.Load()
+	nanos := track.latestNanos.Load()
+
+	if seconds == 0 && nanos == 0 {
+		return time.Time{}
+	}
+
+	return time.Unix(seconds, nanos).UTC()
+}
+
+/*
+storeLatest publishes a newer wall time for this track.
+*/
+func (track *clockTrack[K, T]) storeLatest(wall time.Time) {
+	track.latestUnix.Store(wall.Unix())
+	track.latestNanos.Store(int64(wall.Nanosecond()))
 }
 
 /*
@@ -9012,31 +9320,30 @@ func (clock *ClockRing[K, T]) Register(key K) error {
 		return errClockNil
 	}
 
-	clock.access.Lock()
-	defer clock.access.Unlock()
+	_, err := clock.registerTrack(key)
 
-	return clock.register(key)
+	return err
 }
 
 /*
-register creates a track while the caller holds the clock lock so observation
-and explicit registration share one allocation path.
+registerTrack returns the track for key, allocating it once on first appearance.
+Concurrent producers cannot occur per the single-producer contract, but
+LoadOrStore keeps the add-once semantics exact under sync.Map.
 */
-func (clock *ClockRing[K, T]) register(key K) error {
-
-	if clock.tracks[key] != nil {
-		return nil
+func (clock *ClockRing[K, T]) registerTrack(key K) (*clockTrack[K, T], error) {
+	if existing := clock.track(key); existing != nil {
+		return existing, nil
 	}
 
 	values := clock.newTrack()
 
 	if values == nil {
-		return errClockTrack
+		return nil, errClockTrack
 	}
 
-	clock.tracks[key] = &clockTrack[K, T]{values: values}
+	actual, _ := clock.tracks.LoadOrStore(key, &clockTrack[K, T]{values: values})
 
-	return nil
+	return actual.(*clockTrack[K, T]), nil
 }
 
 /*
@@ -9054,11 +9361,8 @@ func (clock *ClockRing[K, T]) Frame(
 		return ClockFrame[K, T]{}, errClockTime
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	return clock.frame(ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      wall,
 	})
 }
@@ -9072,25 +9376,26 @@ func (clock *ClockRing[K, T]) Aligned() (ClockFrame[K, T], error) {
 		return ClockFrame[K, T]{}, errClockNil
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
-
 	watermark := time.Time{}
 
-	for _, track := range clock.tracks {
-		if track.count == 0 || (!watermark.IsZero() && !track.latest.Before(watermark)) {
-			continue
+	clock.rangeTracks(func(_ K, track *clockTrack[K, T]) bool {
+		latest := track.latestWall()
+
+		if track.count.Load() == 0 ||
+			(!watermark.IsZero() && !latest.Before(watermark)) {
+			return true
 		}
 
-		watermark = track.latest
-	}
+		watermark = latest
+		return true
+	})
 
 	if watermark.IsZero() {
 		return ClockFrame[K, T]{}, errClockEmpty
 	}
 
 	return clock.frame(ClockCut{
-		Through: clock.sequence,
+		Through: clock.sequence.Load(),
 		At:      watermark,
 	})
 }
@@ -9103,22 +9408,24 @@ func (clock *ClockRing[K, T]) Track(key K) (Ring[ClockSlot[K, T]], bool) {
 		return nil, false
 	}
 
-	clock.access.RLock()
-	defer clock.access.RUnlock()
+	track := clock.track(key)
 
-	if clock.tracks[key] == nil {
+	if track == nil {
 		return nil, false
 	}
 
-	return clock.tracks[key].values, true
+	return track.values, true
 }
 
 func (track *clockTrack[K, T]) at(cut ClockCut) (ClockSlot[K, T], bool) {
 	selected := ClockSlot[K, T]{}
 	found := false
+	first := track.first.Load()
 
-	track.values.Do(func(slot ClockSlot[K, T]) {
-		if slot.IngestSequence < track.first ||
+	// Select(0).Do is a non-consuming, lock-free walk; plain Do consumes on the
+	// FIFO rings and would drain the track.
+	track.values.Select(0).Do(func(slot ClockSlot[K, T]) {
+		if slot.IngestSequence < first ||
 			slot.IngestSequence > cut.Through || slot.Wall.After(cut.At) {
 			return
 		}
@@ -9144,10 +9451,11 @@ resequence offsets retained ingress identities after two disjoint clocks merge,
 while preserving track-local sequence and event-time order.
 */
 func (track *clockTrack[K, T]) resequence(offset uint64) {
-	slots := make([]ClockSlot[K, T], 0, track.count)
+	count := int(track.count.Load())
+	slots := make([]ClockSlot[K, T], 0, count)
 
-	for step := track.count; step >= 1; step-- {
-		slot := track.values.Select(-step).Pop()
+	for range count {
+		slot := track.values.Pop()
 		slot.IngestSequence += offset
 		slots = append(slots, slot)
 	}
@@ -9156,7 +9464,7 @@ func (track *clockTrack[K, T]) resequence(offset uint64) {
 		track.values.Push(slot)
 	}
 
-	track.first += offset
+	track.first.Store(track.first.Load() + offset)
 }
 
 ---
@@ -10346,16 +10654,26 @@ func (ring *SPSCRing[T]) Rejected() uint64 {
 }
 
 /*
-Select returns an spscNavigator Ring[T] positioned step logical elements forward
-from the current dequeue edge (tail). step may be negative to walk backward in
-sequence space.
+Select returns an spscNavigator Ring[T] positioned relative to the ring's
+logical edges. Negative steps walk backward from head (the write edge),
+matching ListRing's cursor-relative contract where Select(-1) means "the most
+recent element." Non-negative steps walk forward from tail (the read edge), so
+Select(0) positions at the oldest live element.
 
 The parent SPSCRing's head and tail are not modified.
 */
 func (ring *SPSCRing[T]) Select(step int) Ring[T] {
+	var position uint64
+
+	if step < 0 {
+		position = ring.head.Load() + uint64(step)
+	} else {
+		position = ring.tail.Load() + uint64(step)
+	}
+
 	return &spscNavigator[T]{
 		parent:   ring,
-		position: ring.tail.Load() + uint64(step),
+		position: position,
 	}
 }
 
@@ -10559,13 +10877,14 @@ func (navigator *spscNavigator[T]) Push(value T) bool {
 }
 
 /*
-Pop loads and clears the navigator's slot without advancing parent tail.
+Pop loads the navigator's slot value without clearing it. This matches ListRing's
+Pop contract: "returns the value at the cursor without moving the cursor."
 
 Returns the zero value of T when the slot is empty.
 */
 func (navigator *spscNavigator[T]) Pop() T {
 	index := navigator.position & navigator.parent.mask
-	value := navigator.parent.slots[index].Swap(nil)
+	value := navigator.parent.slots[index].Load()
 
 	if value == nil {
 		var zero T

@@ -15,7 +15,6 @@ import (
 
 	"github.com/theapemachine/datura/structure"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -298,9 +297,9 @@ func (election *Election) drainVotes() {
 	}
 
 	for {
-		voterID := election.voteRing.Pop()
+		voterID, ok := election.voteRing.Pop()
 
-		if voterID == 0 {
+		if !ok {
 			return
 		}
 
@@ -431,25 +430,26 @@ func (election *Election) getLastLogTerm() uint64 {
 	return election.lastLogTerm.Load()
 }
 
+/*
+schedule runs an Election background task on a dedicated goroutine.
+*/
 func (election *Election) schedule(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-	)
+	go func() {
+		_, _ = fn(election.node.ctx)
+	}()
 }
 
+/*
+scheduleLoop runs a long-lived Election loop on a dedicated goroutine.
+*/
 func (election *Election) scheduleLoop(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	election.schedule("", fn)
 }
 
 // storeTermForTest sets the current term in tests.

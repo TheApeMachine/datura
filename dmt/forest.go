@@ -2,47 +2,37 @@ package dmt
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"sync/atomic"
 
 	"github.com/theapemachine/datura"
-	"github.com/theapemachine/qpool"
 )
 
 /*
-Forest manages a collection of Tree instances, providing intelligent routing of operations
-to the most performant tree based on running performance metrics. It maintains data
-consistency across all trees while optimizing read operations by selecting the fastest
-responding tree.
+Forest manages a collection of Tree instances with one authoritative durable
+commit path. Writes go to the primary tree first; replicas apply only after the
+commit succeeds and track an applied index for read routing.
 */
 type Forest struct {
-	state    *batch
-	snapshot atomic.Pointer[Snapshot]
-	closed   atomic.Bool
-	// Context for controlling background workers
-	ctx    context.Context
-	cancel context.CancelFunc
-	pool   *qpool.Q[any]
-	owned  bool
-	// Network node for distributed operation
-	network *NetworkNode
+	state       *batch
+	snapshot    atomic.Pointer[Snapshot]
+	closed      atomic.Bool
+	commitIndex atomic.Uint64
+	ctx         context.Context
+	cancel      context.CancelFunc
+	network     *NetworkNode
 }
 
 // ForestConfig holds configuration for creating a new Forest
 type ForestConfig struct {
-	// Directory for persistence
 	PersistDir string
-	// Worker pool for background tasks
-	Pool *qpool.Q[any]
-	// Network configuration
-	Network *NetworkConfig
+	Network    *NetworkConfig
 }
 
 /*
 NewForest creates and returns a new empty Forest instance with background
-synchronization enabled. The forest starts with no trees and trees can be
-added using the AddTree method. A background goroutine is started to handle
-tree synchronization.
+synchronization enabled.
 */
 func NewForest(config ForestConfig) (*Forest, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,24 +40,22 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		state:  newBatch("dmt/forest"),
 		ctx:    ctx,
 		cancel: cancel,
-		pool:   config.Pool,
 	}
 
 	forest.snapshot.Store(&Snapshot{})
 
-	if forest.pool == nil {
-		forest.pool = newWorkerPool(forest.ctx)
-		forest.owned = true
+	tree, err := NewTree(config.PersistDir)
+
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 
-	// Create initial tree (with persistence if directory is provided)
-	tree := guardValue(forest.state, func() (*Tree, error) {
-		return NewTree(config.PersistDir), nil
-	})
+	if err := forest.AddTree(tree); err != nil {
+		cancel()
+		return nil, err
+	}
 
-	forest.AddTree(tree)
-
-	// Initialize network node if network config provided
 	if config.Network != nil {
 		forest.network = guardValue(forest.state, func() (*NetworkNode, error) {
 			return NewNetworkNode(*config.Network, forest)
@@ -99,136 +87,130 @@ func (forest *Forest) Close() error {
 		guardStep(forest.state, tree.Close)
 	}
 
-	if forest.owned && forest.pool != nil {
-		forest.pool.Close()
-	}
-
 	return forest.state.Err()
 }
 
 /*
-synchronizeTrees ensures all internal trees share an identical immutable view.
-Trailing trees catch up via O(1) root pointer assignment instead of Merkle diffs.
-*/
-func (forest *Forest) synchronizeTrees(trees []*Tree) {
-	if len(trees) <= 1 {
-		return
-	}
-
-	reference := forest.syncReferenceTree(trees)
-
-	if reference == nil {
-		return
-	}
-
-	refRoot := reference.loadRoot()
-	refTerm, refIndex := reference.GetLogState()
-
-	for _, tree := range trees {
-		if tree == reference {
-			continue
-		}
-
-		if tree.loadRoot() == refRoot {
-			continue
-		}
-
-		tree.root.Store(refRoot)
-		tree.term.Store(refTerm)
-		tree.logIndex.Store(refIndex)
-	}
-}
-
-/*
 AddTree incorporates a new Tree instance into the forest using lock-free snapshot CAS.
+Late-joining replicas are caught up by replaying the primary's current entries.
 */
-func (forest *Forest) AddTree(tree *Tree) {
+func (forest *Forest) AddTree(tree *Tree) error {
+	if tree == nil {
+		return errors.New("dmt: cannot add nil tree to forest")
+	}
+
 	for {
 		current := forest.snapshot.Load()
 		next := current.Append(tree)
 
-		if forest.snapshot.CompareAndSwap(current, next) {
-			forest.synchronizeTrees(next.Trees())
-
-			return
+		if !forest.snapshot.CompareAndSwap(current, next) {
+			continue
 		}
+
+		trees := next.Trees()
+
+		if len(trees) > 1 {
+			if err := forest.catchUpReplica(trees[0], tree); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 }
 
 /*
-getFastestTree returns the tree with the lowest average performance time.
-It analyzes the running performance metrics of each tree to determine which
-one is currently responding most quickly to operations. Returns nil if the
-forest contains no trees.
+catchUpReplica copies primary entries into replica and marks the applied index.
 */
-func (forest *Forest) getFastestTree() *Tree {
-	trees := forest.snapshot.Load().Trees()
-
-	if len(trees) == 0 {
+func (forest *Forest) catchUpReplica(primary, replica *Tree) error {
+	if primary == nil || replica == nil || primary == replica {
 		return nil
 	}
 
-	fastestTree := trees[0]
-	fastestAvg := fastestTree.AVG()
+	root := primary.loadRoot()
+	iterator := root.Root().Iterator()
 
-	for _, tree := range trees[1:] {
-		if avg := tree.AVG(); avg < fastestAvg {
+	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
+		_, _, err := replica.Insert(cloneBytes(key), cloneBytes(value))
+
+		if err != nil {
+			return err
+		}
+	}
+
+	replica.SetAppliedIndex(forest.commitIndex.Load())
+
+	return nil
+}
+
+/*
+getFastestTree returns a readable replica whose applied index matches the forest
+commit index and that has a completed latency sample. Prefer the lowest average
+latency among eligible trees.
+*/
+func (forest *Forest) getFastestTree() *Tree {
+	trees := forest.snapshot.Load().Trees()
+	commit := forest.commitIndex.Load()
+
+	var fastestTree *Tree
+	var fastestAvg int64
+
+	for _, tree := range trees {
+		if tree.AppliedIndex() != commit {
+			continue
+		}
+
+		if !tree.HasLatencySample() {
+			continue
+		}
+
+		avg := tree.AVG()
+
+		if fastestTree == nil || avg < fastestAvg {
 			fastestTree = tree
 			fastestAvg = avg
 		}
 	}
 
-	return fastestTree
-}
-
-/*
-syncReferenceTree selects the fastest tree that already holds replicated state.
-Empty trailing replicas are never used as the synchronization source.
-*/
-func (forest *Forest) syncReferenceTree(trees []*Tree) *Tree {
-	if len(trees) == 0 {
-		return nil
-	}
-
-	fastestTree := forest.getFastestTree()
-
-	if fastestTree != nil && fastestTree.loadRoot().Len() > 0 {
+	if fastestTree != nil {
 		return fastestTree
 	}
 
 	for _, tree := range trees {
-		if tree.loadRoot().Len() > 0 {
+		if tree.AppliedIndex() == commit {
 			return tree
 		}
+	}
+
+	if len(trees) == 0 {
+		return nil
 	}
 
 	return trees[0]
 }
 
 /*
-GetFastestTree returns the tree with the lowest average operation latency.
+GetFastestTree returns the tree selected for reads by applied-index and latency.
 */
 func (forest *Forest) GetFastestTree() *Tree {
 	return forest.getFastestTree()
 }
 
 /*
-Get retrieves a value from the forest using the most performant tree.
-It automatically selects the tree with the best average response time to
-handle the request. Returns the value and true if the key exists, or nil
-and false if it doesn't or if the forest is empty.
+Get retrieves a value from the forest using the most performant eligible tree.
 */
 func (forest *Forest) Get(key []byte) ([]byte, bool) {
 	fastestTree := forest.getFastestTree()
+
 	if fastestTree == nil {
 		return nil, false
 	}
+
 	return fastestTree.Get(key)
 }
 
 /*
-Seek performs a prefix-based search using the most performant tree in the forest.
-It yields artifacts whose keys share the prefix and are greater than or equal to key.
+Seek performs a prefix-based search using the most performant eligible tree.
 */
 func (forest *Forest) Seek(key []byte) iter.Seq[*datura.Artifact] {
 	fastestTree := forest.getFastestTree()
@@ -241,26 +223,48 @@ func (forest *Forest) Seek(key []byte) iter.Seq[*datura.Artifact] {
 }
 
 /*
-Insert adds or updates a key-value pair across all trees in the forest.
-To maintain data consistency, the operation is performed on every tree,
-ensuring that subsequent read operations will find the same data regardless
-of which tree they query. This method prioritizes consistency over performance.
+Insert adds or updates a key-value pair through the durable primary commit log,
+then applies the same mutation to replicas. Returns the first durability or
+apply error.
 */
-func (forest *Forest) Insert(key []byte, value []byte) {
+func (forest *Forest) Insert(key []byte, value []byte) error {
 	trees := forest.snapshot.Load().Trees()
 
-	// Update all local trees immediately
-	for _, tree := range trees {
-		tree.Insert(key, value)
+	if len(trees) == 0 {
+		return errors.New("dmt: forest has no trees")
+	}
+
+	primary := trees[0]
+	_, _, err := primary.Insert(key, value)
+
+	if err != nil {
+		return err
+	}
+
+	index := primary.GetLogIndex()
+	primary.SetAppliedIndex(index)
+	forest.commitIndex.Store(index)
+
+	for _, tree := range trees[1:] {
+		_, _, err := tree.Insert(key, value)
+
+		if err != nil {
+			return err
+		}
+
+		tree.SetAppliedIndex(index)
 	}
 
 	if forest.network != nil {
 		forest.network.stageInsert(key, value)
 	}
+
+	return nil
 }
 
 /*
-Iterate walks all key-value pairs in the fastest tree with zero intermediate allocations.
+Iterate walks all key-value pairs in the selected readable tree with copied
+buffers at the public boundary.
 */
 func (forest *Forest) Iterate(fn func(key []byte, value []byte) bool) {
 	tree := forest.getFastestTree()
@@ -273,7 +277,7 @@ func (forest *Forest) Iterate(fn func(key []byte, value []byte) bool) {
 	iterator := root.Root().Iterator()
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
-		if !fn(key, value) {
+		if !fn(cloneBytes(key), cloneBytes(value)) {
 			return
 		}
 	}

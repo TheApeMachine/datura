@@ -195,7 +195,13 @@ func (clock *ClockRing[K, T]) retained() []ClockSlot[K, T] {
 	slots := make([]ClockSlot[K, T], 0, timelineSize)
 
 	for step := timelineSize; step >= 1; step-- {
-		slots = append(slots, clock.timeline.Select(-step).Pop())
+		slot, ok := clock.timeline.Select(-step).Pop()
+
+		if !ok {
+			continue
+		}
+
+		slots = append(slots, slot)
 	}
 
 	return slots

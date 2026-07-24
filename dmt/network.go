@@ -17,7 +17,6 @@ import (
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/rpc"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -365,7 +364,7 @@ func (n *NetworkNode) syncWithPeers() {
 				key = append([]byte(nil), key...)
 				value = append([]byte(nil), value...)
 				totalBytes += len(key) + len(value)
-				n.forest.Insert(key, value)
+				_ = n.forest.Insert(key, value)
 				n.merkleTree.Insert(key, value)
 			}
 
@@ -400,7 +399,7 @@ func (n *NetworkNode) Insert(ctx context.Context, call RadixRPC_insert) error {
 		return fmt.Errorf("stale term")
 	}
 
-	n.forest.Insert(key, value)
+	_ = n.forest.Insert(key, value)
 	n.stageInsert(key, value)
 	n.election.updateLogState(index, term)
 
@@ -769,7 +768,7 @@ func (n *NetworkNode) applyFilteredSyncEntries(
 
 		value = append([]byte(nil), value...)
 
-		n.forest.Insert(key, value)
+		_ = n.forest.Insert(key, value)
 		n.merkleTree.Insert(key, value)
 	}
 
@@ -779,25 +778,23 @@ func (n *NetworkNode) applyFilteredSyncEntries(
 }
 
 /*
-schedule runs a NetworkNode background task on the Forest worker pool.
+schedule runs a NetworkNode background task on a dedicated goroutine.
 */
 func (n *NetworkNode) schedule(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-	)
+	go func() {
+		_, _ = fn(n.ctx)
+	}()
 }
 
+/*
+scheduleLoop runs a long-lived NetworkNode loop on a dedicated goroutine.
+*/
 func (n *NetworkNode) scheduleLoop(
-	id string,
+	_ string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	n.schedule("", fn)
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/theapemachine/datura"
+	"github.com/theapemachine/errnie"
 )
 
 /*
@@ -83,7 +84,11 @@ func (engine *CognitiveEngine) classification(
 ) (ClassificationResult, float64) {
 	var classifyScratch ClassificationScratch
 
-	classification := engine.tree.Classify(sequence, &classifyScratch)
+	classification, classifyErr := engine.tree.Classify(sequence, &classifyScratch)
+	if classifyErr != nil {
+		errnie.Error(classifyErr)
+		return ClassificationResult{}, 0
+	}
 	contrastEvidence := 0.0
 
 	if len(classification.Scores) < 2 {
@@ -117,12 +122,22 @@ func (engine *CognitiveEngine) train(sequence []byte) {
 		return
 	}
 
-	mutations := engine.buildContextTrainingMutations(sequence)
-	mutations = append(mutations, engine.tree.buildSensoryMutations(sequence)...)
-	engine.tree.commitLearnMutations(mutations)
+	mutations, err := engine.buildContextTrainingMutations(sequence)
+
+	if err != nil {
+		errnie.Error(err)
+		return
+	}
+
+	mutations = append(mutations, engine.tree.buildSensoryMutations(0, sequence)...)
+	if err := engine.tree.commitLearnMutations(mutations); err != nil {
+		errnie.Error(err)
+	}
 }
 
-func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []learnMutation {
+func (engine *CognitiveEngine) buildContextTrainingMutations(
+	sequence []byte,
+) ([]learnMutation, error) {
 	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
 	pending := make(map[string]PackedWeight, countTokenBoundaries(sequence))
 	tokenStart := 0
@@ -158,11 +173,16 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		if len(parentPath) > 0 {
 			denominator := float64(parent.Count)
 
-			if denominator <= 0 {
-				denominator = float64(nextCount)
+			if !(denominator > 0) {
+				return nil, errnie.Err(
+					errnie.Validation,
+					"dmt: context training requires a positive parent sample count",
+					nil,
+				)
 			}
 
 			probability = float64(nextCount) / denominator
+
 			if probability > 1.0 {
 				probability = 1.0
 			}
@@ -180,7 +200,7 @@ func (engine *CognitiveEngine) buildContextTrainingMutations(sequence []byte) []
 		tokenStart = index + 1
 	}
 
-	return mutations
+	return mutations, nil
 }
 
 func (engine *CognitiveEngine) writeArtifact(
@@ -195,7 +215,19 @@ func (engine *CognitiveEngine) writeArtifact(
 	lookaheadPaths int,
 ) {
 	surprise := engine.surprise(sequence)
-	surpriseThreshold := -math.Log2(1.0 / float64(parentWeight.Count+1))
+	mass := float64(parentWeight.Count + 1)
+
+	if !(mass > 0) {
+		errnie.Error(errnie.Err(
+			errnie.Validation,
+			"dmt: surprise threshold requires positive parent mass",
+			nil,
+		))
+
+		return
+	}
+
+	surpriseThreshold := -math.Log2(1.0 / mass)
 
 	artifact.Poke(surprise, "cognition", "surprise", "value")
 	artifact.Poke(surpriseThreshold, "cognition", "surprise", "threshold")

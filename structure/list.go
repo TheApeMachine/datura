@@ -94,13 +94,20 @@ func (ring *ListRing[T]) Push(value T) bool {
 /*
 Pop returns the value at the cursor without moving the cursor. Call Select to
 obtain a Ring at another position, or rely on Push to advance the write cursor.
+ok is false when the ring has no nodes.
 */
-func (ring *ListRing[T]) Pop() T {
+func (ring *ListRing[T]) Pop() (T, bool) {
+	var zero T
+
+	if ring == nil || ring.cursor == nil {
+		return zero, false
+	}
+
 	if ring.cursor.next == nil {
 		ring.cursor.init()
 	}
 
-	return ring.cursor.Value
+	return ring.cursor.Value, true
 }
 
 /*

@@ -120,7 +120,7 @@ func TestNetworkSync(t *testing.T) {
 		defer node2.Close()
 
 		Convey("When inserting data on first node", func() {
-			node1.forest.Insert([]byte("key1"), []byte("value1"))
+			_ = node1.forest.Insert([]byte("key1"), []byte("value1"))
 			node1.merkleTree.Insert([]byte("key1"), []byte("value1"))
 			node1.merkleTree.Rebuild()
 
@@ -379,7 +379,7 @@ func BenchmarkNetworkStageInsert(benchmark *testing.B) {
 
 	benchmark.ReportAllocs()
 
-	for index := 0; index < benchmark.N; index++ {
+	for index := 0; benchmark.Loop(); index++ {
 		key := strconv.AppendInt([]byte("key/"), int64(index), 10)
 		node.stageInsert(key, value)
 	}

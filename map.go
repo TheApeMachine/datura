@@ -8,15 +8,14 @@ import (
 
 type Map[T any] map[string]T
 
-func (m Map[T]) Marshal() []byte {
+func (m Map[T]) Marshal() ([]byte, error) {
 	payload, err := sonic.Marshal(m)
 
 	if err != nil {
-		errnie.Error(errnie.Err(errnie.Validation, "datura.Map: failed to marshal payload", err))
-		return nil
+		return nil, errnie.Error(errnie.Err(errnie.Validation, "datura.Map: failed to marshal payload", err))
 	}
 
-	return payload
+	return payload, nil
 }
 
 func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
@@ -70,7 +69,14 @@ func (artifact *Artifact) MergeFields(values map[string]any) {
 		body[key] = value
 	}
 
-	artifact.WithPayload(body.Marshal())
+	payload, err := body.Marshal()
+
+	if err != nil {
+		errnie.Error(err)
+		return
+	}
+
+	artifact.WithPayload(payload)
 }
 
 /*
@@ -109,7 +115,15 @@ func (artifact *Artifact) MergeOutputs(values map[string]any) {
 	}
 
 	body["output"] = output
-	artifact.WithPayload(body.Marshal())
+
+	payload, err := body.Marshal()
+
+	if err != nil {
+		errnie.Error(err)
+		return
+	}
+
+	artifact.WithPayload(payload)
 }
 
 func (artifact *Artifact) payloadMap() Map[any] {

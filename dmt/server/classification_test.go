@@ -21,7 +21,8 @@ func TestEvaluateClassification(t *testing.T) {
 			dmt.CognitiveState{Count: 12, Probability: 0.737},
 		)
 
-		server := NewForestServer(WithContext(ctx), WithForest(forest))
+		server, err := NewForestServer(WithContext(ctx), WithForest(forest))
+		So(err, ShouldBeNil)
 		defer server.Close()
 
 		Convey("When evaluating classification for a probe sequence", func() {

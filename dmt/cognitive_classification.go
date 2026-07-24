@@ -11,7 +11,10 @@ var (
 	ErrNoAttractorMatch = errors.New("dmt: no attractor basin matched sequence")
 )
 
-const classificationClassCapacity = 16
+const (
+	classificationClassCapacity = 256
+	classificationNameCapacity  = 256
+)
 
 /*
 ClassScore records one posterior class probability after softmax normalization.
@@ -22,7 +25,7 @@ type ClassScore struct {
 }
 
 /*
-ClassificationResult is the sorted posterior matrix for one input sequence.
+ClassificationResult is an owned, immutable posterior matrix for one input sequence.
 */
 type ClassificationResult struct {
 	Scores  []ClassScore
@@ -31,38 +34,107 @@ type ClassificationResult struct {
 }
 
 /*
-ClassificationScratch holds reusable stack storage for zero-allocation classification.
+ClassificationScratch holds reusable dynamically sized storage for classification.
+Limits are explicit; exceeding them returns an error from Classify.
 */
 type ClassificationScratch struct {
-	scores      [classificationClassCapacity]ClassScore
-	nameStorage [classificationClassCapacity][48]byte
+	scores      []ClassScore
+	nameStorage [][]byte
 	activeCount int
+	classLimit  int
+	nameLimit   int
 }
 
 /*
 Reset clears accumulated class evidence in the scratch buffer.
 */
 func (scratch *ClassificationScratch) Reset() {
+	if scratch == nil {
+		return
+	}
+
 	scratch.activeCount = 0
+
+	if scratch.classLimit == 0 {
+		scratch.classLimit = classificationClassCapacity
+	}
+
+	if scratch.nameLimit == 0 {
+		scratch.nameLimit = classificationNameCapacity
+	}
 }
 
 /*
-Classify evaluates a sensory sequence against attractor basins and returns posteriors.
+Classify evaluates a sensory sequence against attractor basins and returns owned
+posteriors. It matches only basins that are token-boundary prefixes of sequence.
 */
 func (tree *Tree) Classify(
 	sequence []byte,
 	scratch *ClassificationScratch,
-) ClassificationResult {
+) (ClassificationResult, error) {
 	if tree == nil || scratch == nil {
-		return ClassificationResult{}
+		return ClassificationResult{}, ErrNoAttractorMatch
 	}
 
 	scratch.Reset()
 
 	var keyScratch [128]byte
+	var prefixScratch [128]byte
+	classes := tree.basinClasses()
+
+	if len(classes) == 0 {
+		if err := tree.classifyFullScan(sequence, scratch, &keyScratch); err != nil {
+			return ClassificationResult{}, err
+		}
+	} else {
+		for _, className := range classes {
+			if err := tree.accumulateClassBasins(
+				[]byte(className),
+				sequence,
+				scratch,
+				&keyScratch,
+				&prefixScratch,
+			); err != nil {
+				return ClassificationResult{}, err
+			}
+		}
+	}
+
+	if scratch.activeCount == 0 {
+		return ClassificationResult{}, nil
+	}
+
+	scores := scratch.scores[:scratch.activeCount]
+	normalizeLogEvidence(scores)
+	sortClassScoresDescending(scores)
+
+	owned := make([]ClassScore, len(scores))
+
+	for index := range scores {
+		owned[index] = ClassScore{
+			ClassName: append([]byte(nil), scores[index].ClassName...),
+			Value:     scores[index].Value,
+		}
+	}
+
+	return ClassificationResult{
+		Scores:  owned,
+		Winner:  append([]byte(nil), owned[0].ClassName...),
+		Highest: owned[0].Value,
+	}, nil
+}
+
+/*
+classifyFullScan is the cold path used before any basin class has been indexed,
+and seeds the class registry from the keys it visits.
+*/
+func (tree *Tree) classifyFullScan(
+	sequence []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+) error {
 	root := tree.loadRoot()
 	iterator := root.Root().Iterator()
-
 	iterator.SeekPrefix(basinNamespaceBytes)
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
@@ -70,34 +142,104 @@ func (tree *Tree) Classify(
 			break
 		}
 
+		tree.noteBasinClass(key)
 		className, basinSequence, mapped := classSequenceFromBasinKey(key)
 
 		if !mapped || !basinMatchesSequence(basinSequence, sequence) {
 			continue
 		}
 
-		weight := UnmarshalCognitive(value)
-		parentPath := parentContextPath(basinSequence)
-		parentWeight := tree.getBasinWeightStack(className, parentPath, &keyScratch)
-		probabilityFloor := probabilityFloorFromWeight(weight, parentWeight.Count)
-		logEvidence := math.Log(math.Max(weight.Probability, probabilityFloor))
-
-		scratch.accumulateClassEvidence(className, logEvidence)
+		if err := tree.accumulateBasinEvidence(className, basinSequence, value, scratch, keyScratch); err != nil {
+			return err
+		}
 	}
 
-	if scratch.activeCount == 0 {
-		return ClassificationResult{}
+	return nil
+}
+
+/*
+accumulateClassBasins scores one attractor class by reading token-boundary
+prefixes of the observed sequence under that class.
+*/
+func (tree *Tree) accumulateClassBasins(
+	className []byte,
+	sequence []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+	prefixScratch *[128]byte,
+) error {
+	tokenStart := 0
+
+	for index := 0; index <= len(sequence); index++ {
+		if index < len(sequence) && sequence[index] != '_' {
+			continue
+		}
+
+		if index == tokenStart {
+			tokenStart = index + 1
+
+			continue
+		}
+
+		path := sequence[:index]
+		storageKey := tree.basinKeyScratch(className, path, keyScratch)
+
+		if storageKey == nil {
+			storageKey = basinStorageKey(className, path)
+		}
+
+		value, found := tree.getRaw(storageKey)
+
+		if found {
+			if err := tree.accumulateBasinEvidence(
+				className, path, value, scratch, keyScratch,
+			); err != nil {
+				return err
+			}
+		}
+
+		tokenStart = index + 1
 	}
 
-	scores := scratch.scores[:scratch.activeCount]
-	normalizeLogEvidence(scores)
-	sortClassScoresDescending(scores)
+	_ = prefixScratch
 
-	return ClassificationResult{
-		Scores:  scores,
-		Winner:  scores[0].ClassName,
-		Highest: scores[0].Value,
+	return nil
+}
+
+func (tree *Tree) accumulateBasinEvidence(
+	className []byte,
+	basinSequence []byte,
+	value []byte,
+	scratch *ClassificationScratch,
+	keyScratch *[128]byte,
+) error {
+	weight := UnmarshalCognitive(value)
+	parentPath := parentContextPath(basinSequence)
+	parentWeight := tree.getBasinWeightStack(className, parentPath, keyScratch)
+	probabilityFloor := probabilityFloorFromWeight(weight, parentWeight.Count)
+	logEvidence := math.Log(math.Max(weight.Probability, probabilityFloor))
+
+	return scratch.accumulateClassEvidence(className, logEvidence)
+}
+
+func (tree *Tree) basinKeyScratch(
+	className []byte,
+	sequence []byte,
+	keyScratch *[128]byte,
+) []byte {
+	requiredLength := len(basinNamespaceBytes) + len(className) + 1 + len(sequence)
+
+	if requiredLength > len(keyScratch) {
+		return nil
 	}
+
+	storageKey := keyScratch[:requiredLength]
+	offset := copy(storageKey, basinNamespaceBytes)
+	offset += copy(storageKey[offset:], className)
+	storageKey[offset] = '/'
+	copy(storageKey[offset+1:], sequence)
+
+	return storageKey
 }
 
 /*
@@ -115,16 +257,21 @@ func (tree *Tree) UnsupervisedLearn(
 		return nil, 0, ErrNoAttractorMatch
 	}
 
-	inference := tree.Classify(sequence, scratch)
+	inference, err := tree.Classify(sequence, scratch)
+
+	if err != nil {
+		return nil, 0, err
+	}
 
 	if len(inference.Winner) == 0 {
 		return nil, 0, ErrNoAttractorMatch
 	}
 
 	learningRate := deriveLearningRate(tree, sequence)
-	mutations := tree.buildUnsupervisedMutations(sequence, inference.Winner, learningRate)
 
-	tree.commitLearnMutations(mutations)
+	if err := tree.commitLearnDeltas(sequence, inference.Winner, learningRate); err != nil {
+		return nil, 0, err
+	}
 
 	return inference.Winner, inference.Highest, nil
 }
@@ -148,27 +295,41 @@ func (tree *Tree) optimizeWeightsInline(
 func (scratch *ClassificationScratch) accumulateClassEvidence(
 	className []byte,
 	logEvidence float64,
-) {
+) error {
 	for index := 0; index < scratch.activeCount; index++ {
 		if bytes.Equal(scratch.scores[index].ClassName, className) {
 			scratch.scores[index].Value += logEvidence
 
-			return
+			return nil
 		}
 	}
 
-	if scratch.activeCount >= classificationClassCapacity {
-		return
+	if scratch.activeCount >= scratch.classLimit {
+		return errors.New("dmt: classification class limit exceeded")
 	}
 
-	nameBuffer := scratch.nameStorage[scratch.activeCount][:len(className)]
-	copy(nameBuffer, className)
+	if len(className) > scratch.nameLimit {
+		return errors.New("dmt: classification class name exceeds limit")
+	}
+
+	for len(scratch.scores) <= scratch.activeCount {
+		scratch.scores = append(scratch.scores, ClassScore{})
+	}
+
+	for len(scratch.nameStorage) <= scratch.activeCount {
+		scratch.nameStorage = append(scratch.nameStorage, nil)
+	}
+
+	nameBuffer := append(scratch.nameStorage[scratch.activeCount][:0], className...)
+	scratch.nameStorage[scratch.activeCount] = nameBuffer
 
 	scratch.scores[scratch.activeCount] = ClassScore{
 		ClassName: nameBuffer,
 		Value:     logEvidence,
 	}
 	scratch.activeCount++
+
+	return nil
 }
 
 func normalizeLogEvidence(scores []ClassScore) {
@@ -213,7 +374,7 @@ func (tree *Tree) getBasinWeightStack(
 	storageKey[offset] = '/'
 	copy(storageKey[offset+1:], sequence)
 
-	value, found := tree.Get(storageKey)
+	value, found := tree.getRaw(storageKey)
 
 	if !found {
 		return CognitiveState{}
@@ -241,15 +402,15 @@ func basinMatchesSequence(basinSequence, sequence []byte) bool {
 		return len(sequence) == 0
 	}
 
-	if bytes.HasPrefix(sequence, basinSequence) {
-		if len(sequence) == len(basinSequence) {
-			return true
-		}
-
-		return sequence[len(basinSequence)] == '_'
+	if !bytes.HasPrefix(sequence, basinSequence) {
+		return false
 	}
 
-	return bytes.HasPrefix(basinSequence, sequence)
+	if len(sequence) == len(basinSequence) {
+		return true
+	}
+
+	return sequence[len(basinSequence)] == '_'
 }
 
 func deriveLearningRate(tree *Tree, sequence []byte) float64 {
@@ -344,9 +505,22 @@ func onlineProbabilityAlignment(currentProbability, learningRate float64) float6
 	return currentProbability + learningRate*(1.0-currentProbability)
 }
 
-func (tree *Tree) commitLearnMutations(mutations []learnMutation) {
+func (tree *Tree) commitLearnMutations(mutations []learnMutation) error {
 	if tree == nil || len(mutations) == 0 {
-		return
+		return nil
+	}
+
+	if tree.persist != nil {
+		tree.persistMu.Lock()
+		defer tree.persistMu.Unlock()
+
+		if err := tree.persistenceError(); err != nil {
+			return err
+		}
+
+		if err := tree.logLearnMutations(mutations); err != nil {
+			return tree.failPersistence(err)
+		}
 	}
 
 	for {
@@ -354,22 +528,132 @@ func (tree *Tree) commitLearnMutations(mutations []learnMutation) {
 		transaction := oldRoot.Txn()
 
 		for _, mutation := range mutations {
-			transaction.Insert(mutation.key, mutation.value)
+			transaction.Insert(cloneBytes(mutation.key), cloneBytes(mutation.value))
 		}
 
 		newRoot := transaction.Commit()
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
-			tree.logLearnMutations(mutations)
+			for _, mutation := range mutations {
+				tree.noteBasinClass(mutation.key)
+				tree.maintainCognitiveIndexes(mutation.key, false)
+			}
 
+			return nil
+		}
+	}
+}
+
+/*
+commitLearnDeltas applies learning as count/probability deltas under one
+serialized transaction so concurrent learners cannot overwrite each other with
+stale absolute replacements.
+*/
+func (tree *Tree) commitLearnDeltas(
+	sequence []byte,
+	inferredClass []byte,
+	learningRate float64,
+) error {
+	if tree == nil || len(sequence) == 0 || len(inferredClass) == 0 {
+		return nil
+	}
+
+	apply := func() []learnMutation {
+		return tree.buildUnsupervisedMutations(sequence, inferredClass, learningRate)
+	}
+
+	if tree.persist == nil {
+		mutations := apply()
+		return tree.commitLearnMutations(mutations)
+	}
+
+	tree.persistMu.Lock()
+	defer tree.persistMu.Unlock()
+
+	if err := tree.persistenceError(); err != nil {
+		return err
+	}
+
+	mutations := apply()
+
+	if err := tree.logLearnMutations(mutations); err != nil {
+		return tree.failPersistence(err)
+	}
+
+	oldRoot := tree.loadRoot()
+	transaction := oldRoot.Txn()
+
+	for _, mutation := range mutations {
+		transaction.Insert(cloneBytes(mutation.key), cloneBytes(mutation.value))
+	}
+
+	tree.root.Store(transaction.Commit())
+
+	for _, mutation := range mutations {
+		tree.noteBasinClass(mutation.key)
+		tree.maintainCognitiveIndexes(mutation.key, false)
+	}
+
+	return nil
+}
+
+/*
+noteBasinClass records attractor class names so Classify can probe per-class
+prefixes instead of walking every basin key on each REM replay.
+*/
+func (tree *Tree) noteBasinClass(key []byte) {
+	if tree == nil {
+		return
+	}
+
+	className, _, mapped := classSequenceFromBasinKey(key)
+
+	if !mapped || len(className) == 0 {
+		return
+	}
+
+	name := string(className)
+
+	for {
+		current := tree.basinClassNames.Load()
+
+		if current != nil {
+			for _, existing := range *current {
+				if existing == name {
+					return
+				}
+			}
+		}
+
+		next := []string{name}
+
+		if current != nil {
+			next = append(append([]string{}, (*current)...), name)
+		}
+
+		if tree.basinClassNames.CompareAndSwap(current, &next) {
 			return
 		}
 	}
 }
 
-func (tree *Tree) logLearnMutations(mutations []learnMutation) {
+func (tree *Tree) basinClasses() []string {
+	if tree == nil {
+		return nil
+	}
+
+	current := tree.basinClassNames.Load()
+
+	if current == nil {
+		return nil
+	}
+
+	return *current
+}
+
+func (tree *Tree) logLearnMutations(mutations []learnMutation) error {
 	if tree.persist == nil {
-		return
+		return nil
 	}
 
 	term := tree.term.Load()
@@ -387,18 +671,16 @@ func (tree *Tree) logLearnMutations(mutations []learnMutation) {
 		})
 	}
 
-	guardStep(tree.state, func() error {
-		return tree.persist.LogInserts(entries)
-	})
-
-	if tree.state.Failed() {
-		return
+	if err := tree.persist.LogInserts(entries); err != nil {
+		return err
 	}
 
 	lastIndex := startIndex + uint64(len(entries))
 	tree.logIndex.Store(lastIndex)
 
 	if startIndex/tree.persist.snapCount != lastIndex/tree.persist.snapCount {
-		guardStep(tree.state, tree.SaveSnapshot)
+		return tree.saveSnapshotLocked(false)
 	}
+
+	return nil
 }

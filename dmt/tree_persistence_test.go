@@ -25,7 +25,8 @@ func TestTreeWithPersistence(t *testing.T) {
 		defer os.RemoveAll(tmpDir)
 
 		Convey("When creating a tree with persistence", func() {
-			tree := NewTree(tmpDir)
+			tree, err := NewTree(tmpDir)
+			So(err, ShouldBeNil)
 			defer tree.Close()
 
 			Convey("Then the persistence store should be initialized", func() {
@@ -40,7 +41,8 @@ func TestTreeWithPersistence(t *testing.T) {
 
 				Convey("The data should be persisted", func() {
 					// Create new tree instance with same persistence
-					tree2 := NewTree(tmpDir)
+					tree2, err := NewTree(tmpDir)
+					So(err, ShouldBeNil)
 					defer tree2.Close()
 
 					// Verify term and index were loaded
@@ -61,16 +63,14 @@ func TestTreeWithPersistence(t *testing.T) {
 
 func TestTreePersistentInsertFailsClosedOnWALWriteFailure(t *testing.T) {
 	Convey("Given a persistent tree with a failing WAL writer", t, func() {
-		tree := NewTree(t.TempDir())
+		tree, err := NewTree(t.TempDir())
+		So(err, ShouldBeNil)
 		So(tree.persist, ShouldNotBeNil)
 
 		originalWriter := tree.persist.walWriter
-		originalPool := tree.persist.pool
-		tree.persist.pool = nil
 		tree.persist.walWriter = bufio.NewWriter(failingWALWriter{})
 		defer func() {
 			tree.persist.walWriter = originalWriter
-			tree.persist.pool = originalPool
 			_ = tree.Close()
 		}()
 
@@ -103,8 +103,8 @@ func TestTreeStateRecovery(t *testing.T) {
 		defer os.RemoveAll(tmpDir)
 
 		// Create and populate first tree
-		tree1 := NewTree(tmpDir)
-
+		tree1, err := NewTree(tmpDir)
+		So(err, ShouldBeNil)
 		entries := []struct {
 			key   string
 			value string
@@ -122,7 +122,8 @@ func TestTreeStateRecovery(t *testing.T) {
 		tree1.Close()
 
 		Convey("When creating a new tree instance", func() {
-			tree2 := NewTree(tmpDir)
+			tree2, err := NewTree(tmpDir)
+			So(err, ShouldBeNil)
 			defer tree2.Close()
 
 			Convey("Then it should recover the correct state", func() {
@@ -146,7 +147,9 @@ func TestTreeSnapshotPreservesActiveEntries(t *testing.T) {
 	Convey("Given a persistent tree with a low snapshot interval", t, func() {
 		tmpDir := t.TempDir()
 
-		tree := NewTree(tmpDir)
+		tree, err := NewTree(tmpDir)
+
+		So(err, ShouldBeNil)
 		tree.persist.snapCount = 3
 
 		entries := map[string]string{
@@ -165,7 +168,8 @@ func TestTreeSnapshotPreservesActiveEntries(t *testing.T) {
 		So(closeErr, ShouldBeNil)
 
 		Convey("When the tree is reopened after the snapshot", func() {
-			reopened := NewTree(tmpDir)
+			reopened, err := NewTree(tmpDir)
+			So(err, ShouldBeNil)
 			defer reopened.Close()
 
 			Convey("Then every active entry should be recovered", func() {
@@ -189,7 +193,9 @@ func TestTreeTermUpdate(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
 		defer os.RemoveAll(tmpDir)
 
-		tree := NewTree(tmpDir)
+		tree, err := NewTree(tmpDir)
+
+		So(err, ShouldBeNil)
 		defer tree.Close()
 
 		Convey("When updating the term", func() {
@@ -201,7 +207,8 @@ func TestTreeTermUpdate(t *testing.T) {
 
 				// Verify term survives restart
 				tree.Close()
-				newTree := NewTree(tmpDir)
+				newTree, err := NewTree(tmpDir)
+				So(err, ShouldBeNil)
 				defer newTree.Close()
 
 				term, _ = newTree.GetLogState()

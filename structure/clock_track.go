@@ -193,7 +193,12 @@ func (track *clockTrack[K, T]) resequence(offset uint64) {
 	slots := make([]ClockSlot[K, T], 0, count)
 
 	for range count {
-		slot := track.values.Pop()
+		slot, ok := track.values.Pop()
+
+		if !ok {
+			break
+		}
+
 		slot.IngestSequence += offset
 		slots = append(slots, slot)
 	}

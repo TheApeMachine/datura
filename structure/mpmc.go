@@ -30,7 +30,9 @@ MPMCRing is a fixed-capacity multi-producer multi-consumer queue used as spill
 storage where multiple goroutines may Push and Pop concurrently.
 
 Push and Pop are lock-free. Capacity must be at least two and a power of two.
-The ring carries a derived context cancelled by Close.
+Close sets an atomic closed flag that rejects further Push; queued values remain
+until drained. Select, Merge, and Slice operate on OfflineRing snapshots or
+require quiescence so they never mutate live Vyukov cells through navigators.
 */
 type MPMCRing[T any] struct {
 	ctx        context.Context
@@ -40,6 +42,7 @@ type MPMCRing[T any] struct {
 	buffer     []MPMCRingCell[T]
 	enqueuePos atomic.Uint64
 	dequeuePos atomic.Uint64
+	closed     atomic.Bool
 	artifact   *datura.Artifact
 }
 
@@ -137,11 +140,14 @@ func (ring *MPMCRing[T]) pushpop(
 /*
 Push enqueues one value at the producer edge.
 
-Returns false when value is the nil sentinel for T, or the ring is full under
-contention (pushpop returns nil). Callers that must not drop spin with
-runtime.Gosched.
+Returns false when the ring is closed, or the ring is full under contention
+(pushpop returns nil). Callers that must not drop spin with runtime.Gosched.
 */
 func (ring *MPMCRing[T]) Push(value T) bool {
+	if ring.closed.Load() {
+		return false
+	}
+
 	stored := value
 	return ring.pushpop(&ring.enqueuePos, 0, pushpopProducer, &stored) != nil
 }
@@ -149,56 +155,72 @@ func (ring *MPMCRing[T]) Push(value T) bool {
 /*
 Pop dequeues the oldest value from the consumer edge.
 
-Returns the zero value of T when the queue is empty at the instant of the
-dequeue attempt.
+ok is false when the queue is empty at the instant of the dequeue attempt.
 */
-func (ring *MPMCRing[T]) Pop() T {
+func (ring *MPMCRing[T]) Pop() (T, bool) {
+	var zero T
 	value := ring.pushpop(&ring.dequeuePos, 1, pushpopConsumer, nil)
 
-	var zero T
-
 	if value == nil {
-		return zero
+		return zero, false
 	}
 
-	return *value
+	return *value, true
 }
 
 /*
-Select returns an mpmcNavigator Ring[T] positioned step logical elements forward
-from the current dequeue edge (dequeuePos). step may be negative to walk
-backward in sequence space.
+Snapshot copies currently queued values into an OfflineRing without dequeuing.
+The copy may tear under concurrent Push/Pop; it never mutates Vyukov cells.
+*/
+func (ring *MPMCRing[T]) Snapshot() *OfflineRing[T] {
+	dequeue := ring.dequeuePos.Load()
+	enqueue := ring.enqueuePos.Load()
+	values := make([]T, 0, int(enqueue-dequeue))
 
-enqueuePos and dequeuePos on the parent are not modified.
+	for position := dequeue; position < enqueue; position++ {
+		cell := &ring.buffer[position&ring.mask]
+		value := cell.data.Load()
+
+		if value == nil {
+			continue
+		}
+
+		values = append(values, *value)
+	}
+
+	return NewOfflineRing(values)
+}
+
+/*
+Select returns an OfflineRing snapshot positioned step elements from the
+dequeue edge. Live queue cells are not shared with the returned ring.
 */
 func (ring *MPMCRing[T]) Select(step int) Ring[T] {
-	return &mpmcNavigator[T]{
-		parent:   ring,
-		position: ring.dequeuePos.Load() + uint64(step),
-	}
+	return ring.Snapshot().Select(step)
 }
 
 /*
-Merge absorbs other into ring.
-
-When other is *MPMCRing[T], every queued value is moved into ring. If the
-combined length exceeds ring's capacity, a new larger MPMCRing is allocated on
-ring.ctx, both rings are drained into it, and ring adopts the grown buffer.
-
-When other is *mpmcNavigator[T], values from the navigator's span are pushed
-into ring.
-
-Call while quiescent (no concurrent Push or Pop on the participating rings).
-Returns false when other is not a compatible Ring[T].
+Merge absorbs other into ring while quiescent. other is drained via Pop when it
+is an *MPMCRing, or visited via Do otherwise. Combined length may reallocate.
 */
 func (ring *MPMCRing[T]) Merge(other Ring[T]) bool {
 	switch typed := other.(type) {
 	case *MPMCRing[T]:
 		return ring.mergeMPMC(typed)
-	case *mpmcNavigator[T]:
-		return ring.mergeNavigator(typed)
 	default:
-		return false
+		if other == nil {
+			return false
+		}
+
+		ok := true
+
+		other.Do(func(value T) {
+			if !ring.Push(value) {
+				ok = false
+			}
+		})
+
+		return ok
 	}
 }
 
@@ -229,33 +251,8 @@ func (ring *MPMCRing[T]) mergeMPMC(other *MPMCRing[T]) bool {
 }
 
 /*
-mergeNavigator copies values from the navigator's logical span [position,
-enqueuePos) into ring via Push. Cells in the parent buffer are not cleared.
-*/
-func (ring *MPMCRing[T]) mergeNavigator(navigator *mpmcNavigator[T]) bool {
-	enqueue := navigator.parent.enqueuePos.Load()
-
-	for position := navigator.position; position < enqueue; position++ {
-		cell := &navigator.parent.buffer[position&navigator.parent.mask]
-		value := cell.data.Load()
-
-		if value == nil {
-			continue
-		}
-
-		if !ring.Push(*value) {
-			return false
-		}
-	}
-
-	return true
-}
-
-/*
 Slice detaches up to count elements from the dequeue edge into a new MPMCRing.
-
-Each element is Pop'd from ring and Push'd onto the returned ring. When count <=
-0, returns nil.
+Stops when Pop reports empty so overlong counts do not manufacture zero values.
 */
 func (ring *MPMCRing[T]) Slice(count int) Ring[T] {
 	if count <= 0 {
@@ -268,8 +265,13 @@ func (ring *MPMCRing[T]) Slice(count int) Ring[T] {
 		return nil
 	}
 
-	for index := 0; index < count; index++ {
-		value := ring.Pop()
+	for range count {
+		value, ok := ring.Pop()
+
+		if !ok {
+			break
+		}
+
 		sliced.Push(value)
 	}
 
@@ -314,11 +316,12 @@ func (ring *MPMCRing[T]) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	if ring.Len() == 0 {
+	value, ok := ring.Pop()
+
+	if !ok {
 		return 0, io.EOF
 	}
 
-	value := ring.Pop()
 	payload, err := sonic.Marshal(value)
 
 	if err != nil {
@@ -369,11 +372,20 @@ func (ring *MPMCRing[T]) Write(p []byte) (int, error) {
 }
 
 /*
-Close cancels the ring's derived context. Queued values are not drained.
+Close marks the ring closed so Push fails, then cancels the derived context.
+Queued values are left for the consumer to drain.
 */
 func (ring *MPMCRing[T]) Close() error {
+	ring.closed.Store(true)
 	ring.cancel()
 	return ring.err
+}
+
+/*
+Closed reports whether Close has been called.
+*/
+func (ring *MPMCRing[T]) Closed() bool {
+	return ring.closed.Load()
 }
 
 /*
@@ -405,8 +417,14 @@ value until empty.
 Call while quiescent; concurrent Push or Pop during Do races the drain loop.
 */
 func (ring *MPMCRing[T]) Do(visitor func(T)) {
-	for ring.Len() > 0 {
-		visitor(ring.Pop())
+	for {
+		value, ok := ring.Pop()
+
+		if !ok {
+			return
+		}
+
+		visitor(value)
 	}
 }
 
@@ -415,15 +433,17 @@ drainInto Pop's every value from ring and Push'es each onto target until ring is
 empty.
 */
 func (ring *MPMCRing[T]) drainInto(target *MPMCRing[T]) bool {
-	for ring.Len() > 0 {
-		value := ring.Pop()
+	for {
+		value, ok := ring.Pop()
+
+		if !ok {
+			return true
+		}
 
 		if !target.Push(value) {
 			return false
 		}
 	}
-
-	return true
 }
 
 /*
@@ -435,232 +455,4 @@ func (ring *MPMCRing[T]) adopt(grownRing *MPMCRing[T]) {
 	ring.buffer = grownRing.buffer
 	ring.enqueuePos.Store(grownRing.enqueuePos.Load())
 	ring.dequeuePos.Store(grownRing.dequeuePos.Load())
-}
-
-/*
-mpmcNavigator is a Ring[T] view anchored at one logical sequence position inside
-an MPMCRing. position indexes the same monotonic space as enqueuePos and
-dequeuePos; the physical cell is buffer[position & parent.mask].
-
-Navigators share the parent's cell buffer. Mutating cells through a navigator
-while the parent is live requires quiescence or acceptance of races with
-lock-free Push and Pop.
-*/
-type mpmcNavigator[T any] struct {
-	parent   *MPMCRing[T]
-	position uint64
-}
-
-/*
-Push stores value in the navigator's cell data pointer without updating Vyukov
-sequence state.
-
-Intended for quiescent repair or bulk setup; concurrent use with live Push/Pop on
-the parent violates the queue protocol.
-*/
-func (navigator *mpmcNavigator[T]) Push(value T) bool {
-	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
-	stored := value
-
-	cell.data.Store(&stored)
-
-	return true
-}
-
-/*
-Pop Swap's the navigator's cell payload to nil without advancing dequeuePos.
-
-Returns the zero value of T when the cell is empty or navigator is invalid.
-*/
-func (navigator *mpmcNavigator[T]) Pop() T {
-	var zero T
-
-	if navigator == nil ||
-		navigator.parent == nil ||
-		len(navigator.parent.buffer) == 0 {
-		return zero
-	}
-
-	cell := &navigator.parent.buffer[navigator.position&navigator.parent.mask]
-	value := cell.data.Swap(nil)
-
-	if value == nil {
-		return zero
-	}
-
-	return *value
-}
-
-/*
-Select returns a new navigator at position+step on the same parent MPMCRing.
-*/
-func (navigator *mpmcNavigator[T]) Select(step int) Ring[T] {
-	return &mpmcNavigator[T]{
-		parent:   navigator.parent,
-		position: navigator.position + uint64(step),
-	}
-}
-
-/*
-Merge delegates to parent.mergeMPMC or parent.mergeNavigator depending on other
-'s concrete type.
-*/
-func (navigator *mpmcNavigator[T]) Merge(other Ring[T]) bool {
-	switch typed := other.(type) {
-	case *MPMCRing[T]:
-		return navigator.parent.mergeMPMC(typed)
-	case *mpmcNavigator[T]:
-		return navigator.parent.mergeNavigator(typed)
-	default:
-		return false
-	}
-}
-
-/*
-Slice removes up to count values from the navigator's span [position, enqueuePos)
-into a new MPMCRing. Each cell in that span is Swap'd to nil in the parent.
-*/
-func (navigator *mpmcNavigator[T]) Slice(count int) Ring[T] {
-	if count <= 0 {
-		return nil
-	}
-
-	sliced, err := NewMPMCRing[T](navigator.parent.ctx, 1<<uint(bits.Len(uint(max(count, 2)))))
-
-	if err != nil {
-		return nil
-	}
-
-	enqueue := navigator.parent.enqueuePos.Load()
-
-	for offset := 0; offset < count; offset++ {
-		position := navigator.position + uint64(offset)
-
-		if position >= enqueue {
-			break
-		}
-
-		cell := &navigator.parent.buffer[position&navigator.parent.mask]
-		value := cell.data.Swap(nil)
-
-		if value == nil {
-			continue
-		}
-
-		sliced.Push(*value)
-	}
-
-	return sliced
-}
-
-/*
-Len returns the number of logical positions from navigator.position up to but not
-including parent.enqueuePos at the instant of the call.
-*/
-func (navigator *mpmcNavigator[T]) Len() int {
-	enqueue := navigator.parent.enqueuePos.Load()
-
-	if navigator.position >= enqueue {
-		return 0
-	}
-
-	return int(enqueue - navigator.position)
-}
-
-/*
-Do visits each non-nil value in [position, enqueuePos) without dequeuing through
-the Vyukov consumer path.
-
-For a consuming walk, use Slice or Pop on the parent queue instead.
-*/
-func (navigator *mpmcNavigator[T]) Do(visitor func(T)) {
-	enqueue := navigator.parent.enqueuePos.Load()
-
-	for position := navigator.position; position < enqueue; position++ {
-		cell := &navigator.parent.buffer[position&navigator.parent.mask]
-		value := cell.data.Load()
-
-		if value == nil {
-			continue
-		}
-
-		visitor(*value)
-	}
-}
-
-/*
-Read implements io.Reader. It reads the navigator cell through the parent
-artifact.
-*/
-func (navigator *mpmcNavigator[T]) Read(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, io.EOF
-	}
-
-	if navigator.Len() == 0 {
-		return 0, io.EOF
-	}
-
-	value := navigator.Pop()
-	payload, err := sonic.Marshal(value)
-
-	if err != nil {
-		return 0, err
-	}
-
-	outbound := datura.Acquire("structure", datura.Artifact_Type_json)
-
-	if outbound == nil {
-		return 0, errors.New("structure: mpmcNavigator artifact acquire failed")
-	}
-
-	if scope, scopeErr := navigator.parent.artifact.Scope(); scopeErr == nil {
-		outbound.WithScope(scope)
-	}
-
-	outbound.WithPayload(payload)
-
-	return outbound.PackInto(p)
-}
-
-/*
-Write implements io.Writer. It unmarshals p through the parent artifact and
-stores at the navigator cell.
-*/
-func (navigator *mpmcNavigator[T]) Write(p []byte) (int, error) {
-	if navigator.parent.artifact == nil {
-		return 0, errors.New("structure: mpmcNavigator has no artifact")
-	}
-
-	written, err := navigator.parent.artifact.Unpack(p)
-
-	if err != nil {
-		return written, err
-	}
-
-	value, err := datura.As[T](navigator.parent.artifact)
-
-	if err != nil {
-		return written, err
-	}
-
-	if !navigator.Push(value) {
-		return written, errors.New("structure: mpmcNavigator Push failed")
-	}
-
-	return written, nil
-}
-
-/*
-Close cancels the parent MPMCRing context via parent.Close.
-*/
-func (navigator *mpmcNavigator[T]) Close() error {
-	return navigator.parent.Close()
-}
-
-/*
-Error returns parent.Error when navigator and parent are valid.
-*/
-func (navigator *mpmcNavigator[T]) Error() error {
-	return navigator.parent.Error()
 }

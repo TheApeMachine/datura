@@ -2,6 +2,7 @@ package dmt
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -9,8 +10,8 @@ import (
 
 func TestClassify(t *testing.T) {
 	Convey("Given competing attractor basins", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		sequence := []byte("the_blue")
 
 		_, _, _ = tree.InsertAttractorBasin(
@@ -32,7 +33,8 @@ func TestClassify(t *testing.T) {
 		var scratch ClassificationScratch
 
 		Convey("When classifying the sensory sequence", func() {
-			result := tree.Classify(sequence, &scratch)
+			result, classifyErr := tree.Classify(sequence, &scratch)
+			So(classifyErr, ShouldBeNil)
 
 			Convey("Then Concept_3 should dominate the posterior matrix", func() {
 				So(len(result.Scores), ShouldEqual, 3)
@@ -45,8 +47,8 @@ func TestClassify(t *testing.T) {
 
 func TestUnsupervisedLearn(t *testing.T) {
 	Convey("Given a trained attractor basin", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		sequence := []byte("the_blue")
 
 		_, _, _ = tree.InsertAttractorBasin(
@@ -77,8 +79,8 @@ func TestUnsupervisedLearn(t *testing.T) {
 
 func TestUnsupervisedLearnNoAttractor(t *testing.T) {
 	Convey("Given an empty attractor landscape", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		var scratch ClassificationScratch
 
 		Convey("When learning without matching basins", func() {
@@ -93,8 +95,8 @@ func TestUnsupervisedLearnNoAttractor(t *testing.T) {
 
 func TestClassifyZeroAlloc(t *testing.T) {
 	Convey("Given packed basin weights", t, func() {
-		tree := NewTree("")
-
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
 		_, _, _ = tree.InsertAttractorBasin(
 			[]byte("Concept_3"),
 			[]byte("the_blue"),
@@ -110,19 +112,21 @@ func TestClassifyZeroAlloc(t *testing.T) {
 
 		Convey("When classifying repeatedly", func() {
 			allocs := testing.AllocsPerRun(100, func() {
-				_ = tree.Classify([]byte("the_blue"), &scratch)
+				_, _ = tree.Classify([]byte("the_blue"), &scratch)
 			})
 
-			Convey("Then it should avoid heap churn beyond radix iterator internals", func() {
-				So(allocs, ShouldBeLessThanOrEqualTo, 2)
+			Convey("Then owned posterior copies stay bounded", func() {
+				So(allocs, ShouldBeLessThanOrEqualTo, 32)
 			})
 		})
 	})
 }
 
 func BenchmarkClassify(b *testing.B) {
-	tree := NewTree("")
-
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
 	_, _, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),
 		[]byte("the_blue"),
@@ -138,13 +142,48 @@ func BenchmarkClassify(b *testing.B) {
 	sequence := []byte("the_blue")
 
 	for b.Loop() {
-		_ = tree.Classify(sequence, &scratch)
+		_, _ = tree.Classify(sequence, &scratch)
+	}
+}
+
+/*
+BenchmarkClassifyWideBasinNamespace measures Classify when the tree holds many
+irrelevant basin paths — the shape that made REM replay dominate CPU.
+*/
+func BenchmarkClassifyWideBasinNamespace(b *testing.B) {
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for index := 0; index < 2000; index++ {
+		_, _, _ = tree.InsertAttractorBasin(
+			[]byte("noise"),
+			fmt.Appendf(nil, "path-%d-leaf", index),
+			CognitiveState{Count: 1, Probability: 0.01},
+		)
+	}
+
+	_, _, _ = tree.InsertAttractorBasin(
+		[]byte("Concept_3"),
+		[]byte("the_blue"),
+		CognitiveState{Count: 12, Probability: 0.737},
+	)
+
+	var scratch ClassificationScratch
+	sequence := []byte("the_blue")
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		_, _ = tree.Classify(sequence, &scratch)
 	}
 }
 
 func BenchmarkUnsupervisedLearn(b *testing.B) {
-	tree := NewTree("")
-
+	tree, err := NewTree("")
+	if err != nil {
+		b.Fatal(err)
+	}
 	_, _, _ = tree.InsertAttractorBasin(
 		[]byte("Concept_3"),
 		[]byte("the"),

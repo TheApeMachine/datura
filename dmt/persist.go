@@ -14,12 +14,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -34,6 +33,18 @@ const (
 )
 
 const maxWALFieldBytes = 64 << 20
+
+/*
+walDurableFile is the minimal surface the WAL uses for append durability.
+Tests inject faulting implementations without changing production call sites.
+*/
+type walDurableFile interface {
+	io.WriteCloser
+	Sync() error
+	Stat() (os.FileInfo, error)
+	Truncate(size int64) error
+	Seek(offset int64, whence int) (int64, error)
+}
 
 type persistenceFatal struct {
 	message string
@@ -59,14 +70,13 @@ and recovery of tree data.
 */
 type PersistentStore struct {
 	state     *batch
-	walFile   *os.File
+	walFile   walDurableFile
 	walWriter *bufio.Writer
 	walPath   string
 	snapPath  string
 	ctx       context.Context
 	cancel    context.CancelFunc
-	pool      *qpool.Q[any]
-	walSeq    atomic.Uint64
+	walMu     sync.Mutex
 	lastIndex atomic.Uint64
 	lastTerm  atomic.Uint64
 	closed    atomic.Bool
@@ -130,7 +140,6 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 		snapPath:  filepath.Join(dir, "snapshot"),
 		ctx:       ctx,
 		cancel:    cancel,
-		pool:      qpool.NewQ[any](ctx, 1, 1, workerPoolConfig()),
 		snapCount: 1000,
 	}
 
@@ -164,6 +173,13 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 	err := ps.runWal("insert", func() error {
 		ps.state.Reset()
 
+		startSize, sizeErr := ps.walRecordedSize()
+		if sizeErr != nil {
+			ps.state.err = sizeErr
+
+			return sizeErr
+		}
+
 		guardStep(ps.state, func() error {
 			var frame [25]byte
 
@@ -189,6 +205,11 @@ func (ps *PersistentStore) LogInsert(key, value []byte, term, index uint64) erro
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
+		guardStep(ps.state, ps.walFile.Sync)
+
+		if ps.state.Err() != nil {
+			_ = ps.rollbackWALTo(startSize)
+		}
 
 		return ps.state.Err()
 	})
@@ -244,6 +265,7 @@ func (ps *PersistentStore) LogInserts(entries []WALEntry) error {
 		}
 
 		guardStep(ps.state, ps.walWriter.Flush)
+		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -286,6 +308,7 @@ func (ps *PersistentStore) LogDelete(key []byte, term, index uint64) error {
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
+		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -316,7 +339,7 @@ func (ps *PersistentStore) Close() error {
 			guardStep(ps.state, ps.walWriter.Flush)
 		}
 		if ps.walFile != nil {
-			_ = ps.walFile.Sync()
+			guardStep(ps.state, ps.walFile.Sync)
 			guardStep(ps.state, ps.walFile.Close)
 		}
 
@@ -328,13 +351,6 @@ func (ps *PersistentStore) Close() error {
 
 	if ps.cancel != nil {
 		ps.cancel()
-	}
-
-	workerPool := ps.pool
-	ps.pool = nil
-
-	if workerPool != nil {
-		workerPool.Close()
 	}
 
 	return err
@@ -361,6 +377,7 @@ func (ps *PersistentStore) LogTerm(term uint64) error {
 		})
 
 		guardStep(ps.state, ps.walWriter.Flush)
+		guardStep(ps.state, ps.walFile.Sync)
 
 		return ps.state.Err()
 	})
@@ -569,7 +586,42 @@ func (ps *PersistentStore) Replay() ([]WALEntry, error) {
 		}
 	}
 
+	if err := validateWALMonotonic(entries); err != nil {
+		return entries, ps.markFatal(err)
+	}
+
 	return entries, nil
+}
+
+/*
+validateWALMonotonic rejects strict term/index regression in replay order.
+Equal indexes at the same term remain valid for snapshot rewrite batches.
+*/
+func validateWALMonotonic(entries []WALEntry) error {
+	if len(entries) < 2 {
+		return nil
+	}
+
+	for index := 1; index < len(entries); index++ {
+		previous := entries[index-1]
+		current := entries[index]
+
+		if current.Term < previous.Term {
+			return fmt.Errorf(
+				"wal nonmonotonic term: %d after %d",
+				current.Term, previous.Term,
+			)
+		}
+
+		if current.Term == previous.Term && current.Index < previous.Index {
+			return fmt.Errorf(
+				"wal nonmonotonic index: %d/%d after %d/%d",
+				current.Term, current.Index, previous.Term, previous.Index,
+			)
+		}
+	}
+
+	return nil
 }
 
 /*
@@ -583,6 +635,13 @@ func (ps *PersistentStore) loadLastState() error {
 func (ps *PersistentStore) CreateSnapshot(
 	iterator func(yield func(key, value []byte) bool),
 ) error {
+	return ps.createSnapshot(false, iterator)
+}
+
+func (ps *PersistentStore) createSnapshot(
+	force bool,
+	iterator func(yield func(key, value []byte) bool),
+) error {
 	if err := ps.requireWritable(); err != nil {
 		return err
 	}
@@ -594,12 +653,16 @@ func (ps *PersistentStore) CreateSnapshot(
 	now := time.Now().UnixNano()
 	lastSnap := ps.lastSnap.Load()
 
-	if now-lastSnap < int64(time.Minute) {
-		return nil
-	}
+	if !force {
+		if now-lastSnap < int64(time.Minute) {
+			return nil
+		}
 
-	if !ps.lastSnap.CompareAndSwap(lastSnap, now) {
-		return nil
+		if !ps.lastSnap.CompareAndSwap(lastSnap, now) {
+			return nil
+		}
+	} else {
+		ps.lastSnap.Store(now)
 	}
 
 	err := ps.runWal("snapshot", func() error {
@@ -632,8 +695,22 @@ func (ps *PersistentStore) CreateSnapshot(
 			return writeFull(file, stateFrame[:])
 		})
 
+		guardStep(ps.state, file.Sync)
+
 		guardStep(ps.state, func() error {
 			return ps.truncateWAL(iterator)
+		})
+
+		guardStep(ps.state, func() error {
+			dir, err := os.Open(filepath.Dir(ps.walPath))
+
+			if err != nil {
+				return err
+			}
+
+			defer dir.Close()
+
+			return dir.Sync()
 		})
 
 		return ps.state.Err()
@@ -719,11 +796,23 @@ func (ps *PersistentStore) truncateWAL(
 		guardStep(ps.state, ps.walWriter.Flush)
 	}
 	if ps.walFile != nil {
-		_ = ps.walFile.Sync()
+		guardStep(ps.state, ps.walFile.Sync)
 	}
 
 	guardStep(ps.state, func() error {
 		return os.Rename(newPath, ps.walPath)
+	})
+
+	guardStep(ps.state, func() error {
+		dir, err := os.Open(filepath.Dir(ps.walPath))
+
+		if err != nil {
+			return err
+		}
+
+		defer dir.Close()
+
+		return dir.Sync()
 	})
 
 	if ps.walFile != nil {
@@ -763,21 +852,14 @@ func (ps *PersistentStore) TruncateWAL(
 	})
 }
 
-func (ps *PersistentStore) runWal(op string, fn func() error) error {
-	if ps.pool == nil {
-		return fn()
-	}
+/*
+runWal serializes WAL mutations so writers, syncs, and close never overlap.
+*/
+func (ps *PersistentStore) runWal(_ string, fn func() error) error {
+	ps.walMu.Lock()
+	defer ps.walMu.Unlock()
 
-	sequence := ps.walSeq.Add(1)
-	jobID := "dmt/persist/" + op + "/" + strconv.FormatUint(sequence, 10)
-
-	wait := ps.pool.Schedule(jobID, func(ctx context.Context) (any, error) {
-		return nil, fn()
-	})
-
-	_, err := wait.Get(ps.ctx)
-
-	return err
+	return fn()
 }
 
 func writeFull(writer io.Writer, data []byte) error {
@@ -788,6 +870,40 @@ func writeFull(writer io.Writer, data []byte) error {
 
 	if written != len(data) {
 		return io.ErrShortWrite
+	}
+
+	return nil
+}
+
+func (ps *PersistentStore) walRecordedSize() (int64, error) {
+	if ps.walFile == nil {
+		return 0, nil
+	}
+
+	info, err := ps.walFile.Stat()
+
+	if err != nil {
+		return 0, err
+	}
+
+	return info.Size(), nil
+}
+
+func (ps *PersistentStore) rollbackWALTo(size int64) error {
+	if ps.walFile == nil {
+		return nil
+	}
+
+	if err := ps.walFile.Truncate(size); err != nil {
+		return err
+	}
+
+	if _, err := ps.walFile.Seek(size, io.SeekStart); err != nil {
+		return err
+	}
+
+	if ps.walWriter != nil {
+		ps.walWriter.Reset(ps.walFile)
 	}
 
 	return nil
@@ -804,21 +920,6 @@ func validateWALLength(field string, length uint32) error {
 	}
 
 	return nil
-}
-
-func (ps *PersistentStore) schedule(
-	id string,
-	fn func(ctx context.Context) (any, error),
-) {
-	if ps.pool == nil {
-		return
-	}
-
-	ps.pool.Schedule(
-		"dmt/persist/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
 }
 
 func (ps *PersistentStore) backgroundSyncer() {

@@ -148,7 +148,7 @@ func TestWithPayloadOverwriteDoesNotGrowTraversal(testingTB *testing.T) {
 			Poke([]string{"last"}, "inputs")
 
 		for index := range 5000 {
-			payload := []byte(fmt.Sprintf(`{"last":%d,"symbol":"BTC/USD"}`, index))
+			payload := fmt.Appendf(nil, `{"last":%d,"symbol":"BTC/USD"}`, index)
 			So(artifact.WithPayload(payload), ShouldNotBeNil)
 			So(string(artifact.DecryptPayload()), ShouldEqual, string(payload))
 		}

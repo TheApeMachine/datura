@@ -474,9 +474,15 @@ func (artifact *Artifact) WithError(err error) *Artifact {
 		return artifact
 	}
 
-	artifact.WithPayload(Map[any]{
+	payload, marshalErr := Map[any]{
 		"error": err.Error(),
-	}.Marshal())
+	}.Marshal()
+
+	if marshalErr != nil {
+		return artifact
+	}
+
+	artifact.WithPayload(payload)
 	artifact.Poke("error", "root")
 	artifact.Poke([]string{"error"}, "inputs")
 

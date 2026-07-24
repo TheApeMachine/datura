@@ -187,10 +187,11 @@ func (clock *ClockRing[K, T]) push(slot ClockSlot[K, T]) bool {
 
 /*
 Pop returns the latest global timeline observation without advancing its cursor.
+ok is false when the timeline has no retained observation at that cursor.
 */
-func (clock *ClockRing[K, T]) Pop() ClockSlot[K, T] {
+func (clock *ClockRing[K, T]) Pop() (ClockSlot[K, T], bool) {
 	if clock == nil || clock.timeline == nil {
-		return ClockSlot[K, T]{}
+		return ClockSlot[K, T]{}, false
 	}
 
 	return clock.timeline.Select(-1).Pop()

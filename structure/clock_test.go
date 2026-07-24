@@ -89,11 +89,17 @@ func TestClockRing_Ring(t *testing.T) {
 
 		Convey("It should satisfy and operate through Ring directly", func() {
 			So(pushed, ShouldBeTrue)
-			So(timeline.Pop().Payload, ShouldEqual, 100)
-			So(timeline.Select(-1).Pop().Track, ShouldEqual, "BTC/USD")
+			slot, ok := timeline.Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Payload, ShouldEqual, 100)
+			slot, ok = timeline.Select(-1).Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Track, ShouldEqual, "BTC/USD")
 			track, found := clock.Track("BTC/USD")
 			So(found, ShouldBeTrue)
-			So(track.Select(-1).Pop().Payload, ShouldEqual, 100)
+			slot, ok = track.Select(-1).Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Payload, ShouldEqual, 100)
 		})
 	})
 }
@@ -112,9 +118,15 @@ func TestClockRing_Observe(t *testing.T) {
 		Convey("It should overwrite only the oldest items on that track", func() {
 			track, found := clock.Track("BTC/USD")
 			So(found, ShouldBeTrue)
-			So(track.Select(-2).Pop().Payload, ShouldEqual, 2)
-			So(track.Select(-1).Pop().Payload, ShouldEqual, 3)
-			So(track.Select(-1).Pop().Sequence, ShouldEqual, 4)
+			slot, ok := track.Select(-2).Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Payload, ShouldEqual, 2)
+			slot, ok = track.Select(-1).Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Payload, ShouldEqual, 3)
+			slot, ok = track.Select(-1).Pop()
+			So(ok, ShouldBeTrue)
+			So(slot.Sequence, ShouldEqual, 4)
 		})
 	})
 }
@@ -393,7 +405,7 @@ func newTestClock[K comparable, T any](
 	factory := func() Ring[ClockSlot[K, T]] {
 		return NewSPSCRing[ClockSlot[K, T]](trackCapacity, true)
 	}
-	clock, err := NewClockRing[K, T](timeline, factory)
+	clock, err := NewClockRing(timeline, factory)
 
 	if err != nil {
 		panic(err)

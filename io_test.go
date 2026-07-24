@@ -19,9 +19,9 @@ func TestRWCStreamRead(t *testing.T) {
 			"test-role",
 		).WithScope(
 			"test-scope",
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"testkey": "testvalue",
-		}.Marshal())
+		}))
 
 		Convey("Given an Artifact wrapped in an RWCStream", func() {
 			stream := NewRWCStream(artifact)
@@ -56,15 +56,15 @@ func TestRWCStreamWrite(t *testing.T) {
 			"source-role",
 		).WithScope(
 			"source-scope",
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"answer": 42,
-		}.Marshal())
+		}))
 
 		target := Acquire(
 			"test-target", APPJSON,
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"answer": 0,
-		}.Marshal())
+		}))
 
 		Convey("Given an Artifact wrapped in an RWCStream", func() {
 			stream := NewRWCStream(target)
@@ -131,9 +131,9 @@ func TestRWCIntergrtion(t *testing.T) {
 			"source-role",
 		).WithScope(
 			"source-scope",
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"answer": 42,
-		}.Marshal())
+		}))
 
 		Convey("Given an Artifact wrapped in an RWCStream", func() {
 			stream := NewRWCStream(source)
@@ -161,10 +161,10 @@ func TestRWCStreamLargeArtifactPipelineIntegration(t *testing.T) {
 			"source-role",
 		).WithScope(
 			"source-scope",
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"answer": 42,
 			"large":  strings.Repeat("x", 128*1024),
-		}.Marshal())
+		}))
 
 		Convey("Given a large Artifact wrapped in an RWCStream", func() {
 			stream := NewRWCStream(source)
@@ -195,10 +195,10 @@ func TestRWCStreamLargeArtifactTwoStagePipelineIntegration(t *testing.T) {
 			"source-role",
 		).WithScope(
 			"source-scope",
-		).WithPayload(Map[any]{
+		).WithPayload(mustMapMarshal(Map[any]{
 			"answer": 42,
 			"large":  large,
-		}.Marshal())
+		}))
 
 		Convey("Given a large Artifact and a two-stage pipeline", func() {
 			stream := NewRWCStream(source)
@@ -221,4 +221,12 @@ func TestRWCStreamLargeArtifactTwoStagePipelineIntegration(t *testing.T) {
 			})
 		})
 	})
+}
+
+func mustMapMarshal(body Map[any]) []byte {
+	payload, err := body.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	return payload
 }

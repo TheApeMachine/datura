@@ -23,10 +23,11 @@ CognitiveState is the packed count/probability layout stored in radix values.
 type CognitiveState = PackedWeight
 
 /*
-MarshalCognitive encodes a cognitive state into a fixed 16-byte buffer.
+MarshalCognitive encodes a cognitive state into a fixed 24-byte buffer.
+Legacy 16-byte values remain readable through UnmarshalCognitive.
 */
 func MarshalCognitive(state CognitiveState) []byte {
-	return MarshalWeight(state.Count, state.Probability)
+	return MarshalWeight(state.Count, state.Probability, state.LastObserved)
 }
 
 /*
