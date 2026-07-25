@@ -279,7 +279,7 @@ func BenchmarkExecuteDecayConsolidation(b *testing.B) {
 	}
 
 	for index := 0; index < 64; index++ {
-		path := sensoryStorageKey([]byte(fmt.Sprintf("path_%d", index)))
+		path := sensoryStorageKey(fmt.Appendf(nil, "path_%d", index))
 		probability := 0.9
 
 		if index%8 == 0 {
@@ -305,7 +305,7 @@ func BenchmarkFindStructuralAnalog(b *testing.B) {
 	}
 
 	for index := 0; index < 128; index++ {
-		key := []byte(fmt.Sprintf("blue_path_%d", index))
+		key := fmt.Appendf(nil, "blue_path_%d", index)
 		_, _ = tree.Insert(key, []byte("value"))
 	}
 

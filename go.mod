@@ -84,7 +84,7 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/qdrant/go-client v1.18.1
 	github.com/smartystreets/goconvey v1.8.1
-	github.com/theapemachine/qpool v1.2.5
+	github.com/theapemachine/qpool v1.2.6
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
