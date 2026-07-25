@@ -20,8 +20,13 @@ When dropOldestOnFull is true, a full Push advances an eviction cursor (tail)
 and clears the oldest slot without executing the consumer Pop path, then
 enqueues the new value.
 */
+type spscSlot[T any] struct {
+	value T
+	ready atomic.Bool
+}
+
 type SPSCRing[T any] struct {
-	slots            []atomic.Pointer[T]
+	slots            []spscSlot[T]
 	mask             uint64
 	head             atomic.Uint64
 	tail             atomic.Uint64
@@ -55,7 +60,7 @@ func NewSPSCRing[T any](
 	}
 
 	ring := &SPSCRing[T]{
-		slots:            make([]atomic.Pointer[T], capacity),
+		slots:            make([]spscSlot[T], capacity),
 		mask:             uint64(capacity - 1),
 		dropOldestOnFull: dropOldestOnFull,
 	}
@@ -79,79 +84,58 @@ func (ring *SPSCRing[T]) Push(value T) bool {
 		return false
 	}
 
-	for {
-		head := ring.head.Load()
-		tail := ring.tail.Load()
+	head := ring.head.Load()
+	tail := ring.tail.Load()
 
-		if head-tail >= uint64(len(ring.slots)) {
-			if !ring.dropOldestOnFull {
-				ring.rejected.Add(1)
-				return false
-			}
-
-			if !ring.evictOldest(tail) {
-				continue
-			}
-
-			ring.dropped.Add(1)
-			continue
+	if head-tail >= uint64(len(ring.slots)) {
+		if !ring.dropOldestOnFull {
+			ring.rejected.Add(1)
+			return false
 		}
 
-		index := head & ring.mask
-		stored := value
-
-		if !ring.slots[index].CompareAndSwap(nil, &stored) {
-			continue
-		}
-
-		if ring.head.CompareAndSwap(head, head+1) {
-			return true
-		}
-
-		ring.slots[index].Store(nil)
+		evictIndex := tail & ring.mask
+		var zero T
+		ring.slots[evictIndex].value = zero
+		ring.slots[evictIndex].ready.Store(false)
+		ring.tail.Store(tail + 1)
+		ring.dropped.Add(1)
+		tail++
 	}
-}
 
-/*
-evictOldest clears the slot at the consumer edge and advances tail. The producer
-owns this eviction path under dropOldestOnFull; it does not return the value.
-*/
-func (ring *SPSCRing[T]) evictOldest(tail uint64) bool {
-	index := tail & ring.mask
-	ring.slots[index].Store(nil)
-	return ring.tail.CompareAndSwap(tail, tail+1)
+	index := head & ring.mask
+	ring.slots[index].value = value
+	ring.slots[index].ready.Store(true)
+	ring.head.Store(head + 1)
+
+	return true
 }
 
 /*
 Pop dequeues the oldest value from the consumer edge (tail).
 
-ok is false when the queue is empty. The dequeue loop retries on CAS failure when
-the consumer races the producer's slot publish or eviction.
+ok is false when the queue is empty.
 */
 func (ring *SPSCRing[T]) Pop() (T, bool) {
 	var zero T
 
-	for {
-		tail := ring.tail.Load()
-		head := ring.head.Load()
+	tail := ring.tail.Load()
+	head := ring.head.Load()
 
-		if tail >= head {
-			return zero, false
-		}
-
-		index := tail & ring.mask
-		value := ring.slots[index].Swap(nil)
-
-		if value == nil {
-			continue
-		}
-
-		if ring.tail.CompareAndSwap(tail, tail+1) {
-			return *value, true
-		}
-
-		ring.slots[index].Store(value)
+	if tail >= head {
+		return zero, false
 	}
+
+	index := tail & ring.mask
+	if !ring.slots[index].ready.Load() {
+		return zero, false
+	}
+
+	value := ring.slots[index].value
+	ring.slots[index].value = zero
+	ring.slots[index].ready.Store(false)
+	ring.tail.Store(tail + 1)
+
+	return value, true
 }
 
 /*
@@ -185,13 +169,10 @@ func (ring *SPSCRing[T]) Snapshot() *OfflineRing[T] {
 	values := make([]T, 0, int(head-tail))
 
 	for position := tail; position < head; position++ {
-		value := ring.slots[position&ring.mask].Load()
-
-		if value == nil {
-			continue
+		idx := position & ring.mask
+		if ring.slots[idx].ready.Load() {
+			values = append(values, ring.slots[idx].value)
 		}
-
-		values = append(values, *value)
 	}
 
 	return NewOfflineRing(values)
