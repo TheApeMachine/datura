@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"math/rand"
+	"sort"
 )
 
 /*
@@ -36,7 +37,7 @@ type BeamSearchScratch struct {
 GetSensoryWeight reads s/[sequence] suffix statistics.
 */
 func (tree *Tree) GetSensoryWeight(sequence []byte) CognitiveState {
-	value, found := tree.getRaw(sensoryStorageKey(sequence))
+	value, found := tree.Get(sensoryStorageKey(sequence))
 
 	if !found {
 		return CognitiveState{}
@@ -48,24 +49,15 @@ func (tree *Tree) GetSensoryWeight(sequence []byte) CognitiveState {
 /*
 InsertSensoryWeight writes s/[sequence] suffix statistics.
 */
-func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool, error) {
-	updated, changed, err := tree.Insert(
-		sensoryStorageKey(sequence),
-		MarshalCognitive(state),
-	)
-
-	if changed {
-		tree.maintainCognitiveIndexes(sensoryStorageKey(sequence), false)
-	}
-
-	return updated, changed, err
+func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool) {
+	return tree.Insert(sensoryStorageKey(sequence), MarshalCognitive(state))
 }
 
 /*
 GetAttractorBasin reads b/[class]/[sequence] posterior weights.
 */
 func (tree *Tree) GetAttractorBasin(class []byte, sequence []byte) CognitiveState {
-	value, found := tree.getRaw(basinStorageKey(class, sequence))
+	value, found := tree.Get(basinStorageKey(class, sequence))
 
 	if !found {
 		return CognitiveState{}
@@ -81,7 +73,7 @@ func (tree *Tree) InsertAttractorBasin(
 	class []byte,
 	sequence []byte,
 	state CognitiveState,
-) (*Tree, bool, error) {
+) (*Tree, bool) {
 	return tree.Insert(basinStorageKey(class, sequence), MarshalCognitive(state))
 }
 
@@ -104,23 +96,11 @@ func (tree *Tree) predictNextTokensOnPrefix(
 	sequencePrefix []byte,
 	targetBuffer []LookaheadPrediction,
 ) []LookaheadPrediction {
-	limit := cap(targetBuffer)
-
-	if limit <= 0 {
-		limit = defaultChildIndexCapacity
-	}
-
-	if indexed, ok := tree.readChildProbabilityIndex(storagePrefix, targetBuffer[:0], limit); ok {
-		return indexed
-	}
-
 	targetBuffer = targetBuffer[:0]
 	root := tree.loadRoot()
 	iterator := root.Root().Iterator()
 
 	iterator.SeekPrefix(storagePrefix)
-
-	truncated := false
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, storagePrefix) {
@@ -140,16 +120,23 @@ func (tree *Tree) predictNextTokensOnPrefix(
 		}
 
 		weight := UnmarshalCognitive(value)
-		targetBuffer, truncated = insertTopKPrediction(
-			targetBuffer,
-			tokenSuffix,
-			weight.Probability,
-			limit,
-		)
-	}
 
-	if len(targetBuffer) > 0 {
-		tree.storeChildProbabilityIndex(storagePrefix, targetBuffer, truncated)
+		if existingIndex := predictionIndexForToken(targetBuffer, tokenSuffix); existingIndex >= 0 {
+			if weight.Probability > targetBuffer[existingIndex].Probability {
+				targetBuffer[existingIndex].Probability = weight.Probability
+			}
+
+			continue
+		}
+
+		targetBuffer = append(targetBuffer, LookaheadPrediction{
+			Token:       append([]byte(nil), tokenSuffix...),
+			Probability: weight.Probability,
+		})
+
+		if len(targetBuffer) == cap(targetBuffer) {
+			break
+		}
 	}
 
 	return targetBuffer
@@ -158,38 +145,33 @@ func (tree *Tree) predictNextTokensOnPrefix(
 /*
 SelectStochasticToken applies temperature-scaled softmax over candidate scores.
 At zero temperature it selects the highest-scoring token deterministically.
-source must be a non-nil RNG so selection is reproducible per engine/test.
 */
-func SelectStochasticToken(
-	candidates []CandidateToken,
-	temperature float64,
-	source *rand.Rand,
-) []byte {
+func SelectStochasticToken(candidates []CandidateToken, temperature float64) []byte {
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	if temperature <= 0 || len(candidates) == 1 {
+	if len(candidates) == 1 || temperature <= 0 {
 		return highestScoreCandidate(candidates).Token
 	}
 
-	if source == nil {
-		source = rand.New(rand.NewSource(1))
-	}
+	scoreFloor := positiveScoreFloor(candidates)
+	effectiveTemperature := math.Max(temperature, scoreFloor)
 
 	exponentialScores := make([]float64, len(candidates))
-	probabilityMass := 0.0
+	totalMass := 0.0
 
 	for index, candidate := range candidates {
-		exponentialScores[index] = math.Exp(candidate.Score / temperature)
-		probabilityMass += exponentialScores[index]
+		scaledLogit := math.Log(math.Max(candidate.Score, scoreFloor)) / effectiveTemperature
+		exponentialScores[index] = math.Exp(scaledLogit)
+		totalMass += exponentialScores[index]
 	}
 
-	if probabilityMass <= 0 {
+	if totalMass <= 0 {
 		return highestScoreCandidate(candidates).Token
 	}
 
-	threshold := source.Float64() * probabilityMass
+	threshold := rand.Float64() * totalMass
 	runningMass := 0.0
 
 	for index, exponentialScore := range exponentialScores {
@@ -205,8 +187,6 @@ func SelectStochasticToken(
 
 /*
 ExecuteBeamSearch explores multi-hop sensory paths using log-probability scoring.
-Expansions keep a bounded top-k beam without sorting the full candidate list when
-possible; parent sequences are reused through scratch path buffers.
 */
 func (tree *Tree) ExecuteBeamSearch(
 	contextPrefix []byte,
@@ -251,16 +231,24 @@ func (tree *Tree) ExecuteBeamSearch(
 			for _, prediction := range scratch.LookupBuffer {
 				scratch.PathBuffer = appendSequenceToken(scratch.PathBuffer[:0], beam.Sequence, prediction.Token)
 				logProbability := math.Log(math.Max(prediction.Probability, logFloor))
-				candidate := BeamPath{
+
+				scratch.NextBeams = append(scratch.NextBeams, BeamPath{
 					Sequence: append([]byte(nil), scratch.PathBuffer...),
 					Score:    beam.Score + logProbability,
-				}
-				scratch.NextBeams = insertBeamTopK(scratch.NextBeams, candidate, beamWidth)
+				})
 			}
 		}
 
 		if len(scratch.NextBeams) == 0 {
 			break
+		}
+
+		sort.Slice(scratch.NextBeams, func(leftIndex, rightIndex int) bool {
+			return scratch.NextBeams[leftIndex].Score > scratch.NextBeams[rightIndex].Score
+		})
+
+		if len(scratch.NextBeams) > beamWidth {
+			scratch.NextBeams = scratch.NextBeams[:beamWidth]
 		}
 
 		scratch.CurrentBeams, scratch.NextBeams = scratch.NextBeams, scratch.CurrentBeams
@@ -273,57 +261,60 @@ func (tree *Tree) ExecuteBeamSearch(
 }
 
 /*
-insertBeamTopK inserts candidate into a descending-score beam capped at width.
+CommitToEpisodicBuffer stores e/[timestamp][sequence] episodic observations.
 */
-func insertBeamTopK(beams []BeamPath, candidate BeamPath, width int) []BeamPath {
-	insertAt := len(beams)
+func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tree, bool) {
+	return tree.Insert(episodicStorageKey(timestamp, sequence), []byte{1})
+}
 
-	for index := range beams {
-		if candidate.Score > beams[index].Score {
-			insertAt = index
-			break
+/*
+ExecuteREMSleepConsolidation replays episodic entries, retrains sensory weights,
+and applies retroactive inhibition across the sensory namespace.
+*/
+func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint64) {
+	replayedObservations := uint64(0)
+	preservedSequences := make([][]byte, 0, 8)
+
+	tree.WalkPrefix([]byte(episodicNamespace), func(storageKey, value []byte) bool {
+		timestamp, sequence, mapped := timestampFromEpisodicKey(storageKey)
+
+		if !mapped {
+			return true
 		}
-	}
 
-	if insertAt >= width {
-		return beams
-	}
+		if timestamp < startTimestamp {
+			return true
+		}
 
-	if len(beams) < width {
-		beams = append(beams, BeamPath{})
-	}
+		if timestamp > endTimestamp {
+			return false
+		}
 
-	copy(beams[insertAt+1:], beams[insertAt:])
-	beams[insertAt] = candidate
+		if len(value) == 0 {
+			return true
+		}
 
-	if len(beams) > width {
-		beams = beams[:width]
-	}
+		tree.TrainSensorySequence(sequence)
+		preservedSequences = append(preservedSequences, sensoryPrefixPaths(sequence)...)
 
-	return beams
+		var classifyScratch ClassificationScratch
+		_ = tree.optimizeWeightsInline(sequence, &classifyScratch)
+
+		replayedObservations++
+
+		return true
+	})
+
+	namespaceEntries := uint64(countNamespaceEntries(tree, []byte(sensoryNamespace)))
+	decayFactor := deriveDecayFactor(replayedObservations, namespaceEntries)
+
+	tree.ExecuteDecayConsolidation([]byte(sensoryNamespace), decayFactor, preservedSequences...)
 }
 
 /*
 TrainSensorySequence increments sensory counts and conditional probabilities inline.
 */
 func (tree *Tree) TrainSensorySequence(sequence []byte) {
-	tree.TrainSensorySequenceAt(0, sequence)
-}
-
-/*
-TrainSensorySequenceAt stamps LastObserved with the supplied event time.
-*/
-func (tree *Tree) TrainSensorySequenceAt(observedAt uint64, sequence []byte) {
-	_ = tree.commitLearnMutations(tree.buildSensoryMutations(observedAt, sequence))
-}
-
-func (tree *Tree) buildSensoryMutations(observedAt uint64, sequence []byte) []learnMutation {
-	if tree == nil || len(sequence) == 0 {
-		return nil
-	}
-
-	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
-	pending := make(map[string]CognitiveState, countTokenBoundaries(sequence))
 	tokenStart := 0
 
 	for index := 0; index <= len(sequence); index++ {
@@ -337,49 +328,31 @@ func (tree *Tree) buildSensoryMutations(observedAt uint64, sequence []byte) []le
 			continue
 		}
 
-		currentPath := append([]byte(nil), sequence[:index]...)
+		currentPath := sequence[:index]
 		parentPath := parentContextPath(currentPath)
 		currentState := tree.GetSensoryWeight(currentPath)
 		parentState := tree.GetSensoryWeight(parentPath)
-
-		if pendingCurrent, ok := pending[string(currentPath)]; ok {
-			currentState = pendingCurrent
-		}
-		if pendingParent, ok := pending[string(parentPath)]; ok {
-			parentState = pendingParent
-		}
 
 		nextCount := currentState.Count + 1
 		probability := 1.0
 
 		if len(parentPath) > 0 {
-			denominator := float64(parentState.Count)
+			denominator := float64(parentState.Count + nextCount)
 
 			if denominator <= 0 {
 				denominator = float64(nextCount)
 			}
 
 			probability = float64(nextCount) / denominator
-			if probability > 1.0 {
-				probability = 1.0
-			}
 		}
 
-		next := CognitiveState{
-			Count:        nextCount,
-			Probability:  probability,
-			LastObserved: observedAt,
-		}
-		pending[string(currentPath)] = next
-		mutations = append(mutations, learnMutation{
-			key:   sensoryStorageKey(currentPath),
-			value: MarshalCognitive(next),
+		_, _ = tree.InsertSensoryWeight(currentPath, CognitiveState{
+			Count:       nextCount,
+			Probability: probability,
 		})
 
 		tokenStart = index + 1
 	}
-
-	return mutations
 }
 
 func appendSequenceToken(buffer []byte, prefix []byte, token []byte) []byte {
@@ -403,4 +376,24 @@ func highestScoreCandidate(candidates []CandidateToken) CandidateToken {
 	}
 
 	return bestCandidate
+}
+
+func positiveScoreFloor(candidates []CandidateToken) float64 {
+	floor := math.MaxFloat64
+
+	for _, candidate := range candidates {
+		if candidate.Score <= 0 {
+			continue
+		}
+
+		if candidate.Score < floor {
+			floor = candidate.Score
+		}
+	}
+
+	if floor == math.MaxFloat64 {
+		return math.SmallestNonzeroFloat64
+	}
+
+	return floor
 }

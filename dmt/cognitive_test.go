@@ -23,7 +23,8 @@ func TestGetContextWeight(t *testing.T) {
 	Convey("Given a tree with context weights", t, func() {
 		tree, err := NewTree("")
 		So(err, ShouldBeNil)
-		_, _, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{
+
+		_, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{
 			Count:       8,
 			Probability: 0.5,
 		})
@@ -52,9 +53,10 @@ func TestGetSurprisal(t *testing.T) {
 	Convey("Given a trained context tree", t, func() {
 		tree, err := NewTree("")
 		So(err, ShouldBeNil)
-		_, _, _ = tree.InsertContextWeight([]byte("blue"), PackedWeight{Count: 10, Probability: 1.0})
-		_, _, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{Count: 4, Probability: 0.5})
-		_, _, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 2, Probability: 0.25})
+
+		_, _ = tree.InsertContextWeight([]byte("blue"), PackedWeight{Count: 10, Probability: 1.0})
+		_, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{Count: 4, Probability: 0.5})
+		_, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 2, Probability: 0.25})
 
 		Convey("When scoring a known sequence", func() {
 			items := tree.GetSurprisal([]byte("blue_cab_big"))
@@ -86,9 +88,10 @@ func TestPredictNextTokens(t *testing.T) {
 	Convey("Given prefix branch weights", t, func() {
 		tree, err := NewTree("")
 		So(err, ShouldBeNil)
-		_, _, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 3, Probability: 0.6})
-		_, _, _ = tree.InsertContextWeight([]byte("blue_cab_small"), PackedWeight{Count: 2, Probability: 0.4})
-		_, _, _ = tree.InsertContextWeight([]byte("blue_truck"), PackedWeight{Count: 1, Probability: 0.1})
+
+		_, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 3, Probability: 0.6})
+		_, _ = tree.InsertContextWeight([]byte("blue_cab_small"), PackedWeight{Count: 2, Probability: 0.4})
+		_, _ = tree.InsertContextWeight([]byte("blue_truck"), PackedWeight{Count: 1, Probability: 0.1})
 
 		buffer := make([]LookaheadPrediction, 0, 4)
 
@@ -117,10 +120,12 @@ func TestPredictNextTokens(t *testing.T) {
 
 func BenchmarkGetContextWeight(b *testing.B) {
 	tree, err := NewTree("")
+
 	if err != nil {
 		b.Fatal(err)
 	}
-	_, _, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 4, Probability: 0.5})
+
+	_, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 4, Probability: 0.5})
 	lookupKey := []byte("blue_cab_big")
 
 	for b.Loop() {
@@ -130,12 +135,14 @@ func BenchmarkGetContextWeight(b *testing.B) {
 
 func BenchmarkGetSurprisal(b *testing.B) {
 	tree, err := NewTree("")
+
 	if err != nil {
 		b.Fatal(err)
 	}
-	_, _, _ = tree.InsertContextWeight([]byte("blue"), PackedWeight{Count: 10, Probability: 1.0})
-	_, _, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{Count: 4, Probability: 0.5})
-	_, _, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 2, Probability: 0.25})
+
+	_, _ = tree.InsertContextWeight([]byte("blue"), PackedWeight{Count: 10, Probability: 1.0})
+	_, _ = tree.InsertContextWeight([]byte("blue_cab"), PackedWeight{Count: 4, Probability: 0.5})
+	_, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 2, Probability: 0.25})
 	sequence := []byte("blue_cab_big")
 
 	for b.Loop() {
@@ -145,11 +152,13 @@ func BenchmarkGetSurprisal(b *testing.B) {
 
 func BenchmarkPredictNextTokens(b *testing.B) {
 	tree, err := NewTree("")
+
 	if err != nil {
 		b.Fatal(err)
 	}
-	_, _, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 3, Probability: 0.6})
-	_, _, _ = tree.InsertContextWeight([]byte("blue_cab_small"), PackedWeight{Count: 2, Probability: 0.4})
+
+	_, _ = tree.InsertContextWeight([]byte("blue_cab_big"), PackedWeight{Count: 3, Probability: 0.6})
+	_, _ = tree.InsertContextWeight([]byte("blue_cab_small"), PackedWeight{Count: 2, Probability: 0.4})
 	prefix := []byte("blue_cab")
 	buffer := make([]LookaheadPrediction, 0, 8)
 

@@ -12,8 +12,7 @@ import (
 func TestForest(t *testing.T) {
 	Convey("Given a newly initialized Forest Server", t, func() {
 		ctx := context.Background()
-		server, err := NewForestServer(WithContext(ctx))
-		So(err, ShouldBeNil)
+		server := NewForestServer(WithContext(ctx))
 		client := Server_ServerToClient(server)
 		defer client.Release()
 
@@ -21,14 +20,10 @@ func TestForest(t *testing.T) {
 
 		Convey("It should drop incoming morton keys onto the exact grid coordinates", func() {
 			keyH := morton.Encode(0, uint64('H'))
-			artifact := datura.Acquire("rpc-write", datura.APPJSON)
-			defer artifact.Release()
-			artifact.WithPayload([]byte(`{"letter":"H"}`))
-			value := artifact.Pack()
 
 			err := client.Write(ctx, func(p Server_write_Params) error {
 				p.SetKey(keyH)
-				return p.SetValue(value)
+				return nil
 			})
 			So(err, ShouldBeNil)
 
@@ -49,31 +44,23 @@ func TestForest(t *testing.T) {
 				values, err := res.Values()
 				So(err, ShouldBeNil)
 				So(values.Len(), ShouldEqual, 1)
-
-				inbound := values.At(0)
-				payload := (&inbound).DecryptPayload()
-				So(payload, ShouldResemble, []byte(`{"letter":"H"}`))
 			})
 
 			Convey("It should silently drop duplicate keys reflecting collision entropy", func() {
 				// We invoke a duplicate insert. It must return without error.
 				err2 := client.Write(ctx, func(p Server_write_Params) error {
 					p.SetKey(keyH)
-					return p.SetValue(value)
+					return nil
 				})
 				So(err2, ShouldBeNil)
 			})
-
 		})
 	})
 }
 
 func BenchmarkForestWrite(b *testing.B) {
 	ctx := context.Background()
-	server, err := NewForestServer(WithContext(ctx))
-	if err != nil {
-		b.Fatal(err)
-	}
+	server := NewForestServer(WithContext(ctx))
 	client := Server_ServerToClient(server)
 	defer client.Release()
 
@@ -82,38 +69,27 @@ func BenchmarkForestWrite(b *testing.B) {
 	for index := range 256 {
 		keys[index] = morton.Encode(uint64(index), uint64(index%256))
 	}
-	artifact := datura.Acquire("rpc-bench", datura.APPJSON)
-	defer artifact.Release()
-	artifact.WithPayload([]byte(`{"bench":true}`))
-	value := artifact.Pack()
 
 	for index := 0; b.Loop(); index++ {
 		key := keys[index%256]
 		_ = client.Write(ctx, func(p Server_write_Params) error {
 			p.SetKey(key)
-			return p.SetValue(value)
+			return nil
 		})
 	}
 }
 
 func BenchmarkForestLookup(b *testing.B) {
 	ctx := context.Background()
-	server, err := NewForestServer(WithContext(ctx))
-	if err != nil {
-		b.Fatal(err)
-	}
+	server := NewForestServer(WithContext(ctx))
 	client := Server_ServerToClient(server)
 	defer client.Release()
 
 	morton := datura.NewMortonCoder()
 	key := morton.Encode(0, uint64('H'))
-	artifact := datura.Acquire("rpc-lookup", datura.APPJSON)
-	defer artifact.Release()
-	artifact.WithPayload([]byte(`{"letter":"H"}`))
-	value := artifact.Pack()
 	_ = client.Write(ctx, func(p Server_write_Params) error {
 		p.SetKey(key)
-		return p.SetValue(value)
+		return nil
 	})
 
 	for b.Loop() {

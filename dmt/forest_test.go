@@ -1,6 +1,7 @@
 package dmt
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/theapemachine/datura"
 )
 
 func TestNewForest(t *testing.T) {
@@ -41,6 +41,24 @@ func TestNewForest(t *testing.T) {
 	})
 }
 
+func TestForestUsesProvidedPool(t *testing.T) {
+	Convey("Given a forest configuration with a worker pool", t, func() {
+		workerPool := newWorkerPool(context.Background())
+		defer workerPool.Close()
+
+		forest, err := NewForest(ForestConfig{
+			Pool: workerPool,
+		})
+		So(err, ShouldBeNil)
+		defer forest.Close()
+
+		Convey("Then the forest should reuse the provided pool", func() {
+			So(forest.pool, ShouldEqual, workerPool)
+			So(forest.owned, ShouldBeFalse)
+		})
+	})
+}
+
 func TestForestOperations(t *testing.T) {
 	Convey("Given a new forest", t, func() {
 		tmpDir := filepath.Join(os.TempDir(), "radix-test-"+time.Now().Format("20060102150405"))
@@ -51,8 +69,8 @@ func TestForestOperations(t *testing.T) {
 		defer forest.Close()
 
 		Convey("When performing insert operations", func() {
-			_ = forest.Insert([]byte("key1"), []byte("value1"))
-			_ = forest.Insert([]byte("key2"), []byte("value2"))
+			forest.Insert([]byte("key1"), []byte("value1"))
+			forest.Insert([]byte("key2"), []byte("value2"))
 
 			Convey("Then the data should be retrievable", func() {
 				value1, exists := forest.Get([]byte("key1"))
@@ -65,24 +83,9 @@ func TestForestOperations(t *testing.T) {
 			})
 
 			Convey("And seek operations should work", func() {
-				artifact := datura.Acquire("forest", datura.Artifact_Type_json)
-				So(artifact, ShouldNotBeNil)
-				defer artifact.Release()
-
-				artifact.WithPayload([]byte("value1"))
-				packed := artifact.Pack()
-				_ = forest.Insert(artifact.Prefix(), packed)
-
-				var found bool
-
-				for result := range forest.Seek(artifact.Prefix()) {
-					found = true
-
-					payload := result.DecryptPayload()
-					So(payload, ShouldResemble, []byte("value1"))
-				}
-
-				So(found, ShouldBeTrue)
+				value, exists := forest.Seek([]byte("key"))
+				So(exists, ShouldBeTrue)
+				So(value, ShouldResemble, []byte("value1")) // Should find first key alphabetically
 			})
 		})
 	})
@@ -100,11 +103,10 @@ func TestForestSynchronization(t *testing.T) {
 		// Add a second tree
 		tree2, err := NewTree("")
 		So(err, ShouldBeNil)
-		So(err, ShouldBeNil)
-		_ = forest.AddTree(tree2)
+		forest.AddTree(tree2)
 
 		Convey("When inserting data", func() {
-			_ = forest.Insert([]byte("sync-key"), []byte("sync-value"))
+			forest.Insert([]byte("sync-key"), []byte("sync-value"))
 
 			Convey("Then all trees should have the data", func() {
 				for _, tree := range forest.snapshot.Load().Trees() {
@@ -123,15 +125,13 @@ func TestForestAddTreeSynchronization(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer forest.Close()
 
-		_ = forest.Insert([]byte("seed-key"), []byte("seed-value"))
+		forest.Insert([]byte("seed-key"), []byte("seed-value"))
 
 		tree2, err := NewTree("")
-
-		So(err, ShouldBeNil)
 		So(err, ShouldBeNil)
 
 		Convey("When a new tree is added", func() {
-			_ = forest.AddTree(tree2)
+			forest.AddTree(tree2)
 
 			Convey("Then the new tree should receive the existing data", func() {
 				value, exists := tree2.Get([]byte("seed-key"))
@@ -153,8 +153,9 @@ func TestForestPerformance(t *testing.T) {
 		So(err, ShouldBeNil)
 		tree2, err := NewTree("")
 		So(err, ShouldBeNil)
-		_ = forest.AddTree(tree1)
-		_ = forest.AddTree(tree2)
+
+		forest.AddTree(tree1)
+		forest.AddTree(tree2)
 
 		Convey("When getting the fastest tree", func() {
 			fastestTree := forest.getFastestTree()
@@ -190,13 +191,18 @@ func TestForestNetworking(t *testing.T) {
 		})
 
 		Convey("When inserting data with networking enabled", func() {
-			_ = forest.Insert([]byte("network-key"), []byte("network-value"))
+			forest.Insert([]byte("network-key"), []byte("network-value"))
 
-			Convey("Then the network node should stage the insert", func() {
+			Convey("Then the network node should broadcast the insert", func() {
+				// Verify local insertion worked
 				value, exists := forest.Get([]byte("network-key"))
 				So(exists, ShouldBeTrue)
 				So(value, ShouldResemble, []byte("network-value"))
-				So(forest.network.merkleDirty.Load(), ShouldBeTrue)
+
+				// Network metrics should be updated
+				metrics := forest.network.GetMetrics()
+				networkStats := metrics["network"].(map[string]interface{})
+				So(networkStats["bytes_tx"], ShouldBeGreaterThan, 0)
 			})
 		})
 	})
@@ -221,7 +227,7 @@ func TestForestClose(t *testing.T) {
 		// Add additional tree
 		tree2, err := NewTree("")
 		So(err, ShouldBeNil)
-		_ = forest.AddTree(tree2)
+		forest.AddTree(tree2)
 
 		Convey("When closing the forest", func() {
 			forest.Close()
@@ -254,7 +260,7 @@ func TestForestConcurrentInsert(test *testing.T) {
 				defer waitGroup.Done()
 
 				key := []byte("toxicity/BTC-USD/book/" + strconv.Itoa(index) + ".")
-				_ = forest.Insert(key, []byte("book"))
+				forest.Insert(key, []byte("book"))
 			}(workerIndex)
 		}
 
@@ -274,22 +280,26 @@ func TestForestConcurrentAddTree(test *testing.T) {
 		So(err, ShouldBeNil)
 		defer forest.Close()
 
-		_ = forest.Insert([]byte("seed"), []byte("value"))
+		forest.Insert([]byte("seed"), []byte("value"))
 
 		var waitGroup sync.WaitGroup
 
 		for range 8 {
-			waitGroup.Go(func() {
-				tree, err := NewTree("")
+			waitGroup.Add(1)
 
-				if err != nil {
-					test.Error(err)
+			go func() {
+				defer waitGroup.Done()
+
+				tree, treeErr := NewTree("")
+
+				if treeErr != nil {
 					return
 				}
 
 				defer tree.Close()
-				_ = forest.AddTree(tree)
-			})
+
+				forest.AddTree(tree)
+			}()
 		}
 
 		waitGroup.Wait()

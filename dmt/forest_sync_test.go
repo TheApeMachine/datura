@@ -6,50 +6,52 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func TestForestReplicaApplyAfterCommit(t *testing.T) {
+func TestForestSynchronizeTrees(t *testing.T) {
 	Convey("Given a forest with seeded data", t, func() {
 		forest, err := NewForest(ForestConfig{})
 		So(err, ShouldBeNil)
 		defer forest.Close()
 
-		So(forest.Insert([]byte("sync-key"), []byte("sync-value")), ShouldBeNil)
+		forest.Insert([]byte("sync-key"), []byte("sync-value"))
 
-		replica, err := NewTree("")
+		emptyTree, err := NewTree("")
 		So(err, ShouldBeNil)
-		So(forest.AddTree(replica), ShouldBeNil)
 
-		Convey("When inserting after the replica joins", func() {
-			So(forest.Insert([]byte("later-key"), []byte("later-value")), ShouldBeNil)
+		Convey("When synchronizing a trailing tree", func() {
+			forest.synchronizeTrees(append(forest.snapshot.Load().Trees(), emptyTree))
 
-			Convey("Then the replica should apply the committed entry", func() {
-				value, exists := replica.Get([]byte("later-key"))
+			Convey("Then it should share the reference root without copying entries", func() {
+				reference := forest.getFastestTree()
+				So(emptyTree.loadRoot(), ShouldEqual, reference.loadRoot())
+
+				value, exists := emptyTree.Get([]byte("sync-key"))
 				So(exists, ShouldBeTrue)
-				So(value, ShouldResemble, []byte("later-value"))
-				So(replica.AppliedIndex(), ShouldEqual, forest.commitIndex.Load())
+				So(value, ShouldResemble, []byte("sync-value"))
 			})
 		})
 	})
 }
 
-func BenchmarkForestReplicaApply(b *testing.B) {
+func BenchmarkForestSynchronizeTrees(b *testing.B) {
 	forest, err := NewForest(ForestConfig{})
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer forest.Close()
 
-	replica, err := NewTree("")
+	for index := range 10000 {
+		key := []byte("bench-key-" + string(rune('a'+index%26)))
+		forest.Insert(key, []byte("value"))
+	}
+
+	trailingTree, err := NewTree("")
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	if err := forest.AddTree(replica); err != nil {
-		b.Fatal(err)
-	}
+	trees := forest.snapshot.Load().Trees()
 
 	for b.Loop() {
-		if err := forest.Insert([]byte("bench-key"), []byte("value")); err != nil {
-			b.Fatal(err)
-		}
+		forest.synchronizeTrees(append(trees, trailingTree))
 	}
 }

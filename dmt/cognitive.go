@@ -6,59 +6,40 @@ import (
 	"math"
 )
 
-const (
-	packedWeightLegacySize = 16
-	packedWeightSize       = 24
-)
+const packedWeightSize = 16
 
 /*
 PackedWeight holds statistical training telemetry stored as radix tree values.
-LastObserved is event time for decay consolidation; legacy 16-byte values decode as zero.
 */
 type PackedWeight struct {
-	Count        uint64
-	Probability  float64
-	LastObserved uint64
+	Count       uint64
+	Probability float64
 }
 
 /*
-MarshalWeight encodes count, probability, and last-observed event time.
+MarshalWeight encodes count and probability into a fixed 16-byte layout.
 */
-func MarshalWeight(count uint64, probability float64, lastObserved ...uint64) []byte {
+func MarshalWeight(count uint64, probability float64) []byte {
 	buffer := make([]byte, packedWeightSize)
 
 	binary.LittleEndian.PutUint64(buffer[0:8], count)
 	binary.LittleEndian.PutUint64(buffer[8:16], math.Float64bits(probability))
 
-	observedAt := uint64(0)
-
-	if len(lastObserved) > 0 {
-		observedAt = lastObserved[0]
-	}
-
-	binary.LittleEndian.PutUint64(buffer[16:24], observedAt)
-
 	return buffer
 }
 
 /*
-UnmarshalWeight decodes a packed weight buffer, accepting legacy 16-byte layouts.
+UnmarshalWeight decodes a packed weight buffer.
 */
 func UnmarshalWeight(buffer []byte) PackedWeight {
-	if len(buffer) < packedWeightLegacySize {
+	if len(buffer) < packedWeightSize {
 		return PackedWeight{}
 	}
 
-	weight := PackedWeight{
+	return PackedWeight{
 		Count:       binary.LittleEndian.Uint64(buffer[0:8]),
 		Probability: math.Float64frombits(binary.LittleEndian.Uint64(buffer[8:16])),
 	}
-
-	if len(buffer) >= packedWeightSize {
-		weight.LastObserved = binary.LittleEndian.Uint64(buffer[16:24])
-	}
-
-	return weight
 }
 
 /*
@@ -81,7 +62,7 @@ type LookaheadPrediction struct {
 GetContextWeight fetches the statistical weight stored at contextPath.
 */
 func (tree *Tree) GetContextWeight(contextPath []byte) PackedWeight {
-	value, found := tree.getRaw(contextPath)
+	value, found := tree.Get(contextPath)
 
 	if !found {
 		return PackedWeight{}
@@ -93,18 +74,8 @@ func (tree *Tree) GetContextWeight(contextPath []byte) PackedWeight {
 /*
 InsertContextWeight stores a packed weight at contextPath.
 */
-func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool, error) {
-	updated, changed, err := tree.Insert(
-		contextPath,
-		MarshalWeight(weight.Count, weight.Probability, weight.LastObserved),
-	)
-
-	if changed {
-		tree.refreshChildProbabilityIndex(contextPath)
-		tree.registerAnalogCandidate(contextPath)
-	}
-
-	return updated, changed, err
+func (tree *Tree) InsertContextWeight(contextPath []byte, weight PackedWeight) (*Tree, bool) {
+	return tree.Insert(contextPath, MarshalWeight(weight.Count, weight.Probability))
 }
 
 /*
@@ -152,23 +123,11 @@ func (tree *Tree) PredictNextTokens(
 	prefix []byte,
 	targetBuffer []LookaheadPrediction,
 ) []LookaheadPrediction {
-	limit := cap(targetBuffer)
-
-	if limit <= 0 {
-		limit = defaultChildIndexCapacity
-	}
-
-	if indexed, ok := tree.readChildProbabilityIndex(prefix, targetBuffer[:0], limit); ok {
-		return indexed
-	}
-
 	targetBuffer = targetBuffer[:0]
 	root := tree.loadRoot()
 	iterator := root.Root().Iterator()
 
 	iterator.SeekPrefix(prefix)
-
-	truncated := false
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, prefix) {
@@ -182,16 +141,23 @@ func (tree *Tree) PredictNextTokens(
 		}
 
 		weight := UnmarshalWeight(value)
-		targetBuffer, truncated = insertTopKPrediction(
-			targetBuffer,
-			tokenSuffix,
-			weight.Probability,
-			limit,
-		)
-	}
 
-	if len(targetBuffer) > 0 {
-		tree.storeChildProbabilityIndex(prefix, targetBuffer, truncated)
+		if existingIndex := predictionIndexForToken(targetBuffer, tokenSuffix); existingIndex >= 0 {
+			if weight.Probability > targetBuffer[existingIndex].Probability {
+				targetBuffer[existingIndex].Probability = weight.Probability
+			}
+
+			continue
+		}
+
+		targetBuffer = append(targetBuffer, LookaheadPrediction{
+			Token:       append([]byte(nil), tokenSuffix...),
+			Probability: weight.Probability,
+		})
+
+		if len(targetBuffer) == cap(targetBuffer) {
+			break
+		}
 	}
 
 	return targetBuffer

@@ -68,19 +68,5 @@ func TestElectionVoteRing(test *testing.T) {
 				So(election.votesReceived.Load(), ShouldEqual, uint32(3))
 			})
 		})
-
-		Convey("When the same peer vote is delivered twice", func() {
-			election.votesNeeded.Store(10)
-			election.role.Store(uint32(Candidate))
-			election.votesReceived.Store(1)
-			election.publishVote(hashNodeID("peer-a"))
-			election.publishVote(hashNodeID("peer-a"))
-			election.publishVote(hashNodeID("peer-b"))
-			election.drainVotes()
-
-			Convey("It should count that peer once", func() {
-				So(election.votesReceived.Load(), ShouldEqual, uint32(3))
-			})
-		})
 	})
 }

@@ -173,7 +173,14 @@ func (tree *MerkleTree) GetDiff(other *MerkleTree) []DiffEntry {
 	left := tree.loadSnapshot()
 	right := other.loadSnapshot()
 
-	return tree.fullDiff(left, right)
+	if left.root == nil || right.root == nil {
+		return tree.fullDiff(left, right)
+	}
+
+	diffs := make([]DiffEntry, 0)
+	tree.diffNode(left.root, right.root, right, &diffs)
+
+	return diffs
 }
 
 /*
@@ -183,6 +190,46 @@ type DiffEntry struct {
 	Key      []byte
 	Value    []byte
 	Modified bool
+}
+
+func (tree *MerkleTree) diffNode(
+	leftNode, rightNode *MerkleNode,
+	other *merkleSnapshot,
+	diffs *[]DiffEntry,
+) {
+	if bytes.Equal(leftNode.Hash, rightNode.Hash) {
+		return
+	}
+
+	if leftNode.Key != nil {
+		if otherLeaf, exists := other.LookupLeaf(leftNode.Key); exists {
+			if !bytes.Equal(leftNode.Value, otherLeaf.Value) {
+				*diffs = append(*diffs, DiffEntry{
+					Key:      leftNode.Key,
+					Value:    leftNode.Value,
+					Modified: true,
+				})
+			}
+
+			return
+		}
+
+		*diffs = append(*diffs, DiffEntry{
+			Key:      leftNode.Key,
+			Value:    leftNode.Value,
+			Modified: false,
+		})
+
+		return
+	}
+
+	if leftNode.Left != nil && rightNode.Left != nil {
+		tree.diffNode(leftNode.Left, rightNode.Left, other, diffs)
+	}
+
+	if leftNode.Right != nil && rightNode.Right != nil {
+		tree.diffNode(leftNode.Right, rightNode.Right, other, diffs)
+	}
 }
 
 func (tree *MerkleTree) fullDiff(left, right *merkleSnapshot) []DiffEntry {
@@ -286,8 +333,6 @@ func (tree *MerkleTree) GetProof(key []byte) ([][]byte, error) {
 			if parentNode.Right != nil {
 				entry := append([]byte{0x00}, parentNode.Right.Hash...)
 				proof = append(proof, entry)
-			} else {
-				proof = append(proof, []byte{0x02})
 			}
 		}
 
@@ -316,7 +361,7 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 	hasher := sha256.New()
 
 	for _, entry := range proof {
-		if len(entry) == 0 {
+		if len(entry) <= 1 {
 			return false
 		}
 
@@ -326,25 +371,12 @@ func (tree *MerkleTree) VerifyProof(key, value []byte, proof [][]byte) bool {
 		hasher.Reset()
 
 		if position == 0x00 {
-			if len(siblingHash) == 0 {
-				return false
-			}
 			hasher.Write(hash)
 			hasher.Write(siblingHash)
 		}
 
 		if position == 0x01 {
-			if len(siblingHash) == 0 {
-				return false
-			}
 			hasher.Write(siblingHash)
-			hasher.Write(hash)
-		}
-
-		if position == 0x02 {
-			if len(siblingHash) != 0 {
-				return false
-			}
 			hasher.Write(hash)
 		}
 

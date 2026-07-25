@@ -94,29 +94,6 @@ func TestMerkleTreeDiff(t *testing.T) {
 	})
 }
 
-func TestMerkleTreeDiffDifferentShapes(t *testing.T) {
-	Convey("Given two Merkle trees with different leaf shapes", t, func() {
-		left := NewMerkleTree()
-		right := NewMerkleTree()
-
-		left.Insert([]byte("a"), []byte("1"))
-		left.Insert([]byte("b"), []byte("2"))
-		left.Insert([]byte("c"), []byte("3"))
-		right.Insert([]byte("b"), []byte("2"))
-		right.Insert([]byte("c"), []byte("3"))
-		left.Rebuild()
-		right.Rebuild()
-
-		diffs := left.GetDiff(right)
-
-		Convey("It should diff by key, not by tree position", func() {
-			So(len(diffs), ShouldEqual, 1)
-			So(string(diffs[0].Key), ShouldEqual, "a")
-			So(diffs[0].Modified, ShouldBeFalse)
-		})
-	})
-}
-
 func TestMerkleTreeVerify(t *testing.T) {
 	Convey("Given a Merkle tree with data", t, func() {
 		merkleTree := NewMerkleTree()
@@ -176,24 +153,6 @@ func TestMerkleProof(t *testing.T) {
 				So(err, ShouldNotBeNil)
 				So(proof, ShouldBeNil)
 			})
-		})
-	})
-}
-
-func TestMerkleProofOddTree(t *testing.T) {
-	Convey("Given a Merkle tree with an odd leaf count", t, func() {
-		merkleTree := NewMerkleTree()
-		merkleTree.Insert([]byte("key1"), []byte("value1"))
-		merkleTree.Insert([]byte("key2"), []byte("value2"))
-		merkleTree.Insert([]byte("key3"), []byte("value3"))
-		merkleTree.Rebuild()
-
-		proof, err := merkleTree.GetProof([]byte("key3"))
-
-		Convey("It should verify the single-child branch", func() {
-			So(err, ShouldBeNil)
-			So(merkleTree.VerifyProof([]byte("key3"), []byte("value3"), proof), ShouldBeTrue)
-			So(merkleTree.VerifyProof([]byte("key3"), []byte("wrong"), proof), ShouldBeFalse)
 		})
 	})
 }

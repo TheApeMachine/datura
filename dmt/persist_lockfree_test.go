@@ -17,8 +17,6 @@ func TestPersistentStoreConcurrentLogInsert(test *testing.T) {
 		defer store.Close()
 
 		var waitGroup sync.WaitGroup
-		var writeMu sync.Mutex
-		var nextIndex uint64
 		errors := make(chan error, 32)
 
 		for workerIndex := range 32 {
@@ -29,12 +27,7 @@ func TestPersistentStoreConcurrentLogInsert(test *testing.T) {
 
 				key := []byte("key/" + strconv.Itoa(index))
 				value := []byte("value/" + strconv.Itoa(index))
-
-				writeMu.Lock()
-				nextIndex++
-				logIndex := nextIndex
-				logErr := store.LogInsert(key, value, 1, logIndex)
-				writeMu.Unlock()
+				logErr := store.LogInsert(key, value, 1, uint64(index+1))
 
 				if logErr != nil {
 					errors <- logErr

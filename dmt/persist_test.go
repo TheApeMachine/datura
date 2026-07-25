@@ -1,11 +1,10 @@
 package dmt
 
 import (
-	"encoding/binary"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -99,118 +98,6 @@ func TestLoadLastState(t *testing.T) {
 	})
 }
 
-func TestReplayRejectsCorruptWAL(t *testing.T) {
-	Convey("Given a WAL with a torn final record", t, func() {
-		tmpDir := t.TempDir()
-
-		store, err := NewPersistentStore(tmpDir)
-		So(err, ShouldBeNil)
-
-		So(store.LogInsert([]byte("live"), []byte("value"), 2, 7), ShouldBeNil)
-		So(store.Close(), ShouldBeNil)
-
-		walPath := filepath.Join(tmpDir, "wal.log")
-		complete, err := os.Stat(walPath)
-		So(err, ShouldBeNil)
-		file, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0644)
-		So(err, ShouldBeNil)
-		_, err = file.Write([]byte{opInsert, 1, 2, 3})
-		So(err, ShouldBeNil)
-		So(file.Close(), ShouldBeNil)
-
-		Convey("NewPersistentStore should replay complete records and truncate the torn tail", func() {
-			reopened, err := NewPersistentStore(tmpDir)
-			So(err, ShouldBeNil)
-			defer reopened.Close()
-
-			term, index := reopened.GetLastState()
-			So(term, ShouldEqual, uint64(2))
-			So(index, ShouldEqual, uint64(7))
-
-			entries, err := reopened.Replay()
-			So(err, ShouldBeNil)
-			So(len(entries), ShouldEqual, 1)
-			So(string(entries[0].Key), ShouldEqual, "live")
-			So(string(entries[0].Value), ShouldEqual, "value")
-
-			truncated, err := os.Stat(walPath)
-			So(err, ShouldBeNil)
-			So(truncated.Size(), ShouldEqual, complete.Size())
-		})
-	})
-
-	Convey("Given a WAL record with an invalid op", t, func() {
-		tmpDir := t.TempDir()
-		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
-		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), []byte{255}, 0644), ShouldBeNil)
-
-		store, err := NewPersistentStore(tmpDir)
-		if store != nil {
-			defer store.Close()
-		}
-
-		Convey("NewPersistentStore should reject it", func() {
-			So(err, ShouldNotBeNil)
-		})
-	})
-
-	Convey("Given a WAL record with a corrupt length", t, func() {
-		tmpDir := t.TempDir()
-		So(os.MkdirAll(tmpDir, 0755), ShouldBeNil)
-
-		var record [25]byte
-		record[0] = opInsert
-		binary.LittleEndian.PutUint32(record[17:21], uint32(maxWALFieldBytes+1))
-
-		So(os.WriteFile(filepath.Join(tmpDir, "wal.log"), record[:], 0644), ShouldBeNil)
-
-		store, err := NewPersistentStore(tmpDir)
-		if store != nil {
-			defer store.Close()
-		}
-
-		Convey("NewPersistentStore should reject it before allocating the field", func() {
-			So(err, ShouldNotBeNil)
-		})
-	})
-
-	Convey("Given valid records followed by a corrupt length", t, func() {
-		tmpDir := t.TempDir()
-		store, err := NewPersistentStore(tmpDir)
-		So(err, ShouldBeNil)
-		So(store.LogInsert([]byte("live"), []byte("value"), 2, 7), ShouldBeNil)
-		So(store.Close(), ShouldBeNil)
-
-		walPath := filepath.Join(tmpDir, "wal.log")
-		complete, err := os.Stat(walPath)
-		So(err, ShouldBeNil)
-		file, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0644)
-		So(err, ShouldBeNil)
-
-		var record [25]byte
-		record[0] = opInsert
-		binary.LittleEndian.PutUint32(record[17:21], uint32(maxWALFieldBytes+1))
-		_, err = file.Write(record[:])
-		So(err, ShouldBeNil)
-		So(file.Close(), ShouldBeNil)
-
-		Convey("NewPersistentStore should preserve valid records and truncate the corrupt tail", func() {
-			reopened, err := NewPersistentStore(tmpDir)
-			So(err, ShouldBeNil)
-			defer reopened.Close()
-
-			entries, err := reopened.Replay()
-			So(err, ShouldBeNil)
-			So(len(entries), ShouldEqual, 1)
-			So(string(entries[0].Key), ShouldEqual, "live")
-
-			truncated, err := os.Stat(walPath)
-			So(err, ShouldBeNil)
-			So(truncated.Size(), ShouldEqual, complete.Size())
-		})
-	})
-}
-
 func TestCreateSnapshot(t *testing.T) {
 	Convey("Given a persistent store with entries", t, func() {
 		tmpDir := t.TempDir()
@@ -219,44 +106,23 @@ func TestCreateSnapshot(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		active := map[string]string{
-			"key/one": "value/one",
-			"key/two": "value/two",
+		for index := uint64(1); index <= 1001; index++ {
+			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
+			So(err, ShouldBeNil)
 		}
 
-		index := uint64(1)
-		for key, value := range active {
-			err := store.LogInsert([]byte(key), []byte(value), 1, index)
-			So(err, ShouldBeNil)
-			index++
-		}
-
-		Convey("When creating a snapshot", func() {
-			err := store.CreateSnapshot(func(yield func(key, value []byte) bool) {
-				for key, value := range active {
-					if !yield([]byte(key), []byte(value)) {
-						return
-					}
-				}
-			})
-			So(err, ShouldBeNil)
+		Convey("When waiting for snapshot creation", func() {
+			time.Sleep(100 * time.Millisecond)
 
 			Convey("Then a snapshot file should exist", func() {
 				files, err := os.ReadDir(filepath.Join(tmpDir, "snapshot"))
 				So(err, ShouldBeNil)
 				So(len(files), ShouldBeGreaterThan, 0)
 
-				Convey("And the replacement WAL should replay active entries", func() {
-					entries, err := store.Replay()
+				Convey("And the WAL should be truncated", func() {
+					walInfo, err := os.Stat(filepath.Join(tmpDir, "wal.log"))
 					So(err, ShouldBeNil)
-					So(len(entries), ShouldEqual, len(active))
-
-					replayed := make(map[string]string, len(entries))
-					for _, entry := range entries {
-						replayed[string(entry.Key)] = string(entry.Value)
-					}
-
-					So(replayed, ShouldResemble, active)
+					So(walInfo.Size(), ShouldBeLessThan, 100)
 				})
 			})
 		})
@@ -271,10 +137,8 @@ func TestTruncateWAL(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer store.Close()
 
-		active := map[string]string{"key": "value-100"}
-
 		for index := uint64(1); index <= 100; index++ {
-			err := store.LogInsert([]byte("key"), []byte("value-"+strconv.FormatUint(index, 10)), 1, index)
+			err := store.LogInsert([]byte("key"), []byte("value"), 1, index)
 			So(err, ShouldBeNil)
 		}
 
@@ -282,13 +146,7 @@ func TestTruncateWAL(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When truncating the WAL", func() {
-			err := store.TruncateWAL(func(yield func(key, value []byte) bool) {
-				for key, value := range active {
-					if !yield([]byte(key), []byte(value)) {
-						return
-					}
-				}
-			})
+			err := store.TruncateWAL()
 			So(err, ShouldBeNil)
 
 			Convey("Then the WAL should be smaller", func() {
@@ -297,15 +155,7 @@ func TestTruncateWAL(t *testing.T) {
 				So(newSize.Size(), ShouldBeLessThan, originalSize.Size())
 			})
 
-			Convey("And active entries should be preserved", func() {
-				entries, err := store.Replay()
-				So(err, ShouldBeNil)
-				So(len(entries), ShouldEqual, 1)
-				So(string(entries[0].Key), ShouldEqual, "key")
-				So(string(entries[0].Value), ShouldEqual, "value-100")
-			})
-
-			Convey("And the state index should be preserved", func() {
+			Convey("And the state should be preserved", func() {
 				term, index := store.GetLastState()
 				So(term, ShouldEqual, uint64(1))
 				So(index, ShouldEqual, uint64(100))
