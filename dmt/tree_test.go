@@ -281,8 +281,8 @@ func BenchmarkTreeInsert(b *testing.B) {
 
 	index := 0
 	for b.Loop() {
-		key := []byte(fmt.Sprintf("bench-key-%d", index))
-		value := []byte(fmt.Sprintf("bench-value-%d", index))
+		key := fmt.Appendf(nil, "bench-key-%d", index)
+		value := fmt.Appendf(nil, "bench-value-%d", index)
 		tree.Insert(key, value)
 		index++
 	}
@@ -297,8 +297,8 @@ func BenchmarkTreeGet(b *testing.B) {
 
 	const seedCount = 4096
 	for i := 0; i < seedCount; i++ {
-		key := []byte(fmt.Sprintf("seed-key-%d", i))
-		value := []byte(fmt.Sprintf("seed-value-%d", i))
+		key := fmt.Appendf(nil, "seed-key-%d", i)
+		value := fmt.Appendf(nil, "seed-value-%d", i)
 		tree.Insert(key, value)
 	}
 
@@ -306,7 +306,7 @@ func BenchmarkTreeGet(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		key := []byte(fmt.Sprintf("seed-key-%d", index%seedCount))
+		key := fmt.Appendf(nil, "seed-key-%d", index%seedCount)
 		value, ok := tree.Get(key)
 		if !ok || len(value) == 0 {
 			b.Fatalf("missing key: %s", key)
