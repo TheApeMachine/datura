@@ -55,17 +55,6 @@ func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
 
 const treeOpSampleMask = uint64(63)
 
-/*
-cloneBytes returns a caller-owned copy of value. Nil stays nil.
-*/
-func cloneBytes(value []byte) []byte {
-	if value == nil {
-		return nil
-	}
-
-	return append([]byte(nil), value...)
-}
-
 func (tree *Tree) beginOp() (started time.Time, track bool) {
 	if tree == nil {
 		return time.Time{}, false
@@ -133,7 +122,7 @@ func NewTree(persistDir string) (*Tree, error) {
 			continue
 		}
 
-		root, _, _ = root.Insert(cloneBytes(entry.Key), cloneBytes(entry.Value))
+		root, _, _ = root.Insert(entry.Key, entry.Value)
 	}
 
 	tree.root.Store(root)
@@ -203,7 +192,7 @@ func (tree *Tree) WalkPrefix(prefix []byte, fn func(key, value []byte) bool) {
 			break
 		}
 
-		if !fn(cloneBytes(key), cloneBytes(value)) {
+		if !fn(key, value) {
 			tree.endOp(started, track)
 
 			return
@@ -227,7 +216,7 @@ func (tree *Tree) WalkLowerBound(lowerBound []byte, fn func(key, value []byte) b
 	it.SeekLowerBound(lowerBound)
 
 	for key, value, ok := it.Next(); ok; key, value, ok = it.Next() {
-		if !fn(cloneBytes(key), cloneBytes(value)) {
+		if !fn(key, value) {
 			tree.endOp(started, track)
 
 			return
@@ -269,7 +258,7 @@ func (tree *Tree) Insert(key []byte, value []byte) (*Tree, bool, error) {
 
 	for {
 		oldRoot := tree.loadRoot()
-		newRoot, _, _ := oldRoot.Insert(cloneBytes(key), cloneBytes(value))
+		newRoot, _, _ := oldRoot.Insert(key, value)
 
 		if newRoot == oldRoot {
 			tree.endOp(started, track)
@@ -373,7 +362,7 @@ func (tree *Tree) Get(key []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	return cloneBytes(value), true
+	return value, true
 }
 
 /*

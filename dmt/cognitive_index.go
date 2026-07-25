@@ -497,7 +497,7 @@ func (tree *Tree) insertEphemeral(key, value []byte) {
 
 	for {
 		oldRoot := tree.loadRoot()
-		newRoot, _, _ := oldRoot.Insert(cloneBytes(key), cloneBytes(value))
+		newRoot, _, _ := oldRoot.Insert(key, value)
 
 		if tree.root.CompareAndSwap(oldRoot, newRoot) {
 			return

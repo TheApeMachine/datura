@@ -131,7 +131,7 @@ func (forest *Forest) catchUpReplica(primary, replica *Tree) error {
 	iterator := root.Root().Iterator()
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
-		_, _, err := replica.Insert(cloneBytes(key), cloneBytes(value))
+		_, _, err := replica.Insert(key, value)
 
 		if err != nil {
 			return err
@@ -277,7 +277,7 @@ func (forest *Forest) Iterate(fn func(key []byte, value []byte) bool) {
 	iterator := root.Root().Iterator()
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
-		if !fn(cloneBytes(key), cloneBytes(value)) {
+		if !fn(key, value) {
 			return
 		}
 	}

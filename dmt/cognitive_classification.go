@@ -528,7 +528,7 @@ func (tree *Tree) commitLearnMutations(mutations []learnMutation) error {
 		transaction := oldRoot.Txn()
 
 		for _, mutation := range mutations {
-			transaction.Insert(cloneBytes(mutation.key), cloneBytes(mutation.value))
+			transaction.Insert(mutation.key, mutation.value)
 		}
 
 		newRoot := transaction.Commit()
@@ -584,7 +584,7 @@ func (tree *Tree) commitLearnDeltas(
 	transaction := oldRoot.Txn()
 
 	for _, mutation := range mutations {
-		transaction.Insert(cloneBytes(mutation.key), cloneBytes(mutation.value))
+		transaction.Insert(mutation.key, mutation.value)
 	}
 
 	tree.root.Store(transaction.Commit())
