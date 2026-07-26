@@ -474,13 +474,9 @@ func (artifact *Artifact) WithError(err error) *Artifact {
 		return artifact
 	}
 
-	payload, marshalErr := Map[any]{
+	payload := Map[any]{
 		"error": err.Error(),
 	}.Marshal()
-
-	if marshalErr != nil {
-		return artifact
-	}
 
 	artifact.WithPayload(payload)
 	artifact.Poke("error", "root")

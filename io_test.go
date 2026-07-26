@@ -224,9 +224,6 @@ func TestRWCStreamLargeArtifactTwoStagePipelineIntegration(t *testing.T) {
 }
 
 func mustMapMarshal(body Map[any]) []byte {
-	payload, err := body.Marshal()
-	if err != nil {
-		panic(err)
-	}
+	payload := body.Marshal()
 	return payload
 }

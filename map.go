@@ -6,16 +6,25 @@ import (
 	"github.com/theapemachine/errnie"
 )
 
+// Freeze the configuration once at startup to reuse JIT-compiled encoders.
+var fastSonic = sonic.Config{
+	EncodeNullForInfOrNan: true, // Converts NaN, +Inf, -Inf to JSON `null` instead of returning an error
+}.Froze()
+
 type Map[T any] map[string]T
 
-func (m Map[T]) Marshal() ([]byte, error) {
-	payload, err := sonic.Marshal(m)
+func (m Map[T]) Marshal() []byte {
+	payload, err := fastSonic.Marshal(m)
 
 	if err != nil {
-		return nil, errnie.Error(errnie.Err(errnie.Validation, "datura.Map: failed to marshal payload", err))
+		errnie.Error(errnie.Err(
+			errnie.Validation, "datura.Map: failed to marshal payload", err,
+		))
+
+		return nil
 	}
 
-	return payload, nil
+	return payload
 }
 
 func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
@@ -69,13 +78,7 @@ func (artifact *Artifact) MergeFields(values map[string]any) {
 		body[key] = value
 	}
 
-	payload, err := body.Marshal()
-
-	if err != nil {
-		errnie.Error(err)
-		return
-	}
-
+	payload := body.Marshal()
 	artifact.WithPayload(payload)
 }
 
@@ -116,13 +119,7 @@ func (artifact *Artifact) MergeOutputs(values map[string]any) {
 
 	body["output"] = output
 
-	payload, err := body.Marshal()
-
-	if err != nil {
-		errnie.Error(err)
-		return
-	}
-
+	payload := body.Marshal()
 	artifact.WithPayload(payload)
 }
 
