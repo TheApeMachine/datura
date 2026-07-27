@@ -1,6 +1,8 @@
 package datura
 
 import (
+	"sync"
+
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/theapemachine/errnie"
@@ -11,7 +13,42 @@ var fastSonic = sonic.Config{
 	EncodeNullForInfOrNan: true, // Converts NaN, +Inf, -Inf to JSON `null` instead of returning an error
 }.Froze()
 
+var mapPool = sync.Pool{
+	New: func() any {
+		return make(Map[any], 8)
+	},
+}
+
+/*
+NewMap acquires a pre-allocated Map[any] from the sync.Pool and optionally populates
+it with key-value pairs (e.g. NewMap("key1", val1, "key2", val2)).
+Call Free() or MarshalAndFree() to recycle it back to the pool.
+*/
+func NewMap(kv ...any) Map[any] {
+	m := mapPool.Get().(Map[any])
+
+	for i := 0; i < len(kv)-1; i += 2 {
+		if key, ok := kv[i].(string); ok {
+			m[key] = kv[i+1]
+		}
+	}
+
+	return m
+}
+
 type Map[T any] map[string]T
+
+/*
+Free clears all entries in the Map and returns it to the sync.Pool.
+*/
+func (m Map[T]) Free() {
+	if m == nil {
+		return
+	}
+
+	clear(m)
+	mapPool.Put(any(m).(Map[any]))
+}
 
 func (m Map[T]) Marshal() []byte {
 	payload, err := fastSonic.Marshal(m)
@@ -23,6 +60,17 @@ func (m Map[T]) Marshal() []byte {
 
 		return nil
 	}
+
+	return payload
+}
+
+/*
+MarshalAndFree marshals the Map to JSON via fastSonic and immediately returns
+the Map to the sync.Pool.
+*/
+func (m Map[T]) MarshalAndFree() []byte {
+	payload := m.Marshal()
+	m.Free()
 
 	return payload
 }

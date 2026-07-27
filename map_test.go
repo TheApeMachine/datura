@@ -87,3 +87,52 @@ func TestMergeFields(t *testing.T) {
 		})
 	})
 }
+
+func TestNewMap(t *testing.T) {
+	Convey("Given NewMap constructor with key-value pairs", t, func() {
+		m := NewMap("foo", "bar", "num", 42)
+
+		Convey("It should populate the map with given pairs", func() {
+			So(m["foo"], ShouldEqual, "bar")
+			So(m["num"], ShouldEqual, 42)
+		})
+
+		Convey("When Free is called on the map", func() {
+			m.Free()
+
+			Convey("It should recycle the map clean for subsequent calls", func() {
+				next := NewMap()
+				So(len(next), ShouldEqual, 0)
+				next.Free()
+			})
+		})
+	})
+}
+
+func TestMarshalAndFree(t *testing.T) {
+	Convey("Given a pooled Map with entries", t, func() {
+		m := NewMap("status", "ok", "count", 10)
+
+		Convey("When MarshalAndFree is called", func() {
+			bytes := m.MarshalAndFree()
+
+			Convey("It should produce valid JSON bytes and return map to pool", func() {
+				So(len(bytes), ShouldBeGreaterThan, 0)
+				So(string(bytes), ShouldContainSubstring, `"status":"ok"`)
+
+				recycled := NewMap()
+				So(len(recycled), ShouldEqual, 0)
+				recycled.Free()
+			})
+		})
+	})
+}
+
+func BenchmarkNewMapAndMarshalFree(b *testing.B) {
+	b.ReportAllocs()
+
+	for b.Loop() {
+		m := NewMap("resonance", 123.45, "status", "active")
+		_ = m.MarshalAndFree()
+	}
+}
