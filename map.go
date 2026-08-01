@@ -50,6 +50,11 @@ func (m Map[T]) Free() {
 	mapPool.Put(any(m).(Map[any]))
 }
 
+func (m Map[T]) MarshalJSON() ([]byte, error) {
+	type alias Map[T]
+	return sonic.Marshal((*alias)(&m))
+}
+
 func (m Map[T]) Marshal() []byte {
 	payload, err := fastSonic.Marshal(m)
 
