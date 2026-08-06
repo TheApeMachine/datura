@@ -2,19 +2,17 @@ module github.com/theapemachine/datura
 
 go 1.26.1
 
-// replace github.com/theapemachine/errnie => ../errnie
-
-replace (
-	github.com/bytedance/sonic => ../sonic
-	github.com/theapemachine/errnie => ../errnie
-)
+// replace (
+// 	github.com/bytedance/sonic => ../sonic
+// 	github.com/theapemachine/errnie => ../errnie
+// )
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.1
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/hashicorp/go-immutable-radix/v2 v2.1.0
-	github.com/theapemachine/errnie v1.2.5
+	github.com/theapemachine/errnie v1.2.6
 )
 
 require (

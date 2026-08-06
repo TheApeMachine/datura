@@ -91,8 +91,6 @@ func (artifact *Artifact) PokePayload(value any, path ...any) *Artifact {
 		root = ast.NewObject(nil)
 	}
 
-	root.SetAnyByPath(finite(value), path...)
-
 	payload := errnie.Does(func() ([]byte, error) {
 		return root.MarshalJSON()
 	}).Or(func(err error) {

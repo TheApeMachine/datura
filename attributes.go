@@ -330,8 +330,6 @@ func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
 		root = ast.NewObject(nil)
 	}
 
-	root.SetAnyByPath(finite(value), path...)
-
 	errnie.Error(artifact.SetAttributes(errnie.Does(func() ([]byte, error) {
 		return root.MarshalJSON()
 	}).Or(func(err error) {
