@@ -338,32 +338,3 @@ func (artifact *Artifact) Poke(value any, path ...any) *Artifact {
 
 	return artifact
 }
-
-func finite(value any) any {
-	switch typed := value.(type) {
-	case float64:
-		if math.IsNaN(typed) || math.IsInf(typed, 0) {
-			return 0.0
-		}
-
-		return typed
-	case []float64:
-		values := make([]float64, len(typed))
-
-		for index, sample := range typed {
-			values[index] = finite(sample).(float64)
-		}
-
-		return values
-	case Map[float64]:
-		values := Map[float64]{}
-
-		for key, sample := range typed {
-			values[key] = finite(sample).(float64)
-		}
-
-		return values
-	}
-
-	return value
-}
