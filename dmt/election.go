@@ -395,35 +395,3 @@ func (election *Election) scheduleLoop(
 		qpool.WithTTL(time.Second),
 	)
 }
-
-// storeTermForTest sets the current term in tests.
-func (election *Election) storeTermForTest(term uint64) {
-	election.term.Store(term)
-}
-
-// storeVotedForForTest sets votedFor in tests.
-func (election *Election) storeVotedForForTest(candidateId string) {
-	if candidateId == "" {
-		election.votedFor.Store(0)
-
-		return
-	}
-
-	election.votedFor.Store(hashNodeID(candidateId))
-}
-
-// storeLogStateForTest sets log indices in tests.
-func (election *Election) storeLogStateForTest(index uint64, term uint64) {
-	election.lastLogIndex.Store(index)
-	election.lastLogTerm.Store(term)
-}
-
-// votedForForTest returns votedFor in tests.
-func (election *Election) votedForForTest() uint64 {
-	return election.votedFor.Load()
-}
-
-// lastLogTermForTest returns lastLogTerm in tests.
-func (election *Election) lastLogTermForTest() uint64 {
-	return election.lastLogTerm.Load()
-}
