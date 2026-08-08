@@ -230,7 +230,7 @@ func (tree *Tree) ExecuteDecayConsolidation(
 
 		mutations = append(mutations, decayMutation{
 			key:   append([]byte(nil), key...),
-			value: MarshalCognitive(weight),
+			value: tree.marshalStamped(weight),
 		})
 	}
 

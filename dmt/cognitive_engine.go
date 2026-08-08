@@ -50,7 +50,7 @@ func (tree *Tree) GetSensoryWeight(sequence []byte) CognitiveState {
 InsertSensoryWeight writes s/[sequence] suffix statistics.
 */
 func (tree *Tree) InsertSensoryWeight(sequence []byte, state CognitiveState) (*Tree, bool) {
-	return tree.Insert(sensoryStorageKey(sequence), MarshalCognitive(state))
+	return tree.Insert(sensoryStorageKey(sequence), tree.marshalStamped(state))
 }
 
 /*
@@ -74,7 +74,7 @@ func (tree *Tree) InsertAttractorBasin(
 	sequence []byte,
 	state CognitiveState,
 ) (*Tree, bool) {
-	return tree.Insert(basinStorageKey(class, sequence), MarshalCognitive(state))
+	return tree.Insert(basinStorageKey(class, sequence), tree.marshalStamped(state))
 }
 
 /*
@@ -312,9 +312,37 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 }
 
 /*
+ExecuteREMSleepWithDreaming replays the episodic window and then generates from
+each settled basin, consolidating the inventions that come back crisp.
+
+Replay reinforces what happened; dreaming explores what the statistics imply but
+never occurred. Running them in that order matters — dreams generated before
+replay would sample a model that has not yet absorbed the window it is about to
+learn from.
+*/
+func (tree *Tree) ExecuteREMSleepWithDreaming(
+	startTimestamp, endTimestamp uint64,
+	temperature float64,
+	maximumTokens int,
+	scratch *ClassificationScratch,
+	selector func(candidates []CandidateToken, temperature float64) []byte,
+) []DreamOutcome {
+	tree.ExecuteREMSleepConsolidation(startTimestamp, endTimestamp)
+
+	return tree.ExecuteDreamConsolidation(
+		temperature, maximumTokens, scratch, selector,
+	)
+}
+
+/*
 TrainSensorySequence increments sensory counts and conditional probabilities inline.
 */
 func (tree *Tree) TrainSensorySequence(sequence []byte) {
+	// One observation is one step of experience, regardless of how many prefixes
+	// it writes, so the decay clock measures what the model has seen.
+	tree.AdvanceCognitiveStep()
+	tree.observeLexicon(sequence)
+
 	tokenStart := 0
 
 	for index := 0; index <= len(sequence); index++ {

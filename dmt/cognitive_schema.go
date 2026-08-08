@@ -6,16 +6,43 @@ import (
 )
 
 const (
-	sensoryNamespace     = "s/"
-	episodicNamespace    = "e/"
-	basinNamespace       = "b/"
-	episodicTimestampLen = 8
-	episodicHeaderLen    = len(episodicNamespace) + episodicTimestampLen
+	sensoryNamespace      = "s/"
+	vocabularyNamespace   = "v/"
+	coOccurrenceNamespace = "c/"
+	conceptNamespace      = "k/"
+	episodicNamespace     = "e/"
+	basinNamespace        = "b/"
+	episodicTimestampLen  = 8
+	episodicHeaderLen     = len(episodicNamespace) + episodicTimestampLen
 )
 
 var (
 	basinNamespaceBytes = []byte(basinNamespace)
 )
+
+/*
+vocabularyStorageKey addresses v/[token].
+*/
+func vocabularyStorageKey(token []byte) []byte {
+	storageKey := make([]byte, len(vocabularyNamespace)+len(token))
+	copy(storageKey, vocabularyNamespace)
+	copy(storageKey[len(vocabularyNamespace):], token)
+
+	return storageKey
+}
+
+/*
+coOccurrenceStorageKey addresses c/[left]/[right].
+*/
+func coOccurrenceStorageKey(left, right []byte) []byte {
+	storageKey := make([]byte, 0, len(coOccurrenceNamespace)+len(left)+1+len(right))
+	storageKey = append(storageKey, coOccurrenceNamespace...)
+	storageKey = append(storageKey, left...)
+	storageKey = append(storageKey, '/')
+	storageKey = append(storageKey, right...)
+
+	return storageKey
+}
 
 /*
 CognitiveState is the packed count/probability layout stored in radix values.

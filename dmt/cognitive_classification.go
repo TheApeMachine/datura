@@ -318,7 +318,7 @@ func (tree *Tree) buildUnsupervisedMutations(
 
 		mutations = append(mutations, learnMutation{
 			key:   sensoryKey,
-			value: MarshalCognitive(sensoryWeight),
+			value: tree.marshalStamped(sensoryWeight),
 		})
 
 		basinKey := basinStorageKey(inferredClass, currentPath)
@@ -331,7 +331,7 @@ func (tree *Tree) buildUnsupervisedMutations(
 
 		mutations = append(mutations, learnMutation{
 			key:   basinKey,
-			value: MarshalCognitive(basinWeight),
+			value: tree.marshalStamped(basinWeight),
 		})
 
 		tokenStart = index + 1

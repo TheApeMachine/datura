@@ -27,6 +27,15 @@ type Tree struct {
 	logIndex     atomic.Uint64
 	opCount      atomic.Uint64
 	opTotalNanos atomic.Int64
+
+	// cognitiveStep is the monotonic experience clock read by lazy decay. It
+	// advances per trained sequence, not per wall-clock tick, so an idle market
+	// does not age what the model has learned.
+	cognitiveStep atomic.Uint64
+
+	// conceptCounter names classes the model invents for itself when nothing it
+	// already knows explains an observation.
+	conceptCounter atomic.Uint64
 }
 
 func (tree *Tree) loadRoot() *iradix.Tree[[]byte] {
