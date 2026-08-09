@@ -63,6 +63,15 @@ func UnmarshalCognitive(buffer []byte) CognitiveState {
 	return UnmarshalWeight(buffer)
 }
 
+/*
+SensoryPrefixKey exposes the s/[sequence] storage address. Callers that reach
+methods which seek a key verbatim — CalculateBranchEntropy, MeasureBranchAmbiguity
+— need this to address the same namespace TrainSensorySequence writes to.
+*/
+func SensoryPrefixKey(sequence []byte) []byte {
+	return sensoryStorageKey(sequence)
+}
+
 func sensoryStorageKey(sequence []byte) []byte {
 	storageKey := make([]byte, len(sensoryNamespace)+len(sequence))
 	copy(storageKey, sensoryNamespace)
