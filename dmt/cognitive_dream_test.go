@@ -175,7 +175,7 @@ func TestREMSleepWithDreamingRunsReplayFirst(t *testing.T) {
 		_, _ = tree.CommitToEpisodicBuffer(10, []byte("drive_ignition"))
 
 		Convey("When consolidation runs", func() {
-			outcomes := tree.ExecuteREMSleepWithDreaming(
+			outcomes, _ := tree.ExecuteREMSleepWithDreaming(
 				1, 100, 0, 3, &scratch, strongestSelector,
 			)
 

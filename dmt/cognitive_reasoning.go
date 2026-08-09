@@ -183,6 +183,17 @@ func (tree *Tree) CompareSensoryBranches(leftPrefix, rightPrefix []byte) float64
 }
 
 /*
+DecayConsolidationOutcome reports what one decay pass actually did: how many
+namespace entries it considered and how many it pruned outright (retroactive
+inhibition — entries whose decayed probability fell below the branch's own
+prune threshold, discarded rather than merely weakened).
+*/
+type DecayConsolidationOutcome struct {
+	NamespaceEntries uint64 `json:"namespaceEntries"`
+	PrunedEntries    uint64 `json:"prunedEntries"`
+}
+
+/*
 ExecuteDecayConsolidation degrades stale namespace weights and prunes dead branches.
 Preserved sequences skip decay so freshly replayed REM paths are retained.
 */
@@ -190,9 +201,9 @@ func (tree *Tree) ExecuteDecayConsolidation(
 	namespacePrefix []byte,
 	decayFactor float64,
 	preservedSequences ...[]byte,
-) {
+) DecayConsolidationOutcome {
 	if tree == nil || decayFactor <= 0 {
-		return
+		return DecayConsolidationOutcome{}
 	}
 
 	oldRoot := tree.loadRoot()
@@ -205,6 +216,7 @@ func (tree *Tree) ExecuteDecayConsolidation(
 	iterator.SeekPrefix(namespacePrefix)
 
 	mutations := make([]decayMutation, 0, namespaceEntries)
+	prunedEntries := uint64(0)
 
 	for key, value, ok := iterator.Next(); ok; key, value, ok = iterator.Next() {
 		if !bytes.HasPrefix(key, namespacePrefix) {
@@ -224,6 +236,7 @@ func (tree *Tree) ExecuteDecayConsolidation(
 				key:    append([]byte(nil), key...),
 				delete: true,
 			})
+			prunedEntries++
 
 			continue
 		}
@@ -235,6 +248,11 @@ func (tree *Tree) ExecuteDecayConsolidation(
 	}
 
 	tree.commitDecayMutations(mutations)
+
+	return DecayConsolidationOutcome{
+		NamespaceEntries: uint64(namespaceEntries),
+		PrunedEntries:    prunedEntries,
+	}
 }
 
 func (tree *Tree) commitDecayMutations(mutations []decayMutation) {

@@ -268,10 +268,26 @@ func (tree *Tree) CommitToEpisodicBuffer(timestamp uint64, sequence []byte) (*Tr
 }
 
 /*
+REMConsolidationOutcome reports what one REM sleep pass actually did: how many
+episodic observations it replayed, the decay factor it derived from that
+replay volume against the resident sensory namespace, and how much of the
+namespace retroactive inhibition pruned outright.
+*/
+type REMConsolidationOutcome struct {
+	ReplayedObservations     uint64  `json:"replayedObservations"`
+	DecayFactor              float64 `json:"decayFactor"`
+	NamespaceEntries         uint64  `json:"namespaceEntries"`
+	PrunedEntries            uint64  `json:"prunedEntries"`
+	RetroactiveInhibitionPct float64 `json:"retroactiveInhibitionPct"`
+}
+
+/*
 ExecuteREMSleepConsolidation replays episodic entries, retrains sensory weights,
 and applies retroactive inhibition across the sensory namespace.
 */
-func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint64) {
+func (tree *Tree) ExecuteREMSleepConsolidation(
+	startTimestamp, endTimestamp uint64,
+) REMConsolidationOutcome {
 	replayedObservations := uint64(0)
 	preservedSequences := make([][]byte, 0, 8)
 
@@ -308,7 +324,24 @@ func (tree *Tree) ExecuteREMSleepConsolidation(startTimestamp, endTimestamp uint
 	namespaceEntries := uint64(countNamespaceEntries(tree, []byte(sensoryNamespace)))
 	decayFactor := deriveDecayFactor(replayedObservations, namespaceEntries)
 
-	tree.ExecuteDecayConsolidation([]byte(sensoryNamespace), decayFactor, preservedSequences...)
+	decayOutcome := tree.ExecuteDecayConsolidation(
+		[]byte(sensoryNamespace), decayFactor, preservedSequences...,
+	)
+
+	inhibitionPct := 0.0
+
+	if decayOutcome.NamespaceEntries > 0 {
+		inhibitionPct = float64(decayOutcome.PrunedEntries) /
+			float64(decayOutcome.NamespaceEntries)
+	}
+
+	return REMConsolidationOutcome{
+		ReplayedObservations:     replayedObservations,
+		DecayFactor:              decayFactor,
+		NamespaceEntries:         decayOutcome.NamespaceEntries,
+		PrunedEntries:            decayOutcome.PrunedEntries,
+		RetroactiveInhibitionPct: inhibitionPct,
+	}
 }
 
 /*
@@ -326,12 +359,14 @@ func (tree *Tree) ExecuteREMSleepWithDreaming(
 	maximumTokens int,
 	scratch *ClassificationScratch,
 	selector func(candidates []CandidateToken, temperature float64) []byte,
-) []DreamOutcome {
-	tree.ExecuteREMSleepConsolidation(startTimestamp, endTimestamp)
+) ([]DreamOutcome, REMConsolidationOutcome) {
+	consolidation := tree.ExecuteREMSleepConsolidation(startTimestamp, endTimestamp)
 
-	return tree.ExecuteDreamConsolidation(
+	dreams := tree.ExecuteDreamConsolidation(
 		temperature, maximumTokens, scratch, selector,
 	)
+
+	return dreams, consolidation
 }
 
 /*
