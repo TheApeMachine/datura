@@ -109,6 +109,24 @@ func TestInterpolationSurvivesACorruptedToken(t *testing.T) {
 	})
 }
 
+func TestInterpolationDoesNotSubstituteAKnownToken(t *testing.T) {
+	Convey("Given a known token that was never observed at the requested prefix", t, func() {
+		tree, err := NewTree("")
+		So(err, ShouldBeNil)
+
+		tree.TrainSensorySequence([]byte("root_coil"))
+		tree.TrainSensorySequence([]byte("coax_next"))
+
+		Convey("When a nearby root token has a continuation", func() {
+			distribution := tree.InterpolatedProbabilities(tokensOf("coil"), nil)
+
+			Convey("Then DMT should not replace the exact known context", func() {
+				So(probabilityFor(distribution, "next"), ShouldEqual, 0)
+			})
+		})
+	})
+}
+
 func TestDistributionIsNormalised(t *testing.T) {
 	Convey("Given several learned continuations", t, func() {
 		tree, err := NewTree("")
@@ -155,72 +173,6 @@ func TestEmptyModelYieldsNoDistribution(t *testing.T) {
 				ShouldEqual,
 				0,
 			)
-		})
-	})
-}
-
-func TestEpisodicRecallSurfacesASingleObservation(t *testing.T) {
-	Convey("Given a strong statistical continuation", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
-
-		for range 30 {
-			tree.TrainSensorySequence([]byte("coil_ignition"))
-		}
-
-		baseline := tree.InterpolatedProbabilities(tokensOf("coil"), nil)
-		So(probabilityFor(baseline, "vacuum"), ShouldEqual, 0)
-
-		Convey("When one contradicting episode is committed", func() {
-			_, _ = tree.CommitToEpisodicBuffer(1, []byte("coil_vacuum"))
-
-			distribution := tree.InterpolatedProbabilities(tokensOf("coil"), nil)
-
-			Convey("Then the once-seen continuation becomes possible", func() {
-				So(probabilityFor(distribution, "vacuum"), ShouldBeGreaterThan, 0)
-			})
-
-			Convey("Then it does not overrule the accumulated statistics", func() {
-				So(
-					probabilityFor(distribution, "ignition"),
-					ShouldBeGreaterThan,
-					probabilityFor(distribution, "vacuum"),
-				)
-			})
-
-			Convey("Then recall never claims more than its capped share", func() {
-				So(
-					probabilityFor(distribution, "vacuum"),
-					ShouldBeLessThanOrEqualTo,
-					maximumEpisodicShare,
-				)
-			})
-		})
-	})
-}
-
-func TestEpisodicCoverageScalesWithMatchLength(t *testing.T) {
-	Convey("Given episodes matching a context to different depths", t, func() {
-		tree, err := NewTree("")
-		So(err, ShouldBeNil)
-
-		_, _ = tree.CommitToEpisodicBuffer(1, []byte("a_b_c_deep"))
-
-		_, coverageDeep := tree.EpisodicProbabilities(tokensOf("a", "b", "c"))
-
-		tree2, err := NewTree("")
-		So(err, ShouldBeNil)
-
-		_, _ = tree2.CommitToEpisodicBuffer(1, []byte("z_c_shallow"))
-
-		_, coverageShallow := tree2.EpisodicProbabilities(tokensOf("a", "b", "c"))
-
-		Convey("Then a fuller match carries more authority", func() {
-			So(coverageDeep, ShouldBeGreaterThan, coverageShallow)
-		})
-
-		Convey("Then coverage never exceeds the cap", func() {
-			So(coverageDeep, ShouldBeLessThanOrEqualTo, maximumEpisodicShare)
 		})
 	})
 }

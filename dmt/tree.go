@@ -20,6 +20,7 @@ It stores byte slices as both keys and values, providing efficient prefix-based 
 Readers load the root pointer atomically; writers publish new roots with compare-and-swap.
 */
 type Tree struct {
+	*CognitiveInference
 	state        *batch
 	root         atomic.Pointer[iradix.Tree[[]byte]]
 	persist      *PersistentStore
@@ -88,6 +89,7 @@ func NewTree(persistDir string) (*Tree, error) {
 	tree := &Tree{
 		state: newBatch("dmt/tree"),
 	}
+	tree.CognitiveInference = &CognitiveInference{tree: tree}
 
 	emptyRoot := iradix.New[[]byte]()
 	tree.root.Store(emptyRoot)
