@@ -125,6 +125,7 @@ func (tree *Tree) UnsupervisedLearn(
 	mutations := tree.buildUnsupervisedMutations(sequence, inference.Winner, learningRate)
 
 	tree.commitLearnMutations(mutations)
+	tree.TrainSensorySequence(sequence)
 
 	return inference.Winner, inference.Highest, nil
 }
@@ -293,7 +294,7 @@ func (tree *Tree) buildUnsupervisedMutations(
 	inferredClass []byte,
 	learningRate float64,
 ) []learnMutation {
-	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence)*2)
+	mutations := make([]learnMutation, 0, countTokenBoundaries(sequence))
 	tokenStart := 0
 
 	for index := 0; index <= len(sequence); index++ {
@@ -308,19 +309,6 @@ func (tree *Tree) buildUnsupervisedMutations(
 		}
 
 		currentPath := sequence[:index]
-		sensoryKey := sensoryStorageKey(currentPath)
-		sensoryWeight := tree.GetSensoryWeight(currentPath)
-		sensoryWeight.Count++
-		sensoryWeight.Probability = onlineProbabilityAlignment(
-			sensoryWeight.Probability,
-			learningRate,
-		)
-
-		mutations = append(mutations, learnMutation{
-			key:   sensoryKey,
-			value: tree.marshalStamped(sensoryWeight),
-		})
-
 		basinKey := basinStorageKey(inferredClass, currentPath)
 		basinWeight := tree.GetAttractorBasin(inferredClass, currentPath)
 		basinWeight.Count++

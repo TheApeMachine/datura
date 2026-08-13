@@ -29,6 +29,11 @@ func TestExperienceSpawnsAConceptWhenNothingExplains(t *testing.T) {
 				classes := tree.KnownClasses()
 				So(len(classes), ShouldBeGreaterThan, 0)
 			})
+
+			Convey("Then the completed observation is counted once", func() {
+				So(tree.GetSensoryWeight([]byte("alpha")).Count, ShouldEqual, uint64(1))
+				So(tree.GetSensoryWeight([]byte("alpha_beta")).Count, ShouldEqual, uint64(1))
+			})
 		})
 	})
 }
