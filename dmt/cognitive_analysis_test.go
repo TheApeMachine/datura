@@ -121,9 +121,8 @@ func BenchmarkAnalyzeInterpolated(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for range b.N {
+	for b.Loop() {
 		tree.AnalyzeInterpolated([]byte("drive_phase_continuation_bullish"))
 	}
 }

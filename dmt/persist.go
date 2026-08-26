@@ -13,11 +13,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync/atomic"
 	"time"
-
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -57,7 +54,6 @@ type PersistentStore struct {
 	snapPath  string
 	ctx       context.Context
 	cancel    context.CancelFunc
-	pool      *qpool.Q[any]
 	walSeq    atomic.Uint64
 	lastIndex atomic.Uint64
 	lastTerm  atomic.Uint64
@@ -80,7 +76,6 @@ func NewPersistentStore(dir string) (*PersistentStore, error) {
 		snapPath:  filepath.Join(dir, "snapshot"),
 		ctx:       ctx,
 		cancel:    cancel,
-		pool:      qpool.NewQ[any](ctx, 1, 1, workerPoolConfig()),
 		snapCount: 1000,
 	}
 
@@ -224,13 +219,6 @@ func (ps *PersistentStore) Close() error {
 
 		return ps.state.Err()
 	})
-
-	workerPool := ps.pool
-	ps.pool = nil
-
-	if workerPool != nil {
-		workerPool.Close()
-	}
 
 	return err
 }
@@ -548,20 +536,7 @@ func (ps *PersistentStore) TruncateWAL() error {
 }
 
 func (ps *PersistentStore) runWal(op string, fn func() error) error {
-	if ps.pool == nil {
-		return ps.persistWal(fn)
-	}
-
-	sequence := ps.walSeq.Add(1)
-	jobID := "dmt/persist/" + op + "/" + strconv.FormatUint(sequence, 10)
-
-	wait := ps.pool.Schedule(jobID, func(ctx context.Context) (any, error) {
-		return nil, ps.persistWal(fn)
-	})
-
-	_, err := wait.Get(ps.ctx)
-
-	return err
+	return ps.persistWal(fn)
 }
 
 func (ps *PersistentStore) persistWal(fn func() error) error {
@@ -572,13 +547,5 @@ func (ps *PersistentStore) schedule(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	if ps.pool == nil {
-		return
-	}
-
-	ps.pool.Schedule(
-		"dmt/persist/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	go fn(ps.ctx)
 }

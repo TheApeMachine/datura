@@ -44,7 +44,7 @@ EvaluateCuriosityAndTriggerSync schedules targeted peer sync when branch entropy
 func (forest *Forest) EvaluateCuriosityAndTriggerSync(prefix []byte) {
 	tree := forest.getFastestTree()
 
-	if tree == nil || forest.network == nil || forest.pool == nil {
+	if tree == nil || forest.network == nil {
 		return
 	}
 
@@ -64,12 +64,7 @@ func (forest *Forest) EvaluateCuriosityAndTriggerSync(prefix []byte) {
 	targetPeer := activePeers[0]
 	prefixCopy := append([]byte(nil), prefix...)
 
-	forest.pool.Schedule(
-		"curiosity-sync",
-		func(ctx context.Context) (any, error) {
-			return nil, forest.StreamTargetedPrefixSync(ctx, targetPeer.Addr(), prefixCopy)
-		},
-	)
+	forest.StreamTargetedPrefixSync(forest.ctx, targetPeer.Addr(), prefixCopy)
 }
 
 /*

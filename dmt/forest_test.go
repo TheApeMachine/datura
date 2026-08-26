@@ -1,7 +1,6 @@
 package dmt
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,24 +36,6 @@ func TestNewForest(t *testing.T) {
 				So(len(forest.snapshot.Load().Trees()), ShouldEqual, 1)
 				So(forest.snapshot.Load().Trees()[0], ShouldNotBeNil)
 			})
-		})
-	})
-}
-
-func TestForestUsesProvidedPool(t *testing.T) {
-	Convey("Given a forest configuration with a worker pool", t, func() {
-		workerPool := newWorkerPool(context.Background())
-		defer workerPool.Close()
-
-		forest, err := NewForest(ForestConfig{
-			Pool: workerPool,
-		})
-		So(err, ShouldBeNil)
-		defer forest.Close()
-
-		Convey("Then the forest should reuse the provided pool", func() {
-			So(forest.pool, ShouldEqual, workerPool)
-			So(forest.owned, ShouldBeFalse)
 		})
 	})
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/theapemachine/datura"
 	"github.com/theapemachine/datura/dmt"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -31,7 +30,6 @@ type ForestServer struct {
 	serverConn  *rpc.Conn
 	clientConns map[string]*rpc.Conn
 	forest      *dmt.Forest
-	workerPool  *qpool.Q[any]
 }
 
 type serverOpts func(*ForestServer)
@@ -55,9 +53,7 @@ func NewForestServer(opts ...serverOpts) *ForestServer {
 	}
 
 	if idx.forest == nil {
-		forest, err := dmt.NewForest(dmt.ForestConfig{
-			Pool: idx.workerPool,
-		})
+		forest, err := dmt.NewForest(dmt.ForestConfig{})
 
 		if err != nil {
 			panic(err)
@@ -278,15 +274,6 @@ WithForest injects a pre-created dmt.Forest.
 func WithForest(forest *dmt.Forest) serverOpts {
 	return func(idx *ForestServer) {
 		idx.forest = forest
-	}
-}
-
-/*
-WithWorkerPool injects the shared worker pool for the backing forest.
-*/
-func WithWorkerPool(workerPool *qpool.Q[any]) serverOpts {
-	return func(idx *ForestServer) {
-		idx.workerPool = workerPool
 	}
 }
 

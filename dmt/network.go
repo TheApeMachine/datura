@@ -16,7 +16,6 @@ import (
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/rpc"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -761,19 +760,12 @@ func (n *NetworkNode) schedule(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-	)
+	go fn(n.ctx)
 }
 
 func (n *NetworkNode) scheduleLoop(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	n.forest.pool.Schedule(
-		"dmt/network/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	go fn(n.ctx)
 }

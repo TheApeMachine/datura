@@ -14,7 +14,6 @@ import (
 
 	"github.com/theapemachine/datura/structure"
 	"github.com/theapemachine/errnie"
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -379,19 +378,12 @@ func (election *Election) schedule(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-	)
+	go fn(election.node.ctx)
 }
 
 func (election *Election) scheduleLoop(
 	id string,
 	fn func(ctx context.Context) (any, error),
 ) {
-	election.node.forest.pool.Schedule(
-		"dmt/election/"+id,
-		fn,
-		qpool.WithTTL(time.Second),
-	)
+	go fn(election.node.ctx)
 }

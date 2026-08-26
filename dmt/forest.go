@@ -3,8 +3,6 @@ package dmt
 import (
 	"context"
 	"sync/atomic"
-
-	"github.com/theapemachine/qpool"
 )
 
 /*
@@ -20,7 +18,6 @@ type Forest struct {
 	// Context for controlling background workers
 	ctx    context.Context
 	cancel context.CancelFunc
-	pool   *qpool.Q[any]
 	owned  bool
 	// Network node for distributed operation
 	network *NetworkNode
@@ -30,8 +27,6 @@ type Forest struct {
 type ForestConfig struct {
 	// Directory for persistence
 	PersistDir string
-	// Worker pool for background tasks
-	Pool *qpool.Q[any]
 	// Network configuration
 	Network *NetworkConfig
 }
@@ -48,15 +43,9 @@ func NewForest(config ForestConfig) (*Forest, error) {
 		state:  newBatch("dmt/forest"),
 		ctx:    ctx,
 		cancel: cancel,
-		pool:   config.Pool,
 	}
 
 	forest.snapshot.Store(&Snapshot{})
-
-	if forest.pool == nil {
-		forest.pool = newWorkerPool(forest.ctx)
-		forest.owned = true
-	}
 
 	// Create initial tree (with persistence if directory is provided)
 	tree := guardValue(forest.state, func() (*Tree, error) {
@@ -95,10 +84,6 @@ func (forest *Forest) Close() error {
 
 	for _, tree := range trees {
 		guardStep(forest.state, tree.Close)
-	}
-
-	if forest.owned && forest.pool != nil {
-		forest.pool.Close()
 	}
 
 	return forest.state.Err()
